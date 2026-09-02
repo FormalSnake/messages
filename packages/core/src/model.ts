@@ -39,7 +39,34 @@ export interface Attachment {
   isSticker: boolean
   /** Path inside the attachment cache once downloaded. */
   localPath?: string
+  /** Set when the server hid this attachment, e.g. a rich-link preview image. */
+  hidden: boolean
+  /** Audio message duration in milliseconds, when the server reports one. */
+  durationMs?: number
 }
+
+/** iOS 18 text effects, from __kIMTextEffectAttributeName. */
+export type TextEffect = 'big' | 'small' | 'shake' | 'nod' | 'explode' | 'ripple' | 'bloom' | 'jitter'
+
+/** One stretch of a message body with a single set of attributes. */
+export interface RichRun {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+  strike?: boolean
+  /** Href from __kIMLinkAttributeName, not from linkifying the text ourselves. */
+  link?: string
+  /** Address of the mentioned handle; the run text is the display name. */
+  mention?: string
+  effect?: TextEffect
+}
+
+/**
+ * A message body split the way Messages splits it: text and attachments in the
+ * order the attributed body puts them, so a photo can sit between two lines.
+ */
+export type MessagePart = { kind: 'text'; runs: RichRun[] } | { kind: 'attachment'; guid: string }
 
 export type DeliveryState = 'sending' | 'sent' | 'delivered' | 'read' | 'failed'
 
@@ -73,8 +100,15 @@ export interface Message {
   service: Service
   attachments: Attachment[]
   tapbacks: Tapback[]
+  /**
+   * Set only when the attributed body carries formatting, a mention, a link
+   * attribute, or attachment placement. Plain messages keep `text` alone.
+   */
+  parts?: MessagePart[]
   /** Guid of the message this one replies to. */
   replyTo?: string
+  /** Guid of the message this sticker was placed on, when this message is a sticker. */
+  stickerFor?: string
   /** Expressive send style, for example com.apple.MobileSMS.expressivesend.impact. */
   effect?: string
   error?: string
@@ -87,7 +121,14 @@ export interface Message {
   reaction?: Reaction
   /** iMessage app payloads: Apple Pay, polls, link previews. */
   balloonBundleId?: string
-  urlPreview?: { url: string; title?: string; summary?: string; imagePath?: string }
+  urlPreview?: {
+    url: string
+    title?: string
+    summary?: string
+    imagePath?: string
+    imageAttachmentGuid?: string
+    siteName?: string
+  }
 }
 
 export interface Chat {

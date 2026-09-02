@@ -37,57 +37,97 @@ import file from 'lucide-static/icons/file.svg' with { type: 'text' }
 import mic from 'lucide-static/icons/mic.svg' with { type: 'text' }
 import lock from 'lucide-static/icons/lock.svg' with { type: 'text' }
 import unlock from 'lucide-static/icons/lock-open.svg' with { type: 'text' }
+import externalLink from 'lucide-static/icons/external-link.svg' with { type: 'text' }
+import download from 'lucide-static/icons/download.svg' with { type: 'text' }
+import messageSquare from 'lucide-static/icons/message-square.svg' with { type: 'text' }
+import userMinus from 'lucide-static/icons/user-minus.svg' with { type: 'text' }
+import smilePlus from 'lucide-static/icons/smile-plus.svg' with { type: 'text' }
 import { C } from './theme'
 
-// GPUI tints the icon as a mask, but it does not resolve `currentColor`, so bake a paint colour in.
-function bake(source: string): string {
-  return source.replace(/currentColor/g, '#000')
+/**
+ * GPUI tints the icon as a mask and does not resolve `currentColor`, so bake a
+ * paint colour in. The stroke goes with it: lucide ships at 2, which is the
+ * weight for semibold text, and almost every icon here sits beside 13px
+ * regular copy where 1.5 is the matching weight.
+ */
+function bake(source: string, stroke = 1.5): string {
+  return source.replace(/currentColor/g, '#000').replace(/stroke-width="2"/g, `stroke-width="${stroke}"`)
 }
 
-export const ICONS = {
-  search: bake(search),
-  compose: bake(squarePen),
-  plus: bake(plus),
-  send: bake(arrowUp),
-  info: bake(info),
-  video: bake(video),
-  phone: bake(phone),
-  chevronLeft: bake(chevronLeft),
-  chevronRight: bake(chevronRight),
-  chevronDown: bake(chevronDown),
-  image: bake(image),
-  paperclip: bake(paperclip),
-  close: bake(x),
-  check: bake(check),
-  reply: bake(reply),
-  edit: bake(pencil),
-  trash: bake(trash),
-  copy: bake(copy),
-  more: bake(more),
-  pin: bake(pin),
-  pinOff: bake(pinOff),
-  mute: bake(bellOff),
-  unmute: bake(bell),
-  settings: bake(settings),
-  online: bake(wifi),
-  offline: bake(wifiOff),
-  refresh: bake(refresh),
-  alert: bake(alert),
-  group: bake(users),
-  person: bake(user),
-  markRead: bake(mailOpen),
-  markUnread: bake(mail),
-  effect: bake(sparkles),
-  tapback: bake(smile),
-  leave: bake(logOut),
-  file: bake(file),
-  audio: bake(mic),
-  lock: bake(lock),
-  unlock: bake(unlock),
+const SOURCES = {
+  search,
+  compose: squarePen,
+  plus,
+  send: arrowUp,
+  info,
+  video,
+  phone,
+  chevronLeft,
+  chevronRight,
+  chevronDown,
+  image,
+  paperclip,
+  close: x,
+  check,
+  reply,
+  edit: pencil,
+  trash,
+  copy,
+  more,
+  pin,
+  pinOff,
+  mute: bellOff,
+  unmute: bell,
+  settings,
+  online: wifi,
+  offline: wifiOff,
+  refresh,
+  alert,
+  group: users,
+  person: user,
+  markRead: mailOpen,
+  markUnread: mail,
+  effect: sparkles,
+  tapback: smile,
+  addTapback: smilePlus,
+  leave: logOut,
+  file,
+  audio: mic,
+  lock,
+  unlock,
+  open: externalLink,
+  download,
+  conversation: messageSquare,
+  removePerson: userMinus,
 } as const
 
-export type IconName = keyof typeof ICONS
+export type IconName = keyof typeof SOURCES
 
-export function Icon({ name, size = 16, color = C.secondary }: { name: IconName; size?: number; color?: string }) {
-  return <svg source={ICONS[name]} style={{ width: size, height: size, flexShrink: 0, color }} />
+function baked(stroke: number): Record<IconName, string> {
+  const out = {} as Record<IconName, string>
+  for (const [name, source] of Object.entries(SOURCES)) out[name as IconName] = bake(source, stroke)
+  return out
+}
+
+export const ICONS = baked(1.5)
+const ICONS_BOLD = baked(2)
+
+/**
+ * `strong` matches the 2px stroke to semibold or larger text; the default 1.5
+ * sits beside regular copy without out-weighing it.
+ */
+export function Icon({
+  name,
+  size = 16,
+  color = C.secondary,
+  strong = false,
+  opacity,
+}: {
+  name: IconName
+  size?: number
+  color?: string
+  strong?: boolean
+  opacity?: number
+}) {
+  return <svg source={(strong ? ICONS_BOLD : ICONS)[name]} style={{ width: size, height: size, flexShrink: 0, color, opacity }} />
 }

@@ -1,4 +1,4 @@
-import { basename, extname } from 'node:path'
+import { basename } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
 import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from '../model'
 import type {
@@ -10,6 +10,7 @@ import type {
 } from '../transport'
 import {
   ContactIndex,
+  downloadPlan,
   toChat,
   toContact,
   toHandle,
@@ -77,6 +78,10 @@ export class BlueBubblesTransport implements Transport {
   private serverInfo: ServerInfo | null = null
   private readonly listeners = new Set<(event: TransportEvent) => void>()
   private readonly downloads = new Map<string, Promise<string>>()
+  // any; chat guids on macOS 26 carry no service of their own; toMessage()
+  // needs the chat's service for messages sent by me (no handle to read it
+  // from), so mapChat() fills this in every time a chat is mapped.
+  private readonly chatServices = new Map<string, Service>()
 
   constructor(private readonly options: BlueBubblesOptions) {}
 
@@ -131,11 +136,19 @@ export class BlueBubblesTransport implements Transport {
 
   async loadMessages(chatGuid: string, options: { limit: number; before?: number }): Promise<Page<Message>> {
     const raw = await this.request<RawMessage[]>('GET', `/chat/${encodeURIComponent(chatGuid)}/message`, {
-      query: { with: 'attachments', sort: 'DESC', limit: options.limit, before: options.before },
+      // on this route the bare "payloadData" is ignored; it has to be "message.payloadData".
+      // attributedBody is only matched under the prefixed name on some builds, so send both.
+      query: {
+        with: 'attachments,message.payloadData,message.attributedBody,attributedBody',
+        sort: 'DESC',
+        limit: options.limit,
+        before: options.before,
+      },
     })
     const attachmentPaths = await this.resolveAttachmentPaths(raw)
+    const chatService = this.chatServices.get(chatGuid)
     const items = raw
-      .map(m => toMessage(m, chatGuid, { contacts: this.contacts, attachmentPaths }))
+      .map(m => toMessage(m, chatGuid, { contacts: this.contacts, attachmentPaths, chatService }))
       .sort((a, b) => a.date - b.date)
     return { items, hasMore: raw.length === options.limit }
   }
@@ -148,7 +161,7 @@ export class BlueBubblesTransport implements Transport {
     // created since that time, oldest first, with no text filter at all.
     const sweep = query === '' && options.after != null
     const json: Record<string, unknown> = {
-      with: ['chats', 'attachments'],
+      with: ['chats', 'attachments', 'payloadData', 'attributedBody'],
       sort: sweep ? 'ASC' : 'DESC',
       limit: options.limit ?? 50,
       chatGuid: options.chatGuid,
@@ -160,7 +173,14 @@ export class BlueBubblesTransport implements Transport {
 
     const raw = await this.request<RawMessage[]>('POST', '/message/query', { json })
     const attachmentPaths = await this.resolveAttachmentPaths(raw)
-    return raw.map(m => toMessage(m, options.chatGuid, { contacts: this.contacts, attachmentPaths }))
+    return raw.map(m => {
+      const resolvedChatGuid = m.chats?.[0]?.guid ?? options.chatGuid
+      return toMessage(m, options.chatGuid, {
+        contacts: this.contacts,
+        attachmentPaths,
+        chatService: resolvedChatGuid ? this.chatServices.get(resolvedChatGuid) : undefined,
+      })
+    })
   }
 
   async listContacts(): Promise<Contact[]> {
@@ -199,8 +219,9 @@ export class BlueBubblesTransport implements Transport {
     return this.mapMessage(raw, chatGuid)
   }
 
-  async attachmentPath(attachmentGuid: string, options: { name?: string } = {}): Promise<string> {
-    const path = this.attachmentCachePath(attachmentGuid, options.name ?? attachmentGuid)
+  async attachmentPath(attachmentGuid: string, options: { name?: string; mime?: string } = {}): Promise<string> {
+    const { original, extension } = downloadPlan(options.name, options.mime)
+    const path = this.attachmentCachePath(attachmentGuid, extension)
     if (await Bun.file(path).exists()) return path
 
     const pending = this.downloads.get(attachmentGuid)
@@ -208,7 +229,7 @@ export class BlueBubblesTransport implements Transport {
 
     const download = (async () => {
       const response = await this.download(`/attachment/${encodeURIComponent(attachmentGuid)}/download`, {
-        original: 'true',
+        original,
       })
       await Bun.write(path, await response.arrayBuffer())
       return path
@@ -311,11 +332,21 @@ export class BlueBubblesTransport implements Transport {
     await this.request('POST', `/message/${encodeURIComponent(messageGuid)}/notify`)
   }
 
-  async startFaceTime(_address: string): Promise<string | undefined> {
-    // POST /facetime/session takes no body; the address is only used by the
-    // caller to know who to ring once the link exists.
+  async createFaceTimeLink(): Promise<string> {
     const data = await this.request<{ link: string }>('POST', '/facetime/session')
     return data.link
+  }
+
+  // The server answers on the Mac, generates a link for the call, admits the
+  // first joiner and hangs up its own side about 15 seconds later
+  // (bluebubbles-helper#38). The link is still what a browser can join.
+  async answerFaceTime(callUuid: string): Promise<string> {
+    const data = await this.request<{ link: string }>('POST', `/facetime/answer/${encodeURIComponent(callUuid)}`)
+    return data.link
+  }
+
+  async leaveFaceTime(callUuid: string): Promise<void> {
+    await this.request('POST', `/facetime/leave/${encodeURIComponent(callUuid)}`)
   }
 
   private sendMethod(): 'private-api' | 'apple-script' {
@@ -324,16 +355,23 @@ export class BlueBubblesTransport implements Transport {
 
   private async mapMessage(raw: RawMessage, chatGuid?: string): Promise<Message> {
     const attachmentPaths = await this.resolveAttachmentPaths([raw])
-    return toMessage(raw, chatGuid, { contacts: this.contacts, attachmentPaths })
+    const resolvedChatGuid = raw.chats?.[0]?.guid ?? chatGuid
+    return toMessage(raw, chatGuid, {
+      contacts: this.contacts,
+      attachmentPaths,
+      chatService: resolvedChatGuid ? this.chatServices.get(resolvedChatGuid) : undefined,
+    })
   }
 
   private async mapChat(raw: RawChat): Promise<Chat> {
     const attachmentPaths = raw.lastMessage ? await this.resolveAttachmentPaths([raw.lastMessage]) : undefined
-    return toChat(raw, { contacts: this.contacts, attachmentPaths })
+    const chat = toChat(raw, { contacts: this.contacts, attachmentPaths })
+    this.chatServices.set(chat.guid, chat.service)
+    return chat
   }
 
-  private attachmentCachePath(guid: string, name: string): string {
-    return `${this.options.attachmentsDir}/${guid}${extname(name)}`
+  private attachmentCachePath(guid: string, extension: string): string {
+    return `${this.options.attachmentsDir}/${guid}${extension}`
   }
 
   private async resolveAttachmentPaths(messages: RawMessage[]): Promise<Map<string, string>> {
@@ -341,7 +379,8 @@ export class BlueBubblesTransport implements Transport {
     await Promise.all(
       messages.flatMap(message =>
         (message.attachments ?? []).map(async attachment => {
-          const path = this.attachmentCachePath(attachment.guid, attachment.transferName)
+          const { extension } = downloadPlan(attachment.transferName, attachment.mimeType)
+          const path = this.attachmentCachePath(attachment.guid, extension)
           if (await Bun.file(path).exists()) paths.set(attachment.guid, path)
         }),
       ),
@@ -418,13 +457,34 @@ export class BlueBubblesTransport implements Transport {
     })
 
     socket.on('ft-call-status-changed', (data: RawFaceTimeStatus) => {
-      // status_id 4 ("incoming") is a ringing call; anything else (outgoing,
-      // answered, disconnected, unknown) is not something to alert on here.
-      if (data.status !== 'incoming') return
+      // "incoming" is a ringing call, "disconnected" ends one; outgoing,
+      // answered and unknown are not worth an event.
+      if (data.status !== 'incoming' && data.status !== 'disconnected') return
       this.emit({
         type: 'facetime',
         callUuid: data.uuid,
+        status: data.status === 'incoming' ? 'incoming' : 'ended',
         from: data.handle ? toHandle(data.handle, this.contacts) : undefined,
+        canAnswer: data.status === 'incoming',
+      })
+    })
+
+    // Legacy path when "FaceTime Calling" is off in the server settings: a JSON
+    // string naming the caller, with no call uuid to answer.
+    socket.on('incoming-facetime', (raw: unknown) => {
+      let caller: string | undefined
+      try {
+        const parsed = typeof raw === 'string' ? (JSON.parse(raw) as { caller?: string }) : (raw as { caller?: string })
+        caller = parsed?.caller
+      } catch {
+        caller = undefined
+      }
+      this.emit({
+        type: 'facetime',
+        callUuid: '',
+        status: 'incoming',
+        from: caller ? toHandle({ originalROWID: 0, address: caller, service: 'iMessage' }, this.contacts) : undefined,
+        canAnswer: false,
       })
     })
   }

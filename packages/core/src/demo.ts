@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { Attachment, Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from './model'
 import type { Page, SendAttachmentOptions, SendTextOptions, Transport, TransportEvent } from './transport'
 
@@ -23,14 +24,34 @@ function photo(hueA: number, hueB: number, label: string): string {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
 }
 
+function stickerFace(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="200" viewBox="0 0 240 200"><rect x="8" y="8" width="224" height="184" rx="40" fill="hsl(280 68% 58%)"/><circle cx="88" cy="82" r="13" fill="white"/><circle cx="152" cy="82" r="13" fill="white"/><path d="M72 120 Q120 166 168 120" stroke="white" stroke-width="13" fill="none" stroke-linecap="round"/></svg>`
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
+}
+
 const photos: Record<string, string> = {
   'demo-att-1': photo(200, 260, 'Point Reyes'),
   'demo-att-2': photo(20, 340, 'Golden hour'),
   'demo-att-3': photo(140, 200, 'Trailhead'),
+  'demo-att-4': photo(28, 300, 'Roof terrace'),
+  'demo-sticker-1': stickerFace(),
 }
 
+// The audio pill needs a real file to hand to the system player. macOS ships
+// one; on Linux the demo has no clip and the pill just shows its duration.
+const SYSTEM_SOUND = '/System/Library/Sounds/Submarine.aiff'
+const audioClip = existsSync(SYSTEM_SOUND) ? SYSTEM_SOUND : undefined
+
 function attachment(guid: string, name: string, width: number, height: number): Attachment {
-  return { guid, name, mime: 'image/svg+xml', bytes: 812_344, width, height, isSticker: false, localPath: photos[guid] }
+  return { guid, name, mime: 'image/svg+xml', bytes: 812_344, width, height, isSticker: false, hidden: false, localPath: photos[guid] }
+}
+
+function sticker(guid: string): Attachment {
+  return { guid, name: 'sticker.png', mime: 'image/svg+xml', bytes: 24_110, width: 240, height: 200, isSticker: true, hidden: false, localPath: photos[guid] }
+}
+
+function voiceNote(guid: string, seconds: number): Attachment {
+  return { guid, name: 'Audio Message.caf', mime: 'audio/x-caf', bytes: 61_820, isSticker: false, hidden: false, durationMs: seconds * 1000, localPath: audioClip }
 }
 
 interface Seed {
@@ -96,6 +117,7 @@ const seeds: Seed[] = [
       { text: 'Sent the deck over, let me know what you think about slide 9', ago: DAY + 6 * HOUR, from: people.priya },
       { text: 'Slide 9 is the strongest one. Lead with it.', ago: DAY + 5 * HOUR + 30 * MIN, dateDelivered: now - DAY, dateRead: now - DAY },
       { text: 'Reordered. Also fixed the typo you did not mention 😅', ago: 20 * HOUR, from: people.priya, dateEdited: now - 19 * HOUR },
+      { text: '', ago: 19 * HOUR, from: people.priya, attachments: [sticker('demo-sticker-1')] },
     ],
   },
   {
@@ -122,6 +144,43 @@ const seeds: Seed[] = [
       { text: 'The send button reads as disabled even when it is not. Try the filled circle.', ago: 6 * DAY - 20 * MIN, from: people.ben },
       { text: 'Agree with Ben. Also the placeholder contrast is under 3:1.', ago: 6 * DAY - 15 * MIN },
       { text: 'fixed both, thanks 🙏', ago: 5 * DAY, from: people.chloe, tapbacks: [{ guid: 'demo-tb-4', kind: 'like', fromMe: true }] },
+      {
+        text: 'The spacing is close but the last frame is off by a hair, and the old radius is gone',
+        ago: 3 * HOUR,
+        from: people.ben,
+        parts: [
+          {
+            kind: 'text',
+            runs: [
+              { text: 'The spacing is ' },
+              { text: 'close', bold: true },
+              { text: ' but the last frame is ' },
+              { text: 'off by a hair', italic: true },
+              { text: ', and the ' },
+              { text: 'old radius', strike: true },
+              { text: ' is ' },
+              { text: 'gone', underline: true },
+            ],
+          },
+        ],
+      },
+      {
+        text: 'You should look at the fold, it drifts two pixels there',
+        ago: 2 * HOUR + 50 * MIN,
+        from: people.chloe,
+        parts: [
+          {
+            kind: 'text',
+            runs: [{ text: 'You', mention: 'you@icloud.com' }, { text: ' should look at the fold, it drifts two pixels there' }],
+          },
+        ],
+      },
+      {
+        text: 'shipped 🎉',
+        ago: 2 * HOUR + 40 * MIN,
+        parts: [{ kind: 'text', runs: [{ text: 'shipped', effect: 'big' }, { text: ' 🎉' }] }],
+        dateDelivered: now - 2 * HOUR - 39 * MIN,
+      },
     ],
   },
   {
@@ -141,6 +200,18 @@ const seeds: Seed[] = [
     messages: [
       { text: 'Landed in Madrid. It is 38 degrees.', ago: 3 * DAY + 4 * HOUR, from: people.nadia, attachments: [attachment('demo-att-3', 'IMG_0911.HEIC', 1200, 800)] },
       { text: 'Drink water. Send tapas.', ago: 3 * DAY + 3 * HOUR, dateDelivered: now - 3 * DAY, dateRead: now - 3 * DAY },
+      {
+        text: 'The roof terrace at sunset\nAnd the same spot at 7am, nobody about',
+        ago: 2 * DAY + 6 * HOUR,
+        from: people.nadia,
+        attachments: [attachment('demo-att-4', 'IMG_1042.HEIC', 1200, 800)],
+        parts: [
+          { kind: 'text', runs: [{ text: 'The roof terrace at sunset' }] },
+          { kind: 'attachment', guid: 'demo-att-4' },
+          { kind: 'text', runs: [{ text: 'And the same spot at 7am, nobody about' }] },
+        ],
+      },
+      { text: '', ago: 2 * DAY + 5 * HOUR, from: people.nadia, isAudio: true, attachments: [voiceNote('demo-audio-1', 12)] },
     ],
   },
   {
@@ -152,6 +223,17 @@ const seeds: Seed[] = [
     messages: [
       { text: 'PR is up, no rush', ago: 4 * DAY + 2 * HOUR, from: people.ben },
       { text: 'Reviewing tonight', ago: 4 * DAY + HOUR, dateDelivered: now - 4 * DAY },
+      {
+        text: 'https://docs.bluebubbles.app/private-api/installation',
+        ago: 3 * DAY + 8 * HOUR,
+        from: people.ben,
+        balloonBundleId: 'com.apple.messages.URLBalloonProvider',
+        urlPreview: {
+          url: 'https://docs.bluebubbles.app/private-api/installation',
+          title: 'Private API Installation, and why it needs SIP disabled',
+          siteName: 'BlueBubbles Docs',
+        },
+      },
     ],
   },
   {
@@ -352,7 +434,7 @@ export class DemoTransport implements Transport {
       fromMe: true,
       date: Date.now(),
       service: chat.service,
-      attachments: [{ guid: `demo-upload-${seq}`, name, mime: file.type || 'application/octet-stream', bytes: file.size, isSticker: false, localPath: path }],
+      attachments: [{ guid: `demo-upload-${seq}`, name, mime: file.type || 'application/octet-stream', bytes: file.size, isSticker: false, hidden: false, localPath: path }],
       tapbacks: [],
       isAudio: Boolean(options.isAudio),
     }
@@ -475,7 +557,14 @@ export class DemoTransport implements Transport {
 
   async notifySilenced(): Promise<void> {}
 
-  async startFaceTime(): Promise<string | undefined> {
+  async createFaceTimeLink(): Promise<string> {
     return 'https://facetime.apple.com/join#v=1&p=demo'
   }
+
+  async answerFaceTime(): Promise<string> {
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+    return 'https://facetime.apple.com/join#v=1&p=demo-call'
+  }
+
+  async leaveFaceTime(): Promise<void> {}
 }

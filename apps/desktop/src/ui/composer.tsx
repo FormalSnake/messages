@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, useGpuix, type PublicInstance } from '@gpuix/react'
+import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix, type PublicInstance } from '@gpuix/react'
 import { clipboardImage, handleName, type Chat } from '@messages/core'
-import { C, RADIUS, TYPE } from './theme'
+import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
-import { IconButton, TextField } from './primitives'
+import { IconButton, TextField, overlayShadow } from './primitives'
 import { primaryModifier, useShell } from './context'
 import { useAppState } from './use-app-state'
 import { effectName } from './thread'
@@ -26,15 +26,35 @@ const EFFECTS = [
 
 const EDIT_WINDOW = 15 * 60_000
 
+/** Field geometry, shared so the buttons beside it land on its centre line. */
+const FIELD_HEIGHT = 34
+const BUTTON_HIT = 28
+const BUTTON_LIFT = (FIELD_HEIGHT - BUTTON_HIT) / 2
+
 function Banner({ label, body, onClose, testId }: { label: string; body: string; onClose: () => void; testId: string }) {
   return (
-    <div testId={testId} style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 12, paddingRight: 4, paddingBottom: 6 }}>
-      <div style={{ width: 2, height: 28, borderRadius: 1, backgroundColor: C.accent, flexShrink: 0 }} />
-      <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0 }}>
-        <text style={{ ...TYPE.micro, fontWeight: 600, color: C.accent }}>{label}</text>
+    <div
+      testId={testId}
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: S.x2,
+        marginBottom: S.x2,
+        paddingLeft: S.x2,
+        paddingRight: S.x1,
+        paddingTop: S.x1,
+        paddingBottom: S.x1,
+        borderRadius: RADIUS.control,
+        backgroundColor: C.raised,
+      }}
+    >
+      <div style={{ width: 2, height: 26, borderRadius: 1, backgroundColor: C.accent, flexShrink: 0 }} />
+      <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
+        <text style={{ ...TYPE.micro, fontWeight: 600, color: C.accent, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{label}</text>
         <text style={{ ...TYPE.caption, color: C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{body}</text>
       </div>
-      <IconButton icon="close" label="Cancel" size={13} hit={24} onClick={onClose} />
+      <IconButton icon="close" label="Cancel" size={12} hit={24} onClick={onClose} />
     </div>
   )
 }
@@ -77,12 +97,17 @@ export function Composer({ chat }: { chat: Chat }) {
   }
 
   const editLast = () => {
-    const last = [...messages].reverse().find((item) => item.fromMe && !item.error && !item.dateRetracted && item.attachments.length === 0 && Date.now() - item.date < EDIT_WINDOW)
+    const last = [...messages]
+      .reverse()
+      .find((item) => item.fromMe && !item.error && !item.dateRetracted && item.attachments.length === 0 && Date.now() - item.date < EDIT_WINDOW)
     if (last) store.setEditing(chat.guid, last.guid)
   }
 
   return (
-    <div testId="composer" style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, paddingLeft: 12, paddingRight: 12, paddingTop: 6, paddingBottom: 10, userSelect: 'none' }}>
+    <div
+      testId="composer"
+      style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, paddingLeft: S.x3, paddingRight: S.x3, paddingTop: S.x2, paddingBottom: S.x3, userSelect: 'none' }}
+    >
       {replyTarget ? (
         <Banner
           testId="reply-banner"
@@ -93,57 +118,107 @@ export function Composer({ chat }: { chat: Chat }) {
       ) : null}
       {editTarget ? <Banner testId="edit-banner" label="Editing" body={editTarget.text} onClose={() => store.setEditing(chat.guid, undefined)} /> : null}
       {attachOpen ? (
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 6, paddingBottom: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, marginBottom: S.x2 }}>
           <TextField testId="attach-path" value={attachPath} onChange={setAttachPath} onSubmit={sendFile} placeholder="Path to a file, for example ~/Pictures/photo.jpg" autoFocus />
-          <IconButton icon="send" label="Send file" onClick={sendFile} color={C.accent} disabled={attachPath.trim().length === 0} />
+          <IconButton icon="send" label="Send file" onClick={sendFile} color={C.accent} strong disabled={attachPath.trim().length === 0} />
           <IconButton icon="close" label="Cancel" onClick={() => setAttachOpen(false)} />
         </div>
       ) : null}
-      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: 6 }}>
-        <IconButton icon="plus" label="Attach a file" testId="attach" hit={32} size={18} active={attachOpen} onClick={() => setAttachOpen((open) => !open)} />
-        {state.capabilities.effects && !isSms ? (
-          <Select value={effect} onValueChange={setEffect}>
-            <div style={{ position: 'relative' }}>
-              <SelectTrigger
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: RADIUS.control,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  backgroundColor: effect !== 'none' ? C.selectedSoft : undefined,
-                  hover: { backgroundColor: effect !== 'none' ? C.selectedSoft : C.raisedHover },
-                }}
-              >
-                <Icon name="effect" size={17} color={effect !== 'none' ? C.accent : C.secondary} />
-              </SelectTrigger>
-              <SelectContent side="top" sideOffset={6} style={{ backgroundColor: C.overlay, borderWidth: 1, borderColor: C.overlayBorder, borderRadius: RADIUS.row, padding: 5, minWidth: 180 }}>
-                {['none', ...EFFECTS].map((id) => (
-                  <SelectItem
-                    key={id}
-                    value={id}
-                    style={(item) => ({ height: 26, paddingLeft: 10, paddingRight: 10, borderRadius: 6, display: 'flex', alignItems: 'center', cursor: 'pointer', backgroundColor: item.highlighted ? C.accent : C.overlay })}
-                  >
-                    {(item) => <text style={{ ...TYPE.body, color: item.highlighted ? C.onAccent : C.text, whiteSpace: 'nowrap' }}>{id === 'none' ? 'No effect' : effectName(id)}</text>}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </div>
-          </Select>
-        ) : null}
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', flexGrow: 1, minWidth: 0, borderRadius: 17, borderWidth: 1, borderColor: C.separator, backgroundColor: C.canvas, paddingLeft: 12, paddingRight: 4, paddingTop: 3, paddingBottom: 3 }}>
+
+      <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x1 }}>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, paddingBottom: BUTTON_LIFT, flexShrink: 0 }}>
+          <IconButton icon="plus" label="Attach a file" testId="attach" hit={BUTTON_HIT} size={17} active={attachOpen} onClick={() => setAttachOpen((open) => !open)} />
+          {state.capabilities.effects && !isSms ? (
+            <Select value={effect} onValueChange={setEffect}>
+              <div style={{ position: 'relative' }}>
+                <SelectTrigger
+                  style={{
+                    width: BUTTON_HIT,
+                    height: BUTTON_HIT,
+                    borderRadius: RADIUS.control,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    backgroundColor: effect !== 'none' ? C.selectedSoft : undefined,
+                    hover: { backgroundColor: effect !== 'none' ? C.selectedSoft : C.hoverWash },
+                    active: { backgroundColor: C.pressWash },
+                  }}
+                >
+                  <Icon name="effect" size={16} color={effect !== 'none' ? C.accent : C.secondary} />
+                </SelectTrigger>
+                <SelectContent
+                  side="top"
+                  sideOffset={S.x2}
+                  style={{
+                    backgroundColor: C.overlay,
+                    borderWidth: 1,
+                    borderColor: C.overlayBorder,
+                    borderRadius: RADIUS.menu,
+                    padding: S.x1,
+                    minWidth: 180,
+                    boxShadow: overlayShadow,
+                  }}
+                >
+                  {['none', ...EFFECTS].map((id) => (
+                    <SelectItem
+                      key={id}
+                      value={id}
+                      style={(item) => ({
+                        height: 28,
+                        paddingLeft: S.x2,
+                        paddingRight: S.x2,
+                        borderRadius: RADIUS.menuItem,
+                        display: 'flex',
+                        alignItems: 'center',
+                        cursor: 'pointer',
+                        backgroundColor: item.highlighted ? C.accent : C.overlay,
+                      })}
+                    >
+                      {(item) => (
+                        <text style={{ ...TYPE.body, color: item.highlighted ? C.onAccent : C.text, whiteSpace: 'nowrap' }}>
+                          {id === 'none' ? 'No effect' : effectName(id)}
+                        </text>
+                      )}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </div>
+            </Select>
+          ) : null}
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            alignItems: 'flex-end',
+            gap: S.x1,
+            flexGrow: 1,
+            flexShrink: 1,
+            flexBasis: 0,
+            minWidth: 0,
+            minHeight: FIELD_HEIGHT,
+            borderRadius: FIELD_HEIGHT / 2,
+            borderWidth: 1,
+            borderColor: C.separator,
+            backgroundColor: C.canvas,
+            paddingLeft: S.x3,
+            paddingRight: S.x1,
+            paddingTop: S.x1,
+            paddingBottom: S.x1,
+          }}
+        >
           <textarea
             ref={textareaRef}
             testId="draft"
             value={draft}
-            placeholder={isSms ? 'Text message' : 'iMessage'}
+            placeholder={editGuid ? 'Edit message' : isSms ? 'Text message' : 'iMessage'}
             minRows={1}
             maxRows={8}
             autoFocus
             theme={{ caret: C.accent, textMuted: C.tertiary }}
-            style={{ flexGrow: 1, minWidth: 0, ...TYPE.bubble, color: C.text, backgroundColor: '#00000000', borderWidth: 0, paddingTop: 4, paddingBottom: 4 }}
+            style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, ...TYPE.bubble, color: C.text, backgroundColor: C.transparent, borderWidth: 0, paddingTop: 2, paddingBottom: 2 }}
             onChange={(event) => store.setDraft(chat.guid, event.value ?? '')}
             onSubmit={(event) => send(event.value ?? draft)}
             onKeyDown={(event) => {
@@ -164,22 +239,21 @@ export function Composer({ chat }: { chat: Chat }) {
             testId="send"
             onClick={() => send(draft)}
             style={{
-              width: 26,
-              height: 26,
-              borderRadius: 13,
-              marginBottom: 1,
+              width: 24,
+              height: 24,
+              borderRadius: 12,
               flexShrink: 0,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               cursor: ready ? 'pointer' : 'default',
               backgroundColor: ready ? sendColor : C.ghost,
-              opacity: ready ? 1 : 0.6,
-              hover: ready ? { opacity: 0.9 } : undefined,
+              opacity: ready ? 1 : 0.5,
+              hover: ready ? { opacity: 0.88 } : undefined,
               active: ready ? { opacity: 0.7 } : undefined,
             }}
           >
-            <Icon name="send" size={15} color={C.onAccent} />
+            <Icon name={editGuid ? 'check' : 'send'} size={14} color={C.onAccent} strong />
           </div>
         </div>
       </div>

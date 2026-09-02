@@ -1,5 +1,7 @@
+import { openExternal } from './open'
 import {
   capabilitiesFor,
+  handleName,
   type Capabilities,
   type Chat,
   type Contact,
@@ -10,6 +12,15 @@ import {
   type TapbackKind,
 } from './model'
 import type { ConnectionStatus, Transport, TransportEvent } from './transport'
+
+export interface FaceTimeCall {
+  callUuid: string
+  from?: string
+  status: 'incoming' | 'answering' | 'ready' | 'failed' | 'ended'
+  canAnswer: boolean
+  link?: string
+  error?: string
+}
 
 export interface ChatPrefs {
   pinned?: boolean
@@ -34,7 +45,7 @@ export interface AppState {
   replyingTo: Record<string, string | undefined>
   /** Guid of the message being edited in the composer, per chat. */
   editing: Record<string, string | undefined>
-  facetime: { callUuid: string; from?: string; link?: string } | null
+  facetime: FaceTimeCall | null
   lastSyncAt: number
 }
 
@@ -170,9 +181,16 @@ export class MessagesStore {
       case 'read':
         this.patchChat(event.chatGuid, { unread: !event.read })
         return
-      case 'facetime':
-        this.set({ facetime: { callUuid: event.callUuid, from: event.from?.name ?? event.from?.address, link: event.link } })
+      case 'facetime': {
+        const from = event.from ? handleName(event.from) : undefined
+        if (event.status === 'ended') {
+          const current = this.state.facetime
+          if (current && current.callUuid === event.callUuid && current.status !== 'ready') this.set({ facetime: { ...current, status: 'ended' } })
+          return
+        }
+        this.set({ facetime: { callUuid: event.callUuid, from, status: 'incoming', canAnswer: event.canAnswer } })
         return
+      }
     }
   }
 
@@ -426,7 +444,7 @@ export class MessagesStore {
       fromMe: true,
       date: Date.now(),
       service: chat?.service ?? 'iMessage',
-      attachments: [{ guid: tempGuid, name, mime: file.type || 'application/octet-stream', bytes: file.size, isSticker: false, localPath: path }],
+      attachments: [{ guid: tempGuid, name, mime: file.type || 'application/octet-stream', bytes: file.size, isSticker: false, hidden: false, localPath: path }],
       tapbacks: [],
       isAudio: false,
     }
@@ -553,12 +571,42 @@ export class MessagesStore {
     this.set({ facetime: null })
   }
 
+  async answerFaceTime(): Promise<void> {
+    const call = this.state.facetime
+    if (!call || !call.canAnswer || call.status !== 'incoming') return
+    this.set({ facetime: { ...call, status: 'answering' } })
+    try {
+      const link = await this.transport.answerFaceTime(call.callUuid)
+      this.set({ facetime: { ...call, status: 'ready', link } })
+      openExternal(link)
+    } catch (error) {
+      this.set({ facetime: { ...call, status: 'failed', error: error instanceof Error ? error.message : String(error) } })
+    }
+  }
+
+  async declineFaceTime(): Promise<void> {
+    const call = this.state.facetime
+    this.set({ facetime: null })
+    if (call?.canAnswer) await this.transport.leaveFaceTime(call.callUuid).catch(() => undefined)
+  }
+
+  /** Creates a FaceTime Link, shares it in the chat and opens it here. Group links are the only calls a browser can join. */
+  async startFaceTime(chatGuid: string): Promise<void> {
+    try {
+      const link = await this.transport.createFaceTimeLink()
+      await this.send(chatGuid, link)
+      openExternal(link)
+    } catch (error) {
+      this.set({ error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   clearError(): void {
     this.set({ error: undefined })
   }
 
-  async attachmentSrc(chatGuid: string, messageGuid: string, attachmentGuid: string, name: string): Promise<string> {
-    const local = await this.transport.attachmentPath(attachmentGuid, { name })
+  async attachmentSrc(chatGuid: string, messageGuid: string, attachmentGuid: string, name: string, mime?: string): Promise<string> {
+    const local = await this.transport.attachmentPath(attachmentGuid, { name, mime })
     const target = this.findMessage(chatGuid, messageGuid)
     if (target) {
       this.replaceMessage(chatGuid, {

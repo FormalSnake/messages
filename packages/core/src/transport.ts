@@ -11,7 +11,8 @@ export type TransportEvent =
   | { type: 'chat-removed'; chatGuid: string }
   | { type: 'typing'; chatGuid: string; typing: boolean }
   | { type: 'read'; chatGuid: string; read: boolean }
-  | { type: 'facetime'; callUuid: string; from?: Handle; link?: string }
+  /** A ringing or ended FaceTime call on the Mac. `canAnswer` is false on the legacy event path, which only names the caller. */
+  | { type: 'facetime'; callUuid: string; status: 'incoming' | 'ended'; from?: Handle; canAnswer: boolean }
 
 export interface Page<T> {
   items: T[]
@@ -47,7 +48,7 @@ export interface Transport {
   sendText(chatGuid: string, text: string, options?: SendTextOptions): Promise<Message>
   sendAttachment(chatGuid: string, path: string, options?: SendAttachmentOptions): Promise<Message>
   /** Downloads into the attachment cache when needed and returns the local path. */
-  attachmentPath(attachmentGuid: string, options?: { name?: string }): Promise<string>
+  attachmentPath(attachmentGuid: string, options?: { name?: string; mime?: string }): Promise<string>
 
   createChat(addresses: string[], firstMessage: string, service?: Service): Promise<Chat>
   markRead(chatGuid: string): Promise<void>
@@ -65,5 +66,9 @@ export interface Transport {
   leaveGroup(chatGuid: string): Promise<void>
   setGroupIcon(chatGuid: string, path: string): Promise<void>
   notifySilenced(chatGuid: string, messageGuid: string): Promise<void>
-  startFaceTime(address: string): Promise<string | undefined>
+  /** Creates a FaceTime Link on the Mac and returns it. */
+  createFaceTimeLink(): Promise<string>
+  /** Answers a ringing call on the Mac and returns a FaceTime Link that joins it from a browser. */
+  answerFaceTime(callUuid: string): Promise<string>
+  leaveFaceTime(callUuid: string): Promise<void>
 }

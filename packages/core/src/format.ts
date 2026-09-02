@@ -60,12 +60,20 @@ export function formatAddress(address: string): string {
   return address
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/** First user-perceived character. Indexing a string would split an emoji into a lone surrogate, which the native JSON parser rejects. */
+export function firstGrapheme(value: string): string {
+  const first = graphemes.segment(value)[Symbol.iterator]().next()
+  return first.done ? '' : first.value.segment
+}
+
 export function initials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return '#'
   if (/^[+\d(]/.test(name)) return '#'
-  const first = words[0]?.[0] ?? ''
-  const last = words.length > 1 ? (words[words.length - 1]?.[0] ?? '') : ''
+  const first = firstGrapheme(words[0] ?? '')
+  const last = words.length > 1 ? firstGrapheme(words[words.length - 1] ?? '') : ''
   return (first + last).toUpperCase()
 }
 

@@ -26,3 +26,38 @@ export function splitLinks(text: string): TextSegment[] {
   if (last < text.length) segments.push({ kind: 'text', value: text.slice(last) })
   return segments
 }
+
+let player: ReturnType<typeof Bun.spawn> | null = null
+
+/** Plays an audio file through the first player found; the previous one stops. Returns false when no player exists. */
+export function playAudio(path: string): boolean {
+  stopAudio()
+  const candidates = process.platform === 'darwin' ? [['afplay', path]] : [['mpv', '--no-video', '--really-quiet', path], ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', path], ['paplay', path]]
+  for (const command of candidates) {
+    if (!Bun.which(command[0]!)) continue
+    try {
+      player = Bun.spawn(command, { stdout: 'ignore', stderr: 'ignore' })
+      void player.exited.then(() => {
+        player = null
+      })
+      return true
+    } catch (error) {
+      console.error(`audio: ${String(error)}`)
+    }
+  }
+  return false
+}
+
+export function stopAudio(): void {
+  if (!player) return
+  try {
+    player.kill()
+  } catch {
+    // already gone
+  }
+  player = null
+}
+
+export function isAudioPlaying(): boolean {
+  return player !== null
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TooltipProvider, useGpuix, useWindowInsets, type PublicInstance } from '@gpuix/react'
+import { TooltipProvider, useGpuix, useWindowInsets, useWindowSize, type PublicInstance } from '@gpuix/react'
 import {
   BlueBubblesTransport,
   DemoTransport,
@@ -11,10 +11,10 @@ import {
   type ServerConfig,
   type Transport,
 } from '@messages/core'
-import { C, FONT_SANS, TYPE } from './theme'
+import { C, FONT_SANS, RADIUS, S, SIDEBAR_WIDTH, SIDEBAR_WIDTH_COMPACT, INFO_WIDTH, TYPE } from './theme'
 import { Icon } from './icons'
-import { Button, IconButton } from './primitives'
-import { ShellContext, primaryModifier, type MenuRequest, type Shell } from './context'
+import { Button, IconButton, overlayShadow } from './primitives'
+import { ShellContext, primaryModifier, shortcut, type MenuRequest, type Shell } from './context'
 import { useAppState } from './use-app-state'
 import { Sidebar } from './sidebar'
 import { Thread } from './thread'
@@ -23,6 +23,7 @@ import { ConversationHeader, InfoPanel } from './header'
 import { ContextMenu } from './menus'
 import { ConnectScreen } from './connect'
 import { NewChat } from './new-chat'
+import { FaceTimeBanner } from './facetime'
 
 export interface MessagesAppProps {
   config: Config
@@ -30,6 +31,10 @@ export interface MessagesAppProps {
   /** Test hook: supply a transport instead of building one from the config. */
   transport?: Transport
 }
+
+/** Below this the thread would be narrower than a comfortable measure, so the details panel floats over it. */
+const DOCKED_INFO_MIN_WIDTH = 1000
+const COMPACT_SIDEBAR_MAX_WIDTH = 900
 
 function buildTransport(config: Config): Transport | null {
   if (config.demo) return new DemoTransport()
@@ -85,7 +90,15 @@ export function MessagesApp({ config: initialConfig, saveConfig, transport }: Me
   }
   return (
     <Frame>
-      <Workspace key={store === null ? 'none' : config.demo ? 'demo' : config.server?.url} store={store} config={config} settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen} onConnect={connectTo} onDemo={useDemo} />
+      <Workspace
+        key={store === null ? 'none' : config.demo ? 'demo' : config.server?.url}
+        store={store}
+        config={config}
+        settingsOpen={settingsOpen}
+        setSettingsOpen={setSettingsOpen}
+        onConnect={connectTo}
+        onDemo={useDemo}
+      />
     </Frame>
   )
 }
@@ -118,12 +131,15 @@ function Workspace({
   const state = useAppState(store)
   const { renderer } = useGpuix()
   const { ime } = useWindowInsets()
+  const { width } = useWindowSize()
   const [menu, setMenu] = useState<MenuRequest | null>(null)
   const [newChat, setNewChat] = useState(false)
   const [infoOpen, setInfoOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
+  const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
+  const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
 
   useEffect(() => {
     if (!state.error || settingsOpen) return
@@ -142,10 +158,18 @@ function Workspace({
       closeMenu: () => setMenu(null),
       openSettings: () => setSettingsOpen(true),
       startNewChat: () => {
+        setMenu(null)
         setNewChat(true)
         setInfoOpen(false)
       },
-      toggleInfo: () => setInfoOpen((open) => !open),
+      toggleInfo: () => {
+        setMenu(null)
+        setInfoOpen((open) => !open)
+      },
+      setInfo: (open: boolean) => {
+        setMenu(null)
+        setInfoOpen(open)
+      },
       focusSearch: () => {
         if (searchRef.current && renderer?.focusElement) renderer.focusElement(searchRef.current.id)
       },
@@ -183,12 +207,14 @@ function Workspace({
           else if (event.key === 'f') shell.focusSearch()
           else if (event.key === 'i') shell.toggleInfo()
           else if (event.key === ',') setSettingsOpen(true)
-          else if (event.key === ']' || (event.modifiers?.shift && event.key === 'down')) stepChat(1)
+          else if (event.key === 'u' && event.modifiers?.shift) {
+            if (state.selectedChat) void store.markUnread(state.selectedChat)
+          } else if (event.key === ']' || (event.modifiers?.shift && event.key === 'down')) stepChat(1)
           else if (event.key === '[' || (event.modifiers?.shift && event.key === 'up')) stepChat(-1)
         }}
         style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', position: 'relative', paddingBottom: ime.bottom }}
       >
-        <Sidebar searchRef={searchRef} />
+        <Sidebar searchRef={searchRef} width={sidebarWidth} />
         <div style={{ width: 1, height: '100%', flexShrink: 0, backgroundColor: C.sidebarBorder }} />
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0, height: '100%', backgroundColor: C.canvas }}>
           {newChat ? (
@@ -200,30 +226,40 @@ function Workspace({
               <Composer chat={selected} />
             </>
           ) : (
-            <EmptyState status={state.status} />
+            <EmptyState status={state.status} onNew={shell.startNewChat} />
           )}
         </div>
-        {infoOpen && selected && !newChat ? <InfoPanel chat={selected} /> : null}
+        {infoOpen && selected && !newChat ? <InfoPanel chat={selected} floating={infoFloats} /> : null}
 
         {menu ? <ContextMenu request={menu} /> : null}
 
-        {state.facetime ? (
-          <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 12, backgroundColor: C.overlay, borderWidth: 1, borderColor: C.overlayBorder, pointerEvents: 'auto', boxShadow: { offsetX: 0, offsetY: 8, blurRadius: 24, spreadRadius: 0, color: '#00000080' } }}>
-            <Icon name="video" size={18} color={C.online} />
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <text style={{ ...TYPE.body, fontWeight: 600, color: C.text }}>FaceTime</text>
-              <text style={{ ...TYPE.caption, color: C.secondary }}>{state.facetime.from ?? 'Incoming call'}</text>
-            </div>
-            {state.facetime.link ? <Button kind="primary" onClick={() => openExternal(state.facetime!.link!)}>Join in browser</Button> : null}
-            <IconButton icon="close" label="Dismiss" onClick={() => store.dismissFaceTime()} />
-          </div>
-        ) : null}
+        <FaceTimeBanner offsetRight={infoOpen && !infoFloats ? INFO_WIDTH + S.x3 : S.x3} />
 
         {toast && !showConnect ? (
-          <div testId="toast" style={{ position: 'absolute', bottom: 64, left: 0, right: 0, display: 'flex', alignItems: 'center', pointerEvents: 'none' }}>
-            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 14, paddingRight: 14, paddingTop: 8, paddingBottom: 8, borderRadius: 10, backgroundColor: C.overlay, borderWidth: 1, borderColor: C.overlayBorder, maxWidth: 520 }}>
+          <div
+            testId="toast"
+            style={{ position: 'absolute', bottom: 72, left: 0, right: 0, display: 'flex', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: S.x2,
+                paddingLeft: S.x3,
+                paddingRight: S.x3,
+                paddingTop: S.x2,
+                paddingBottom: S.x2,
+                borderRadius: RADIUS.menu,
+                backgroundColor: C.overlay,
+                borderWidth: 1,
+                borderColor: C.overlayBorder,
+                boxShadow: overlayShadow,
+                maxWidth: 480,
+              }}
+            >
               <Icon name="alert" size={14} color={C.danger} />
-              <text style={{ ...TYPE.caption, color: C.text }}>{toast}</text>
+              <text style={{ ...TYPE.caption, color: C.text, flexShrink: 1, minWidth: 0 }}>{toast}</text>
             </div>
           </div>
         ) : null}
@@ -247,11 +283,20 @@ function Workspace({
   )
 }
 
-function EmptyState({ status }: { status: string }) {
+function EmptyState({ status, onNew }: { status: string; onNew: () => void }) {
+  const online = status === 'online'
   return (
-    <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-      <text style={{ ...TYPE.title, color: C.text }}>{status === 'online' ? 'No conversation selected' : 'Connecting to your Mac…'}</text>
-      <text style={{ ...TYPE.caption, color: C.secondary }}>{status === 'online' ? 'Pick one on the left or press Ctrl+N.' : 'Conversations appear once the server answers.'}</text>
+    <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: S.x2, paddingLeft: S.x6, paddingRight: S.x6 }}>
+      <Icon name="conversation" size={30} color={C.tertiary} />
+      <text style={{ ...TYPE.title, fontSize: 15, color: C.text, textAlign: 'center' }}>{online ? 'No conversation selected' : 'Connecting to your Mac…'}</text>
+      <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>
+        {online ? 'Pick one on the left, or start a new one.' : 'Conversations appear once the server answers.'}
+      </text>
+      {online ? (
+        <div style={{ paddingTop: S.x2 }}>
+          <Button kind="primary" onClick={onNew}>{`New message  ${shortcut('N')}`}</Button>
+        </div>
+      ) : null}
     </div>
   )
 }

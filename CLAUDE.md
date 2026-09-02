@@ -85,3 +85,22 @@ server cannot do instead of failing on click.
   the cache first.
 - Lucide icons come from `lucide-static`; `currentColor` is replaced with a
   paint colour before GPUI tints the mask.
+- A lone UTF-16 surrogate anywhere in a text prop makes the native batch
+  parser reject the whole commit ("unexpected end of hex escape") and React
+  then dies with "Should not already be working". Never index a string with
+  `[0]` (use `firstGrapheme`), and run server strings through `wellFormed`.
+
+## Server quirks worth knowing
+
+- macOS 26 chat guids start with `any;`; the service comes from participants.
+- `POST /message/query` with `attributedBody` or `payloadData` in `with` is
+  slow per message. Ask for 10 at a time; a request for 150 hung the server
+  for two minutes.
+- Attachments: download without `original=true` so HEIC becomes JPEG and CAF
+  audio becomes AAC (labelled mp3). See `downloadPlan` in `map.ts`.
+- FaceTime: `POST /facetime/answer/:uuid` makes the Mac answer, mint a link,
+  admit the first joiner and hang up its own side 15 s later
+  (bluebubbles-helper#38). With "FaceTime Calling" off in the server settings
+  only the legacy `incoming-facetime` event fires and nothing can be answered.
+  The FaceTime helper needs `enable_ft_private_api` and does not inject on
+  macOS 26 (bluebubbles-server#776).
