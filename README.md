@@ -2,7 +2,7 @@
 
 iMessage on Linux, rendered on the GPU, with a Mac doing the talking to Apple.
 
-![The app on Linux, showing the demo conversations](docs/linux.png)
+![The app on Linux, running under Hyprland on the demo conversations](docs/linux.png)
 
 This is a hobby project. It exists because I wanted iMessage on my Linux
 laptop and the existing options felt like a bandaid: threads that only refresh
@@ -33,6 +33,16 @@ can reuse it.
 The window is drawn by [gpuix](https://github.com/remorses/gpuix), which is
 React rendered natively by Zed's GPUI. No Electron, no web view, and a message
 list that stays smooth with years of history because only visible rows exist.
+
+![A group thread with a photo, formatted text, a mention and a tapback](docs/mac-rich.png)
+
+Bubbles render what Messages puts in them: bold, strikethrough, underlined
+links, mentions, the big and small text effects, photos between lines of text,
+stickers, audio messages, videos, files and link previews. Right-click a bubble
+for tapbacks, reply, copy, edit and unsend; double-click it for the tapback
+picker.
+
+![The message context menu with the tapback row](docs/mac-menu.png)
 
 ## What works
 
@@ -85,9 +95,10 @@ cd ~/Developer/messages
 ./scripts/install-linux.sh
 ```
 
-That installs a `messages` command and a desktop entry. On other distros
-install `libxkbcommon`, `wayland`, `vulkan-loader`, `fontconfig` and
-`freetype` from your package manager, then `bun install && bun run dev`.
+That installs a `messages` command in `~/.local/bin` and a desktop entry, so
+it shows up in your launcher. On other distros install `libxkbcommon`,
+`wayland`, `vulkan-loader`, `fontconfig` and `freetype` from your package
+manager, then `bun install && bun run dev`.
 
 First launch opens the connect screen. Paste the server address and password
 from BlueBubbles on the Mac. Tailscale works well for this; the app has been
