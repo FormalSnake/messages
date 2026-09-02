@@ -1,6 +1,7 @@
 import { FindMyClient, normalizeAddress, type FriendLocation } from './findmy'
 import { openExternal } from './open'
 import { imageSize } from './image'
+import { snapshotForCache, type StateCache } from './cache'
 import {
   capabilitiesFor,
   handleName,
@@ -65,6 +66,8 @@ export interface StoreOptions {
   reconcileEveryMs?: number
   /** Address of the `@messages/mac-agent` on the Mac. Omit to leave Find My off. */
   findMy?: { url: string; token: string }
+  /** Last known state, painted before the server answers and kept current afterwards. */
+  cache?: StateCache
 }
 
 const LOCATIONS_POLL_MS = 60_000
@@ -147,9 +150,25 @@ export class MessagesStore {
   private set(patch: Partial<AppState>): void {
     this.state = { ...this.state, ...patch }
     for (const listener of this.listeners) listener()
+    if (this.options.cache && ('chats' in patch || 'messages' in patch || 'contacts' in patch || 'selectedChat' in patch)) {
+      this.options.cache.schedule(() => snapshotForCache(this.state))
+    }
   }
 
   async start(): Promise<void> {
+    const cached = this.options.cache ? await this.options.cache.load() : null
+    if (cached && cached.chats.length > 0) {
+      const hasOlder: Record<string, boolean> = {}
+      for (const guid of Object.keys(cached.messages)) hasOlder[guid] = true
+      this.set({
+        chats: sortChats(cached.chats.map((chat) => this.withPrefs(chat))),
+        messages: cached.messages,
+        contacts: cached.contacts,
+        hasOlder,
+        selectedChat: cached.selectedChat && cached.chats.some((chat) => chat.guid === cached.selectedChat) ? cached.selectedChat : (cached.chats[0]?.guid ?? null),
+        lastSyncAt: cached.savedAt,
+      })
+    }
     this.unsubscribe = this.transport.subscribe((event) => this.handle(event))
     try {
       const info = await this.transport.connect()
@@ -158,9 +177,16 @@ export class MessagesStore {
       this.set({ status: 'offline', error: error instanceof Error ? error.message : String(error) })
       return
     }
-    await this.refreshChats()
-    const first = this.state.chats[0]
-    if (first && !this.state.selectedChat) await this.selectChat(first.guid)
+    if (cached && this.state.chats.length > 0) {
+      // Painted from disk already; bring the list and the open thread up to date.
+      this.set({ status: 'online' })
+      await this.reconcile()
+      if (this.state.selectedChat && !this.state.messages[this.state.selectedChat]) await this.loadOlder(this.state.selectedChat)
+    } else {
+      await this.refreshChats()
+      const first = this.state.chats[0]
+      if (first && !this.state.selectedChat) await this.selectChat(first.guid)
+    }
     void this.transport.listContacts().then((contacts) => this.set({ contacts })).catch(() => undefined)
     const every = this.options.reconcileEveryMs ?? 30_000
     if (every > 0) this.reconcileTimer = setInterval(() => void this.reconcile(), every)
@@ -176,6 +202,7 @@ export class MessagesStore {
     this.locationsTimer = null
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
     this.transport.disconnect()
+    void this.options.cache?.flush()
   }
 
   /** The details panel is the only Find My consumer, so it drives the poll: on while it's open, off otherwise. */
