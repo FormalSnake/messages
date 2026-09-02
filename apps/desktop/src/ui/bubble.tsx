@@ -457,7 +457,7 @@ function LinkPreview({ message, fromMe }: { message: Message; fromMe: boolean })
       onClick={() => openExternal(preview.url)}
       style={{ width: PREVIEW_WIDTH, borderRadius: RADIUS.bubble, overflow: 'hidden', backgroundColor: C.received, cursor: 'pointer', alignSelf: fromMe ? 'flex-end' : 'flex-start', hover: { opacity: 0.9 } }}
     >
-      {src ? <img src={src} objectFit="cover" style={{ width: PREVIEW_WIDTH, height: 150 }} /> : null}
+      {src ? <img src={src} objectFit="cover" style={{ width: PREVIEW_WIDTH, height: 150, borderTopLeftRadius: RADIUS.bubble, borderTopRightRadius: RADIUS.bubble }} /> : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 9 }}>
         {preview.title ? <text style={{ ...TYPE.body, fontWeight: 600, color: C.text, lineClamp: 2 }}>{preview.title}</text> : null}
         <text style={{ ...TYPE.caption, color: C.secondary }}>{preview.siteName || hostOf(preview.url)}</text>

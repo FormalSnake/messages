@@ -9,7 +9,8 @@ laptop and the existing options felt like a bandaid: threads that only refresh
 when you click away and back, and a UI that never quite looked like Messages.
 So this one keeps a single in-memory store fed by the server's socket, sends
 optimistically, and reconciles in the background. Switching chats is instant
-because nothing is fetched on navigation.
+because nothing is fetched on navigation, and the window opens on the last
+known state from disk while the server catches up.
 
 ## How it works
 

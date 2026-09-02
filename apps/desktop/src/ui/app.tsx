@@ -10,6 +10,8 @@ import {
   type Config,
   type ServerConfig,
   type Transport,
+  StateCache,
+  cacheDir,
 } from '@messages/core'
 import { C, FONT_SANS, RADIUS, S, SIDEBAR_WIDTH, SIDEBAR_WIDTH_COMPACT, INFO_WIDTH, TYPE } from './theme'
 import { Icon } from './icons'
@@ -61,6 +63,7 @@ function useStore(config: Config, override: Transport | undefined, saveConfig: M
     return new MessagesStore(transport, {
       prefs: current.chats,
       findMy: current.findMy,
+      cache: current.demo ? undefined : new StateCache(cacheDir),
       onPrefsChange: (chats) => void latest.current.saveConfig({ chats }),
       onIncoming: (chat, message, target) => {
         if (!latest.current.config.notifications) return
