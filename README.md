@@ -101,11 +101,11 @@ a map tile, the place and when it was updated, under each participant.
 You need the three Find My keys once. They come out of the Mac with
 [findmy-key-extractor](https://github.com/manonstreet/findmy-key-extractor),
 which attaches a debugger to Find My, so besides SIP off it wants
-`sudo nvram boot-args="amfi_get_out_of_my_way=1"` and a reboot. Put the
-resulting `LocalStorage.key`, `FMFDataManager.bplist` and
-`FMIPDataManager.bplist` in `~/.config/messages/findmy/` on the Mac, run
-`scripts/install-mac-agent.sh`, and add the agent's address and token to the
-client config:
+`sudo nvram boot-args="amfi_get_out_of_my_way=1"` and a reboot. After that
+reboot, `scripts/findmy-keys-mac.sh` runs the extractor, installs the keys into
+`~/.config/messages/findmy/` and restarts the agent
+(`scripts/install-mac-agent.sh` installs the agent itself). Then add the
+agent's address and token to the client config:
 
 ```json
 { "findMy": { "url": "http://your-mac:1236", "token": "…from ~/.config/messages/agent.json" } }
