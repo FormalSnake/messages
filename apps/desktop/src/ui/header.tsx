@@ -13,13 +13,15 @@ export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: b
   const state = useAppState(shell.store)
   const title = chatTitle(chat)
   const first = chat.participants[0]
-  const subtitle = chat.isGroup
-    ? chat.participants.map(handleName).join(', ')
-    : first && first.name
-      ? `${formatAddress(first.address)} · ${chat.service}`
-      : chat.service === 'iMessage'
-        ? 'iMessage'
-        : 'Text message'
+  const sharing = !chat.isGroup && first ? matchFriend(Object.values(state.locations), [first.address]) : undefined
+  const subtitle =
+    (chat.isGroup
+      ? chat.participants.map(handleName).join(', ')
+      : first && first.name
+        ? `${formatAddress(first.address)} · ${chat.service}`
+        : chat.service === 'iMessage'
+          ? 'iMessage'
+          : 'Text message') + (sharing ? ' · Sharing location' : '')
 
   const faceTime = () => void shell.store.startFaceTime(chat.guid)
 
@@ -257,7 +259,12 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
           return (
             <Fragment key={handle.address}>
               <Participant handle={handle} chat={chat} manage={manage} />
-              {location ? <LocationCard handle={handle} location={location} /> : null}
+              {location ? (
+                <>
+                  <SectionLabel inset={S.x2}>Location</SectionLabel>
+                  <LocationCard handle={handle} location={location} />
+                </>
+              ) : null}
             </Fragment>
           )
         })}
