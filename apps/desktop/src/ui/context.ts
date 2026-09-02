@@ -33,6 +33,11 @@ export interface MenuRequest {
   minWidth?: number
 }
 
+export interface LightboxTarget {
+  chatGuid: string
+  attachmentGuid: string
+}
+
 export interface Shell {
   store: MessagesStore
   openMenu: (request: MenuRequest) => void
@@ -43,6 +48,8 @@ export interface Shell {
   /** Menus that mean "show me the details" must not close a panel that is already open. */
   setInfo: (open: boolean) => void
   focusSearch: () => void
+  openLightbox: (target: LightboxTarget) => void
+  closeLightbox: () => void
 }
 
 export const ShellContext = createContext<Shell | null>(null)

@@ -21,6 +21,14 @@
         "vitest": "^4.0.18",
       },
     },
+    "apps/mac-agent": {
+      "name": "@messages/mac-agent",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "^1.2.0",
+        "typescript": "^5.3.0",
+      },
+    },
     "packages/core": {
       "name": "@messages/core",
       "version": "0.1.0",
@@ -50,6 +58,8 @@
     "@messages/core": ["@messages/core@workspace:packages/core"],
 
     "@messages/desktop": ["@messages/desktop@workspace:apps/desktop"],
+
+    "@messages/mac-agent": ["@messages/mac-agent@workspace:apps/mac-agent"],
 
     "@oxc-project/types": ["@oxc-project/types@0.147.0", "", {}, "sha512-IJ3s6ltHLp45S0bh7phkX+gJO7A1Wuz2EaqpAhb8WjqDwbzMiWKHhyyT42tskaWjEYXtHtVCPpnBJVT9+dcRLg=="],
 

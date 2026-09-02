@@ -95,21 +95,29 @@ export const tooltipStyle: StyleDesc = {
 
 export const overlayShadow = { offsetX: 0, offsetY: 10, blurRadius: 28, spreadRadius: 0, color: '#000000a6' } as const
 
+/**
+ * `borderRadius` alone does not clip an `<img>`'s bitmap in GPUI (only the
+ * border/background shape), so the circle needs a wrapper with its own
+ * `overflow: 'hidden'` too.
+ */
+function PhotoAvatar({ src, size }: { src: string; size: number }) {
+  return (
+    <div style={{ width: size, height: size, borderRadius: size / 2, flexShrink: 0, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a' }}>
+      <img src={src} objectFit="cover" style={{ width: size, height: size, borderRadius: size / 2 }} />
+    </div>
+  )
+}
+
 /** Messages uses a neutral gradient monogram for anyone without a photo. Colour would imply meaning it does not have. */
 export function Avatar({ handle, chat, size = 36, surface = C.sidebar }: { handle?: Handle; chat?: Chat; size?: number; surface?: string }) {
-  if (chat?.isGroup) return <GroupAvatar chat={chat} size={size} surface={surface} />
+  if (chat?.isGroup) {
+    if (chat.icon) return <PhotoAvatar src={chat.icon} size={size} />
+    return <GroupAvatar chat={chat} size={size} surface={surface} />
+  }
   const person = handle ?? chat?.participants[0]
   const label = person ? handleName(person) : chat ? chatTitle(chat) : '?'
   const monogram = initials(label)
-  if (person?.avatar) {
-    return (
-      <img
-        src={person.avatar}
-        objectFit="cover"
-        style={{ width: size, height: size, borderRadius: size / 2, flexShrink: 0, borderWidth: 1, borderColor: '#ffffff1a' }}
-      />
-    )
-  }
+  if (person?.avatar) return <PhotoAvatar src={person.avatar} size={size} />
   return (
     <div
       style={{

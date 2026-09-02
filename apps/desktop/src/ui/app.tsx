@@ -24,6 +24,7 @@ import { ContextMenu } from './menus'
 import { ConnectScreen } from './connect'
 import { NewChat } from './new-chat'
 import { FaceTimeBanner } from './facetime'
+import { Lightbox } from './lightbox'
 
 export interface MessagesAppProps {
   config: Config
@@ -167,6 +168,7 @@ function Workspace({
   const [newChat, setNewChat] = useState(false)
   const [infoOpen, setInfoOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [lightbox, setLightbox] = useState<{ chatGuid: string; attachmentGuid: string } | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
@@ -204,6 +206,11 @@ function Workspace({
       focusSearch: () => {
         if (searchRef.current && renderer?.focusElement) renderer.focusElement(searchRef.current.id)
       },
+      openLightbox: (target) => {
+        setMenu(null)
+        setLightbox(target)
+      },
+      closeLightbox: () => setLightbox(null),
     }),
     [store, renderer, setSettingsOpen],
   )
@@ -263,6 +270,8 @@ function Workspace({
         {infoOpen && selected && !newChat ? <InfoPanel chat={selected} floating={infoFloats} /> : null}
 
         {menu ? <ContextMenu request={menu} /> : null}
+
+        {lightbox ? <Lightbox target={lightbox} /> : null}
 
         <FaceTimeBanner offsetRight={infoOpen && !infoFloats ? INFO_WIDTH + S.x3 : S.x3} />
 

@@ -6,9 +6,14 @@ const MIN = 60_000
 const HOUR = 60 * MIN
 const DAY = 24 * HOUR
 
+function avatar(hueA: number, hueB: number, initials: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240"><defs><linearGradient id="a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hueA} 70% 55%)"/><stop offset="1" stop-color="hsl(${hueB} 55% 30%)"/></linearGradient></defs><rect width="240" height="240" rx="120" fill="url(#a)"/><text x="120" y="146" font-family="sans-serif" font-size="88" font-weight="600" text-anchor="middle" fill="white" opacity="0.92">${initials}</text></svg>`
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
+}
+
 const people = {
-  alex: { address: '+14155550134', service: 'iMessage', name: 'Alex Rivera' },
-  priya: { address: 'priya.natarajan@icloud.com', service: 'iMessage', name: 'Priya Natarajan' },
+  alex: { address: '+14155550134', service: 'iMessage', name: 'Alex Rivera', avatar: avatar(200, 260, 'AR') },
+  priya: { address: 'priya.natarajan@icloud.com', service: 'iMessage', name: 'Priya Natarajan', avatar: avatar(320, 20, 'PN') },
   jordan: { address: '+14155550188', service: 'SMS', name: 'Jordan Lee' },
   mom: { address: '+14155550101', service: 'iMessage', name: 'Mom' },
   dad: { address: '+14155550102', service: 'iMessage', name: 'Dad' },
@@ -60,6 +65,7 @@ interface Seed {
   service: Service
   isGroup: boolean
   displayName?: string
+  icon?: string
   participants: Handle[]
   messages: Array<Partial<Message> & { text: string; ago: number; from?: Handle }>
 }
@@ -95,6 +101,7 @@ const seeds: Seed[] = [
     service: 'iMessage',
     isGroup: true,
     displayName: 'Family',
+    icon: avatar(20, 340, 'F'),
     participants: [people.mom, people.dad, people.sam],
     messages: [
       { text: '', ago: 2 * DAY + 5 * HOUR, from: people.mom, groupEvent: { kind: 'rename', title: 'Family' } },
@@ -281,6 +288,8 @@ export class DemoTransport implements Transport {
   private replyIndex = new Map<string, number>()
 
   constructor() {
+    // Fixtures reference guids by number (replyTo), so every instance numbers from one.
+    seq = 0
     for (const seed of seeds) {
       const list = buildMessages(seed)
       this.messages.set(seed.guid, list)
@@ -291,6 +300,7 @@ export class DemoTransport implements Transport {
         service: seed.service,
         isGroup: seed.isGroup,
         displayName: seed.displayName,
+        icon: seed.icon,
         participants: seed.participants,
         pinned: false,
         muted: false,
@@ -362,7 +372,7 @@ export class DemoTransport implements Transport {
   async listContacts(): Promise<Contact[]> {
     return (Object.values(people) as Handle[])
       .filter((handle) => handle.name)
-      .map((handle) => ({ id: handle.address, name: handle.name ?? handle.address, addresses: [handle.address] }))
+      .map((handle) => ({ id: handle.address, name: handle.name ?? handle.address, addresses: [handle.address], avatar: handle.avatar }))
   }
 
   private push(message: Message, updateChat = true): void {

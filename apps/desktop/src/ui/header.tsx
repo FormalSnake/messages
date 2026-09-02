@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { chatTitle, copyText, formatAddress, handleName, openExternal, type Chat, type Handle } from '@messages/core'
+import { Fragment, useEffect, useState } from 'react'
+import { chatTitle, copyText, formatAddress, handleName, matchFriend, openExternal, type Chat, type Handle } from '@messages/core'
 import { C, INFO_WIDTH, RADIUS, S, TITLEBAR_HEIGHT, TYPE } from './theme'
 import { Icon, type IconName } from './icons'
+import { LocationCard } from './location'
 import { Avatar, Button, Divider, IconButton, SectionLabel, TextField } from './primitives'
 import { shortcut, useShell, type MenuItem } from './context'
 import { chatMenu } from './sidebar'
@@ -199,6 +200,12 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
   const [confirmLeave, setConfirmLeave] = useState(false)
   const manage = state.capabilities.groupManagement && chat.isGroup
 
+  // The details panel is the only Find My consumer, so it drives the store's poll.
+  useEffect(() => {
+    store.setDetailsOpen(true)
+    return () => store.setDetailsOpen(false)
+  }, [store])
+
   return (
     <div
       testId="info-panel"
@@ -245,9 +252,18 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
 
       <SectionLabel inset={S.x4}>{chat.isGroup ? 'People' : 'Contact'}</SectionLabel>
       <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, flexShrink: 0 }}>
-        {chat.participants.map((handle) => (
-          <Participant key={handle.address} handle={handle} chat={chat} manage={manage} />
-        ))}
+        {chat.participants.map((handle) => {
+          const location = matchFriend(Object.values(state.locations), [handle.address])
+          return (
+            <Fragment key={handle.address}>
+              <Participant handle={handle} chat={chat} manage={manage} />
+              {location ? <LocationCard handle={handle} location={location} /> : null}
+            </Fragment>
+          )
+        })}
+        {state.findMy === 'unavailable' ? (
+          <text style={{ ...TYPE.caption, color: C.secondary, paddingLeft: S.x2, paddingTop: S.x1 }}>Find My needs the Mac agent (see README)</text>
+        ) : null}
       </div>
 
       {manage ? (

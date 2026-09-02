@@ -1,4 +1,6 @@
-import { basename } from 'node:path'
+import { createHash } from 'node:crypto'
+import { mkdir, stat } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
 import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from '../model'
 import type {
@@ -82,6 +84,12 @@ export class BlueBubblesTransport implements Transport {
   // needs the chat's service for messages sent by me (no handle to read it
   // from), so mapChat() fills this in every time a chat is mapped.
   private readonly chatServices = new Map<string, Service>()
+  private avatarsReady: Promise<void> | null = null
+  // Group icons that answered 404 this session, so a chat with no photo is
+  // not re-requested on every reconcile pass.
+  private readonly iconMisses = new Set<string>()
+  private iconSlotsInUse = 0
+  private readonly iconWaiters: Array<() => void> = []
 
   constructor(private readonly options: BlueBubblesOptions) {}
 
@@ -184,8 +192,18 @@ export class BlueBubblesTransport implements Transport {
   }
 
   async listContacts(): Promise<Contact[]> {
-    const raw = await this.request<RawContact[]>('GET', '/contact')
-    return raw.map(toContact)
+    const raw = await this.fetchRawContacts()
+    return Promise.all(raw.map(async item => toContact(item, await this.saveContactAvatar(item))))
+  }
+
+  // extraProperties=avatar is a separate opt-in on top of the plain contact
+  // list; fall back to the unadorned call if a server build rejects it.
+  private async fetchRawContacts(): Promise<RawContact[]> {
+    try {
+      return await this.request<RawContact[]>('GET', '/contact', { query: { extraProperties: 'avatar' } })
+    } catch {
+      return this.request<RawContact[]>('GET', '/contact')
+    }
   }
 
   async sendText(chatGuid: string, text: string, options: SendTextOptions = {}): Promise<Message> {
@@ -365,13 +383,82 @@ export class BlueBubblesTransport implements Transport {
 
   private async mapChat(raw: RawChat): Promise<Chat> {
     const attachmentPaths = raw.lastMessage ? await this.resolveAttachmentPaths([raw.lastMessage]) : undefined
-    const chat = toChat(raw, { contacts: this.contacts, attachmentPaths })
+    const chatIcon = raw.style === 43 ? await this.fetchChatIcon(raw.guid) : undefined
+    const chat = toChat(raw, { contacts: this.contacts, attachmentPaths, chatIcon })
     this.chatServices.set(chat.guid, chat.service)
     return chat
   }
 
   private attachmentCachePath(guid: string, extension: string): string {
     return `${this.options.attachmentsDir}/${guid}${extension}`
+  }
+
+  private avatarsDir(): string {
+    return join(this.options.attachmentsDir, '..', 'avatars')
+  }
+
+  private ensureAvatarsDir(): Promise<void> {
+    this.avatarsReady ??= mkdir(this.avatarsDir(), { recursive: true }).then(() => undefined)
+    return this.avatarsReady
+  }
+
+  private async saveContactAvatar(raw: RawContact): Promise<string | undefined> {
+    if (!raw.avatar) return undefined
+    const bytes = Buffer.from(raw.avatar, 'base64')
+    const path = join(this.avatarsDir(), `contact-${raw.id}.jpg`)
+    const existing = await stat(path).catch(() => undefined)
+    if (existing?.size === bytes.byteLength) return path
+    await this.ensureAvatarsDir()
+    await Bun.write(path, bytes)
+    return path
+  }
+
+  private chatIconPath(chatGuid: string): string {
+    const hash = createHash('sha1').update(chatGuid).digest('hex')
+    return join(this.avatarsDir(), `chat-${hash}.jpg`)
+  }
+
+  /**
+   * GET /chat/:guid/icon 404s for a group with no photo. Misses are
+   * remembered for the session, and a fetch that has not answered in 3s is
+   * abandoned, so a slow or absent icon never holds up the chat list.
+   */
+  private async fetchChatIcon(chatGuid: string): Promise<string | undefined> {
+    if (this.iconMisses.has(chatGuid)) return undefined
+    const path = this.chatIconPath(chatGuid)
+    if (await Bun.file(path).exists()) return path
+
+    return this.withIconSlot(async () => {
+      if (await Bun.file(path).exists()) return path
+      try {
+        const response = await fetch(this.buildUrl(`/chat/${encodeURIComponent(chatGuid)}/icon`), {
+          signal: AbortSignal.timeout(3_000),
+        })
+        if (response.status === 404) {
+          this.iconMisses.add(chatGuid)
+          return undefined
+        }
+        if (!response.ok) return undefined
+        await this.ensureAvatarsDir()
+        await Bun.write(path, await response.arrayBuffer())
+        return path
+      } catch {
+        return undefined
+      }
+    })
+  }
+
+  private async withIconSlot<T>(run: () => Promise<T>): Promise<T> {
+    if (this.iconSlotsInUse >= 6) {
+      await new Promise<void>(resolve => this.iconWaiters.push(resolve))
+    }
+    this.iconSlotsInUse += 1
+    try {
+      return await run()
+    } finally {
+      this.iconSlotsInUse -= 1
+      this.iconWaiters.shift()?.()
+    }
   }
 
   private async resolveAttachmentPaths(messages: RawMessage[]): Promise<Map<string, string>> {

@@ -7,6 +7,11 @@ export interface ServerConfig {
   password: string
 }
 
+export interface FindMyConfig {
+  url: string
+  token: string
+}
+
 export interface Config {
   server: ServerConfig | null
   /** Font family override. Defaults per platform in the theme. */
@@ -16,6 +21,8 @@ export interface Config {
   demo: boolean
   /** Pinned and muted state lives here; chat.db has no per-client flags. */
   chats: Record<string, { pinned?: boolean; muted?: boolean }>
+  /** Address of the `@messages/mac-agent` on the Mac, for Find My locations. */
+  findMy?: FindMyConfig
 }
 
 const home = homedir()
@@ -52,6 +59,9 @@ export async function loadConfig(): Promise<Config> {
   if (url && password) config.server = { url, password }
   if (process.env.MESSAGES_FONT) config.font = process.env.MESSAGES_FONT
   if (process.env.MESSAGES_DEMO === '1') config.demo = true
+  const findMyUrl = process.env.MESSAGES_FINDMY_URL
+  const findMyToken = process.env.MESSAGES_FINDMY_TOKEN
+  if (findMyUrl && findMyToken) config.findMy = { url: findMyUrl, token: findMyToken }
   return config
 }
 

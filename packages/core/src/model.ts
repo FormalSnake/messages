@@ -137,6 +137,8 @@ export interface Chat {
   service: Service
   isGroup: boolean
   displayName?: string
+  /** Local file path to the group photo, when the server has one. */
+  icon?: string
   participants: Handle[]
   pinned: boolean
   muted: boolean
@@ -170,13 +172,20 @@ export interface Capabilities {
   scheduledMessages: boolean
 }
 
+export function macosMajor(info: ServerInfo | null): number {
+  return Number.parseInt(info?.macosVersion ?? '0', 10) || 0
+}
+
 export function capabilitiesFor(info: ServerInfo | null): Capabilities {
   const privateApi = Boolean(info?.privateApi && info.helperConnected)
+  // On macOS 26 the BlueBubbles helper calls an IMChat edit selector that no
+  // longer exists, which crashes Messages.app and drops the helper for 30 s.
+  const editWorks = privateApi && macosMajor(info) < 26
   return {
     reactions: privateApi,
     typing: privateApi,
     readReceipts: privateApi,
-    edit: privateApi,
+    edit: editWorks,
     unsend: privateApi,
     replies: privateApi,
     effects: privateApi,

@@ -350,6 +350,18 @@ describe('toContact', () => {
 
     expect(toContact(raw).avatar).toBe('data:image/jpeg;base64,aGVsbG8=')
   })
+
+  test('prefers a given avatarPath over the base64 payload', () => {
+    const raw: RawContact = {
+      id: '1',
+      displayName: 'Riley',
+      phoneNumbers: [],
+      emails: [],
+      avatar: 'aGVsbG8=',
+    }
+
+    expect(toContact(raw, '/cache/avatars/contact-1.jpg').avatar).toBe('/cache/avatars/contact-1.jpg')
+  })
 })
 
 describe('ContactIndex', () => {
@@ -368,6 +380,16 @@ describe('ContactIndex', () => {
   test('returns undefined for an unknown address', () => {
     const contacts = new ContactIndex([{ id: '1', name: 'Casey', addresses: ['+15555550100'] }])
     expect(contacts.resolve('+15555559999')).toBeUndefined()
+  })
+
+  test('resolves an avatar with the same address normalisation as the name', () => {
+    const contacts = new ContactIndex([
+      { id: '1', name: 'Casey', addresses: ['+1 (555) 555-0100'], avatar: '/cache/avatars/contact-1.jpg' },
+      { id: '2', name: 'Drew', addresses: ['drew@example.com'] },
+    ])
+    expect(contacts.avatar('5555550100')).toBe('/cache/avatars/contact-1.jpg')
+    expect(contacts.avatar('drew@example.com')).toBeUndefined()
+    expect(contacts.avatar('+15555559999')).toBeUndefined()
   })
 })
 

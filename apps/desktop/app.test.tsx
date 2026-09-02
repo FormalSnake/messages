@@ -78,4 +78,29 @@ describeNative('messages app', () => {
 
     await app.close()
   })
+
+  it('jumps to the quoted message and opens the thread view', async () => {
+    const { renderer } = mount()
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+    await app.getByTestId('thread').getByText('bring the charger this time 🔌').waitFor({ timeoutMs: 20_000 })
+
+    // Demo guids are numbered per process, so find the quoted message from the tree.
+    const nodes = await app.getByType('div').all()
+    const quoted = nodes.map((node) => node.testId ?? '').find((id) => id.startsWith('quote-'))?.slice('quote-'.length)
+    expect(quoted).toBeTruthy()
+    await app.getByTestId(`quote-${quoted}`).click()
+    await app.getByTestId(`replies-${quoted}`).waitFor({ timeoutMs: 10_000 })
+    await app.getByTestId(`replies-${quoted}`).click()
+    await app.getByTestId('thread-view').waitFor({ timeoutMs: 10_000 })
+    const painted = renderer.getPaintedText()
+    expect(painted).toContain('Thread')
+    expect(painted).toContain('1 reply')
+    expect(painted).toContain('bring the charger this time 🔌')
+
+    await app.getByTestId('thread-back').click()
+    await app.getByTestId('thread').waitFor({ timeoutMs: 10_000 })
+
+    await app.close()
+  })
 })

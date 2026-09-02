@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { EventPayload } from '@gpuix/react'
 import { type Attachment, type Chat, type Message, type MessagePart, type RichRun } from '@messages/core'
-import { formatBytes } from '@messages/core'
+import { attachmentsDir, formatBytes } from '@messages/core'
 import { isAudioPlaying, openExternal, playAudio, splitLinks, stopAudio } from '@messages/core'
 import playSource from 'lucide-static/icons/play.svg' with { type: 'text' }
 import stopSource from 'lucide-static/icons/square.svg' with { type: 'text' }
@@ -9,12 +9,20 @@ import { BUBBLE_MAX_WIDTH, C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { useShell } from './context'
 
-const AUTO_DOWNLOAD_BYTES = 5 * 1024 * 1024
+const AUTO_DOWNLOAD_BYTES = 25 * 1024 * 1024
+const AUTO_DOWNLOAD_VIDEO_BYTES = 60 * 1024 * 1024
 const STICKER_WIDTH = 110
 const PREVIEW_WIDTH = 280
+/** Cap for an inline photo or video poster; a bubble stays readable past it. */
+const MEDIA_MAX_WIDTH = 320
+/** Used to box an image or poster when the server has no width/height for it. */
+const FALLBACK_RATIO = 4 / 3
+const PLAY_CIRCLE = 44
 /** Left for the avatar gutter a group thread puts beside every received row. */
 const GROUP_GUTTER = 36
 const EMOJI_ONLY = /^(?:\p{Extended_Pictographic}️?(?:‍\p{Extended_Pictographic}️?)*\s*){1,3}$/u
+/** GPUI only wraps at whitespace, so an unbroken run past this length pushes the bubble off screen. */
+const LONG_TOKEN = /\S{33,}/g
 
 /**
  * icons.tsx carries no transport controls. Bake the same way it does, since
@@ -28,12 +36,27 @@ function transportGlyph(source: string): string {
 const PLAY_GLYPH = transportGlyph(playSource)
 const STOP_GLYPH = transportGlyph(stopSource)
 
+/** Inserts U+200B every 16 characters inside a token longer than 32, so the native renderer has somewhere to wrap it. */
+function softWrap(text: string): string {
+  return text.replace(LONG_TOKEN, (token) => {
+    const chunks: string[] = []
+    for (let index = 0; index < token.length; index += 16) chunks.push(token.slice(index, index + 16))
+    return chunks.join('\u200B')
+  })
+}
+
+/** Natural-size box for a photo or video poster, capped at `cap` and falling back to 4:3 when the server sent no dimensions. */
+function mediaDims(attachment: Attachment, cap: number): { width: number; height: number } {
+  const width = attachment.width && attachment.height ? Math.min(cap, attachment.width) : cap
+  const height = attachment.width && attachment.height ? Math.round((width * attachment.height) / attachment.width) : Math.round(width / FALLBACK_RATIO)
+  return { width, height: Math.min(height, 420) }
+}
+
 export function ImageAttachment({ attachment, message, maxWidth }: { attachment: Attachment; message: Message; maxWidth?: number }) {
   const shell = useShell()
   const [failed, setFailed] = useState(false)
   const src = attachment.localPath
-  const width = Math.min(maxWidth ?? BUBBLE_MAX_WIDTH - 160, attachment.width ?? 280)
-  const height = attachment.width && attachment.height ? Math.round((width * attachment.height) / attachment.width) : Math.round(width * 0.66)
+  const { width, height } = mediaDims(attachment, Math.min(maxWidth ?? MEDIA_MAX_WIDTH, MEDIA_MAX_WIDTH))
   const shouldFetch = !src && attachment.bytes <= AUTO_DOWNLOAD_BYTES && !failed
   useEffect(() => {
     if (!shouldFetch) return
@@ -41,8 +64,11 @@ export function ImageAttachment({ attachment, message, maxWidth }: { attachment:
   }, [shouldFetch, shell.store, message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime])
   if (src) {
     return (
-      <div onClick={() => (src.startsWith('data:') ? undefined : openExternal(src))} style={{ cursor: src.startsWith('data:') ? 'default' : 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a' }}>
-        <img src={src} objectFit="cover" style={{ width, height: Math.min(height, 420) }} />
+      <div
+        onClick={() => shell.openLightbox({ chatGuid: message.chatGuid, attachmentGuid: attachment.guid })}
+        style={{ cursor: 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a' }}
+      >
+        <img src={src} objectFit="cover" style={{ width, height }} />
       </div>
     )
   }
@@ -52,7 +78,7 @@ export function ImageAttachment({ attachment, message, maxWidth }: { attachment:
         setFailed(false)
         shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => setFailed(true))
       }}
-      style={{ width, height: Math.min(height, 420), borderRadius: RADIUS.bubble, backgroundColor: C.received, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer' }}
+      style={{ width, height, borderRadius: RADIUS.bubble, backgroundColor: C.received, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer' }}
     >
       <Icon name="image" size={22} color={C.secondary} />
       <text style={{ ...TYPE.caption, color: C.secondary }}>{failed ? 'Could not load. Click to retry.' : shouldFetch ? 'Loading…' : `Click to download (${formatBytes(attachment.bytes)})`}</text>
@@ -84,31 +110,11 @@ export function BubbleText({ text, color }: { text: string; color: string }) {
   const lines = text.split('\n')
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {lines.map((line, index) => {
-        const segments = splitLinks(line)
-        if (segments.length === 1 && segments[0]?.kind === 'text') {
-          return (
-            <text key={index} style={{ ...TYPE.bubble, color }}>
-              {line.length ? line : ' '}
-            </text>
-          )
-        }
-        return (
-          <div key={index} style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap' }}>
-            {segments.map((segment, segmentIndex) =>
-              segment.kind === 'link' ? (
-                <text key={segmentIndex} onClick={() => openExternal(segment.href)} style={{ ...TYPE.bubble, color, cursor: 'pointer', hover: { opacity: 0.8 } }}>
-                  {segment.value}
-                </text>
-              ) : (
-                <text key={segmentIndex} style={{ ...TYPE.bubble, color }}>
-                  {segment.value}
-                </text>
-              ),
-            )}
-          </div>
-        )
-      })}
+      {lines.map((line, index) => (
+        <text key={index} style={{ ...TYPE.bubble, color }}>
+          {line.length ? softWrap(line) : ' '}
+        </text>
+      ))}
     </div>
   )
 }
@@ -166,6 +172,40 @@ function linkify(runs: RichRun[]): RichRun[] {
   return out
 }
 
+/** A run of text, or a link pulled out to become its own bubble. */
+type TextAtom = { kind: 'text'; value: string } | { kind: 'link'; href: string }
+type RunAtom = { kind: 'text'; runs: RichRun[] } | { kind: 'link'; href: string }
+
+/** Splits plain message text at every URL, the way Messages pulls a link out from under the text it sits in. */
+function splitTextAtLinks(text: string): TextAtom[] {
+  const atoms: TextAtom[] = []
+  for (const segment of splitLinks(text)) {
+    if (segment.kind === 'link') atoms.push({ kind: 'link', href: segment.href })
+    else if (segment.value.trim().length > 0) atoms.push({ kind: 'text', value: segment.value })
+  }
+  return atoms
+}
+
+/** Same split for a rich-text part: an explicit link attribute or an auto-detected URL both become their own atom. */
+function splitRunsAtLinks(runs: RichRun[]): RunAtom[] {
+  const atoms: RunAtom[] = []
+  let pending: RichRun[] = []
+  const flush = () => {
+    if (pending.some((run) => run.text.trim().length > 0)) atoms.push({ kind: 'text', runs: pending })
+    pending = []
+  }
+  for (const run of linkify(runs)) {
+    if (run.link) {
+      flush()
+      atoms.push({ kind: 'link', href: run.link })
+      continue
+    }
+    pending.push(run)
+  }
+  flush()
+  return atoms
+}
+
 const EFFECT_SIZE: Partial<Record<NonNullable<RichRun['effect']>, { fontSize: number; lineHeight: number }>> = {
   big: { fontSize: 22, lineHeight: 28 },
   small: { fontSize: 11, lineHeight: 15 },
@@ -189,7 +229,7 @@ function RunChunk({ chunk, fromMe, color }: { chunk: Chunk; fromMe: boolean; col
   }
   const label = (
     <text onClick={run.link ? () => openExternal(run.link!) : undefined} style={style}>
-      {text}
+      {softWrap(text)}
     </text>
   )
   if (!run.strike) return label
@@ -205,7 +245,7 @@ function RunChunk({ chunk, fromMe, color }: { chunk: Chunk; fromMe: boolean; col
 function RichText({ runs, fromMe, color }: { runs: RichRun[]; fromMe: boolean; color: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
-      {toLines(linkify(runs)).map((line, index) => (
+      {toLines(runs).map((line, index) => (
         <div key={index} style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end' }}>
           {line.length === 0 ? (
             <text style={{ ...TYPE.bubble, color }}> </text>
@@ -268,25 +308,94 @@ function StickerAttachment({ attachment, message }: { attachment: Attachment; me
   return <img src={src} objectFit="contain" style={{ width: STICKER_WIDTH, height }} />
 }
 
-function VideoAttachment({ attachment, message, fromMe }: { attachment: Attachment; message: Message; fromMe: boolean }) {
+/** `<cache>/<guid>.poster.jpg`, the frame ffmpeg pulls from the downloaded video. */
+function posterCachePath(guid: string): string {
+  return `${attachmentsDir}/${guid}.poster.jpg`
+}
+
+/**
+ * Grabs the frame at 0.5s (skipping a black opening frame) and scales it to
+ * 640 wide. Silently gives up when ffmpeg is not on PATH or the run fails;
+ * the caller falls back to a plain dark box.
+ */
+async function generatePoster(videoPath: string, guid: string): Promise<string | null> {
+  const target = posterCachePath(guid)
+  if (await Bun.file(target).exists()) return target
+  if (!Bun.which('ffmpeg')) return null
+  try {
+    const proc = Bun.spawn(['ffmpeg', '-y', '-ss', '0.5', '-i', videoPath, '-frames:v', '1', '-vf', 'scale=640:-1', target], { stdout: 'ignore', stderr: 'ignore' })
+    const code = await proc.exited
+    return code === 0 && (await Bun.file(target).exists()) ? target : null
+  } catch {
+    return null
+  }
+}
+
+function VideoAttachment({ attachment, message, fromMe, maxWidth }: { attachment: Attachment; message: Message; fromMe: boolean; maxWidth: number }) {
   const shell = useShell()
+  const [failed, setFailed] = useState(false)
+  const [poster, setPoster] = useState<string | null>(null)
+  const posterTried = useRef(false)
+  const src = attachment.localPath
+  const { width, height } = mediaDims(attachment, Math.min(maxWidth, MEDIA_MAX_WIDTH))
+  const shouldFetch = !src && attachment.bytes <= AUTO_DOWNLOAD_VIDEO_BYTES && !failed
+
+  useEffect(() => {
+    if (!shouldFetch) return
+    shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => setFailed(true))
+  }, [shouldFetch, shell.store, message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime])
+
+  useEffect(() => {
+    if (!src || posterTried.current) return
+    posterTried.current = true
+    void generatePoster(src, attachment.guid).then(setPoster)
+  }, [src, attachment.guid])
+
   const open = async () => {
     const local = attachment.localPath ?? (await shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => undefined))
     if (local) openExternal(local)
   }
-  const onFill = fromMe ? C.onAccent : C.text
+
+  if (!src) {
+    return (
+      <div
+        onClick={() => {
+          setFailed(false)
+          shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => setFailed(true))
+        }}
+        style={{ width, height, borderRadius: RADIUS.bubble, backgroundColor: C.received, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer' }}
+      >
+        <Icon name="video" size={22} color={C.secondary} />
+        <text style={{ ...TYPE.caption, color: C.secondary }}>{failed ? 'Could not load. Click to retry.' : shouldFetch ? 'Loading…' : `Click to download (${formatBytes(attachment.bytes)})`}</text>
+      </div>
+    )
+  }
+
   return (
     <div
       onClick={() => void open()}
-      style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, paddingLeft: 8, paddingRight: 16, paddingTop: 8, paddingBottom: 8, borderRadius: RADIUS.bubble, backgroundColor: fromMe ? C.imessage : C.received, cursor: 'pointer', maxWidth: 320, hover: { opacity: 0.9 } }}
+      style={{ width, height, borderRadius: RADIUS.bubble, overflow: 'hidden', position: 'relative', cursor: 'pointer', backgroundColor: '#1c1c1e', hover: { opacity: 0.94 } }}
     >
-      <div style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: fromMe ? '#ffffff29' : C.ghost, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg source={PLAY_GLYPH} style={{ width: 15, height: 15, color: onFill, marginLeft: 2 }} />
+      {poster ? <img src={poster} objectFit="cover" style={{ width, height }} /> : null}
+      <div
+        style={{
+          position: 'absolute',
+          top: Math.round(height / 2 - PLAY_CIRCLE / 2),
+          left: Math.round(width / 2 - PLAY_CIRCLE / 2),
+          width: PLAY_CIRCLE,
+          height: PLAY_CIRCLE,
+          borderRadius: PLAY_CIRCLE / 2,
+          backgroundColor: '#00000080',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <svg source={PLAY_GLYPH} style={{ width: 18, height: 18, color: '#ffffff', marginLeft: 2 }} />
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <text style={{ ...TYPE.body, fontWeight: 600, color: onFill, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{attachment.name}</text>
-        <text style={{ ...TYPE.micro, color: fromMe ? C.onAccentSoft : C.secondary }}>{formatBytes(attachment.bytes)}</text>
-      </div>
+      {!poster && attachment.durationMs ? (
+        <text style={{ position: 'absolute', bottom: 8, right: 10, ...TYPE.micro, fontWeight: 600, color: '#ffffff' }}>{formatDuration(attachment.durationMs)}</text>
+      ) : null}
     </div>
   )
 }
@@ -350,6 +459,38 @@ function LinkPreview({ message, fromMe }: { message: Message; fromMe: boolean })
   )
 }
 
+/**
+ * The card Messages shows in place of a bare URL: the rich preview when the
+ * server resolved one for this exact link, otherwise a compact host/URL card.
+ */
+function LinkBubble({ href, message, fromMe, fill, matchesPreview }: { href: string; message: Message; fromMe: boolean; fill: string; matchesPreview: boolean }) {
+  if (matchesPreview) return <LinkPreview message={message} fromMe={fromMe} />
+  return (
+    <div
+      onClick={() => openExternal(href)}
+      style={{
+        width: PREVIEW_WIDTH,
+        maxWidth: PREVIEW_WIDTH,
+        borderRadius: RADIUS.bubble,
+        backgroundColor: fill,
+        cursor: 'pointer',
+        alignSelf: fromMe ? 'flex-end' : 'flex-start',
+        paddingLeft: 12,
+        paddingRight: 12,
+        paddingTop: 8,
+        paddingBottom: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 2,
+        hover: { opacity: 0.9 },
+      }}
+    >
+      <text style={{ ...TYPE.body, fontWeight: 600, color: fromMe ? C.onAccent : C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{hostOf(href)}</text>
+      <text style={{ ...TYPE.caption, color: fromMe ? C.onAccentSoft : C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{href}</text>
+    </div>
+  )
+}
+
 function isAudio(message: Message, attachment: Attachment): boolean {
   return message.isAudio || attachment.mime.startsWith('audio/')
 }
@@ -364,7 +505,7 @@ function AnyAttachment({ attachment, message, fromMe, maxWidth, handlers }: { at
   ) : attachment.mime.startsWith('image/') ? (
     <ImageAttachment attachment={attachment} message={message} maxWidth={maxWidth} />
   ) : attachment.mime.startsWith('video/') ? (
-    <VideoAttachment attachment={attachment} message={message} fromMe={fromMe} />
+    <VideoAttachment attachment={attachment} message={message} fromMe={fromMe} maxWidth={maxWidth} />
   ) : (
     <FileAttachment attachment={attachment} message={message} fromMe={fromMe} />
   )
@@ -382,22 +523,20 @@ function AnyAttachment({ attachment, message, fromMe, maxWidth, handlers }: { at
 
 /**
  * A whole message body: the subject, the parts with their attachments where
- * the attributed body put them, and the link preview card. Each block paints
- * its own surface, since a sticker, a photo and an audio pill all sit outside
- * the bubble while text sits inside one.
+ * the attributed body put them, and every link pulled out into its own card.
+ * Each block paints its own surface, since a sticker, a photo, an audio pill
+ * and a link card all sit outside the bubble while text sits inside one.
  */
 export function BubbleContent({ message, chat, fromMe, textColor, handlers }: { message: Message; chat: Chat; fromMe: boolean; textColor: string; handlers?: BubbleHandlers }) {
   const fill = fromMe ? (message.service === 'iMessage' ? C.imessage : C.sms) : C.received
   const align = fromMe ? 'flex-end' : 'flex-start'
-  const imageWidth = BUBBLE_MAX_WIDTH - 160 - (chat.isGroup && !fromMe ? GROUP_GUTTER : 0)
+  const mediaWidth = Math.min(MEDIA_MAX_WIDTH, BUBBLE_MAX_WIDTH - (chat.isGroup && !fromMe ? GROUP_GUTTER : 0))
   const visible = message.attachments.filter((item) => !item.hidden)
   const parts: MessagePart[] = message.parts ?? []
   const placed = new Set(parts.flatMap((part) => (part.kind === 'attachment' ? [part.guid] : [])))
   const loose = visible.filter((item) => !placed.has(item.guid))
   const preview = message.urlPreview
-  // Messages shows the card alone when the whole message was the link.
-  const textIsPreview = Boolean(preview && sameUrl(message.text, preview.url))
-  const hasText = message.text.trim().length > 0 && !textIsPreview
+  const hasText = message.text.trim().length > 0
   const emojiOnly = visible.length === 0 && hasText && EMOJI_ONLY.test(message.text.trim())
 
   const column = { display: 'flex', flexDirection: 'column', alignItems: align, gap: S.x1, minWidth: 0 } as const
@@ -427,26 +566,41 @@ export function BubbleContent({ message, chat, fromMe, textColor, handlers }: { 
   }
 
   const blocks: React.ReactNode[] = loose.map((attachment) => (
-    <AnyAttachment key={attachment.guid} attachment={attachment} message={message} fromMe={fromMe} maxWidth={imageWidth} handlers={handlers} />
+    <AnyAttachment key={attachment.guid} attachment={attachment} message={message} fromMe={fromMe} maxWidth={mediaWidth} handlers={handlers} />
   ))
+
+  // Tracks whether a link atom already rendered the rich preview inline, so
+  // the fallback below does not paint it a second time.
+  let previewRendered = false
+  const pushLink = (key: string, href: string) => {
+    const matches = Boolean(preview && sameUrl(href, preview.url))
+    previewRendered = previewRendered || matches
+    blocks.push(<LinkBubble key={key} href={href} message={message} fromMe={fromMe} fill={fill} matchesPreview={matches} />)
+  }
 
   if (parts.length > 0) {
     parts.forEach((part, index) => {
       if (part.kind === 'attachment') {
         const attachment = visible.find((item) => item.guid === part.guid)
         if (attachment) {
-          blocks.push(<AnyAttachment key={part.guid} attachment={attachment} message={message} fromMe={fromMe} maxWidth={imageWidth} handlers={handlers} />)
+          blocks.push(<AnyAttachment key={part.guid} attachment={attachment} message={message} fromMe={fromMe} maxWidth={mediaWidth} handlers={handlers} />)
         }
         return
       }
-      if (!textIsPreview) blocks.push(textBlock(`part-${index}`, <RichText runs={part.runs} fromMe={fromMe} color={textColor} />))
+      splitRunsAtLinks(part.runs).forEach((atom, atomIndex) => {
+        if (atom.kind === 'link') pushLink(`part-${index}-link-${atomIndex}`, atom.href)
+        else blocks.push(textBlock(`part-${index}-text-${atomIndex}`, <RichText runs={atom.runs} fromMe={fromMe} color={textColor} />))
+      })
     })
   } else if (hasText) {
-    blocks.push(textBlock('text', <BubbleText text={message.text} color={textColor} />))
+    splitTextAtLinks(message.text).forEach((atom, atomIndex) => {
+      if (atom.kind === 'link') pushLink(`text-link-${atomIndex}`, atom.href)
+      else blocks.push(textBlock(`text-${atomIndex}`, <BubbleText text={atom.value} color={textColor} />))
+    })
   }
 
   if (subject && !subjectUsed) blocks.unshift(textBlock('subject', null))
-  if (preview) blocks.push(<LinkPreview key="preview" message={message} fromMe={fromMe} />)
+  if (preview && !previewRendered) blocks.push(<LinkPreview key="preview" message={message} fromMe={fromMe} />)
 
   return <div style={column}>{blocks}</div>
 }

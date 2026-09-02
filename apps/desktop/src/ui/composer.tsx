@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix, type PublicInstance } from '@gpuix/react'
-import { clipboardImage, handleName, type Chat } from '@messages/core'
+import { clipboardAttachments, handleName, pickFiles, type Chat } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { IconButton, TextField, overlayShadow } from './primitives'
@@ -96,6 +96,16 @@ export function Composer({ chat }: { chat: Chat }) {
     setAttachOpen(false)
   }
 
+  const attach = async () => {
+    try {
+      const paths = await pickFiles({ title: 'Attach', multiple: true })
+      for (const path of paths) void store.sendAttachment(chat.guid, path)
+    } catch {
+      // No native picker on this system; fall back to the typed-path field.
+      setAttachOpen((open) => !open)
+    }
+  }
+
   const editLast = () => {
     const last = [...messages]
       .reverse()
@@ -127,7 +137,7 @@ export function Composer({ chat }: { chat: Chat }) {
 
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x1 }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, paddingBottom: BUTTON_LIFT, flexShrink: 0 }}>
-          <IconButton icon="plus" label="Attach a file" testId="attach" hit={BUTTON_HIT} size={17} active={attachOpen} onClick={() => setAttachOpen((open) => !open)} />
+          <IconButton icon="plus" label="Attach a file" testId="attach" hit={BUTTON_HIT} size={17} active={attachOpen} onClick={() => void attach()} />
           {state.capabilities.effects && !isSms ? (
             <Select value={effect} onValueChange={setEffect}>
               <div style={{ position: 'relative' }}>
@@ -229,8 +239,9 @@ export function Composer({ chat }: { chat: Chat }) {
               }
               if (event.key === 'up' && draft.length === 0 && state.capabilities.edit) editLast()
               if (event.key === 'v' && primaryModifier(event.modifiers)) {
-                void clipboardImage().then((path) => {
-                  if (path) void store.sendAttachment(chat.guid, path)
+                // Files/images go to the chat as attachments; plain text keeps pasting into the field natively.
+                void clipboardAttachments().then((paths) => {
+                  for (const path of paths) void store.sendAttachment(chat.guid, path)
                 })
               }
             }}

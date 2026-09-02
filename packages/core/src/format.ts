@@ -45,6 +45,24 @@ export function needsSeparator(previous: number | undefined, current: number): b
   return previous === undefined || current - previous > 60 * 60 * 1000
 }
 
+function hhmm(ms: number): string {
+  const date = new Date(ms)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+/** A location's staleness: "just now", "5 min ago", "2 h ago", then a day-relative "Yesterday 18:02". */
+export function relativeTime(ms: number, now = Date.now()): string {
+  const diff = now - ms
+  if (diff < 60_000) return 'just now'
+  if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)} min ago`
+  if (diff < DAY) return `${Math.floor(diff / (60 * 60_000))} h ago`
+  const today = startOfDay(now)
+  const day = startOfDay(ms)
+  if (day === today - DAY) return `Yesterday ${hhmm(ms)}`
+  if (day > today - 6 * DAY) return `${weekday(ms)} ${hhmm(ms)}`
+  return `${shortDate(ms, now)} at ${hhmm(ms)}`
+}
+
 export function formatAddress(address: string): string {
   if (address.includes('@')) return address
   const digits = address.replace(/[^\d+]/g, '')

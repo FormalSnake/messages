@@ -79,9 +79,39 @@ call, and that is as far as it goes until upstream moves.
 Custom emoji tapbacks (the iOS 18 kind) show up when someone sends one, but
 the server has no way to send them yet.
 
+Editing a sent message on a Mac running macOS 26: the BlueBubbles helper calls
+an `IMChat` method Apple renamed, Messages.app crashes and the Private API is
+gone for half a minute. The client hides Edit on macOS 26 until that is fixed
+upstream. Unsend and tapbacks work.
+
 macOS 26 also broke the Messages.app helper for a while. Check the BlueBubbles
 Private API status page in its settings; if it says the helper is not
 connected, everything in the right column above is off.
+
+## Find My locations on contact cards
+
+BlueBubbles' Find My endpoints return nothing on current macOS because Apple
+encrypts the Find My caches since macOS 14.4. This repo ships a small agent
+that runs on the Mac (`apps/mac-agent`), decrypts them the way
+[findmy-cache-decryptor](https://github.com/PnutCN/findmy-cache-decryptor) and
+[FindMySyncPlus](https://github.com/manonstreet/FindMySyncPlus) worked out, and
+serves the people sharing their location with you. The details panel then shows
+a map tile, the place and when it was updated, under each participant.
+
+You need the three Find My keys once. They come out of the Mac with
+[findmy-key-extractor](https://github.com/manonstreet/findmy-key-extractor),
+which attaches a debugger to Find My, so besides SIP off it wants
+`sudo nvram boot-args="amfi_get_out_of_my_way=1"` and a reboot. Put the
+resulting `LocalStorage.key`, `FMFDataManager.bplist` and
+`FMIPDataManager.bplist` in `~/.config/messages/findmy/` on the Mac, run
+`scripts/install-mac-agent.sh`, and add the agent's address and token to the
+client config:
+
+```json
+{ "findMy": { "url": "http://your-mac:1236", "token": "…from ~/.config/messages/agent.json" } }
+```
+
+Keys survive reboots, so you can put the boot argument back afterwards.
 
 ## Install on Linux
 

@@ -32,6 +32,14 @@ guid that the server echo replaces, and `store.reconcile()` re-reads the chat
 list, messages created since the last pass, and the open thread every 30s and
 after every reconnect. The UI never refetches on navigation.
 
+`apps/mac-agent` (`@messages/mac-agent`) runs on the Mac as a launchd user
+agent (`scripts/install-mac-agent.sh`, label `es.canarycoders.messages.agent`,
+port 1236, token in `~/.config/messages/agent.json`). It decrypts the Find My
+caches with keys from `~/.config/messages/findmy/` and serves
+`/findmy/friends` and `/findmy/devices`; `/health` says which keys exist. The
+client reads it through `FindMyClient` in `packages/core/src/findmy.ts` when
+`config.findMy` is set.
+
 ## Commands
 
 ```
@@ -98,6 +106,13 @@ server cannot do instead of failing on click.
   for two minutes.
 - Attachments: download without `original=true` so HEIC becomes JPEG and CAF
   audio becomes AAC (labelled mp3). See `downloadPlan` in `map.ts`.
+- Editing a message through the helper on macOS 26 calls an `IMChat`
+  selector that no longer exists, Messages.app crashes, and the helper is gone
+  for 30 s. `capabilitiesFor` turns `edit` off when the reported macOS major
+  is 26 or later. Unsend and tapbacks are fine.
+- Private API events (`typing-indicator`, `chat-read-status-changed`) can
+  name a chat with the old `iMessage;-;` prefix while chat.db on macOS 26
+  says `any;-;`; the store resolves them by identifier.
 - FaceTime: `POST /facetime/answer/:uuid` makes the Mac answer, mint a link,
   admit the first joiner and hang up its own side 15 s later
   (bluebubbles-helper#38). With "FaceTime Calling" off in the server settings

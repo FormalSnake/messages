@@ -1,3 +1,4 @@
+import { FindMyClient, normalizeAddress, type FriendLocation } from './findmy'
 import { openExternal } from './open'
 import {
   capabilitiesFor,
@@ -48,6 +49,11 @@ export interface AppState {
   editing: Record<string, string | undefined>
   facetime: FaceTimeCall | null
   lastSyncAt: number
+  /** Find My friend locations, keyed by `normalizeAddress`. */
+  locations: Record<string, FriendLocation>
+  locationsUpdatedAt: number
+  /** `off` when no Find My agent is configured; `unavailable` once a fetch has failed. */
+  findMy: 'off' | 'unavailable' | 'ok'
 }
 
 export interface StoreOptions {
@@ -56,7 +62,12 @@ export interface StoreOptions {
   onIncoming?: (chat: Chat, message: Message, target?: Message) => void
   pageSize?: number
   reconcileEveryMs?: number
+  /** Address of the `@messages/mac-agent` on the Mac. Omit to leave Find My off. */
+  findMy?: { url: string; token: string }
 }
+
+const LOCATIONS_POLL_MS = 60_000
+const LOCATIONS_MIN_INTERVAL_MS = 20_000
 
 const PAGE = 50
 const TYPING_IDLE_MS = 3000
@@ -92,6 +103,9 @@ export class MessagesStore {
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private typingSent = new Set<string>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
+  private findMyClient: FindMyClient | null
+  private locationsTimer: ReturnType<typeof setInterval> | null = null
+  private lastLocationsFetchAt = 0
 
   constructor(
     public readonly transport: Transport,
@@ -99,6 +113,7 @@ export class MessagesStore {
   ) {
     this.options = options
     this.prefs = options.prefs ?? {}
+    this.findMyClient = options.findMy ? new FindMyClient(options.findMy) : null
     this.state = {
       status: 'connecting',
       server: null,
@@ -115,6 +130,9 @@ export class MessagesStore {
       editing: {},
       facetime: null,
       lastSyncAt: Date.now(),
+      locations: {},
+      locationsUpdatedAt: 0,
+      findMy: 'off',
     }
   }
 
@@ -145,6 +163,7 @@ export class MessagesStore {
     void this.transport.listContacts().then((contacts) => this.set({ contacts })).catch(() => undefined)
     const every = this.options.reconcileEveryMs ?? 30_000
     if (every > 0) this.reconcileTimer = setInterval(() => void this.reconcile(), every)
+    void this.refreshLocations()
   }
 
   stop(): void {
@@ -152,8 +171,40 @@ export class MessagesStore {
     this.unsubscribe = null
     if (this.reconcileTimer) clearInterval(this.reconcileTimer)
     this.reconcileTimer = null
+    if (this.locationsTimer) clearInterval(this.locationsTimer)
+    this.locationsTimer = null
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
     this.transport.disconnect()
+  }
+
+  /** The details panel is the only Find My consumer, so it drives the poll: on while it's open, off otherwise. */
+  setDetailsOpen(open: boolean): void {
+    if (open) {
+      if (this.locationsTimer) return
+      void this.refreshLocations()
+      this.locationsTimer = setInterval(() => void this.refreshLocations(), LOCATIONS_POLL_MS)
+    } else {
+      if (this.locationsTimer) clearInterval(this.locationsTimer)
+      this.locationsTimer = null
+    }
+  }
+
+  async refreshLocations(): Promise<void> {
+    if (!this.findMyClient) return
+    const now = Date.now()
+    if (now - this.lastLocationsFetchAt < LOCATIONS_MIN_INTERVAL_MS) return
+    this.lastLocationsFetchAt = now
+    try {
+      const { friends } = await this.findMyClient.friends()
+      const locations: Record<string, FriendLocation> = {}
+      for (const friend of friends) for (const address of friend.addresses) locations[normalizeAddress(address)] = friend
+      this.set({ locations, locationsUpdatedAt: Date.now(), findMy: 'ok' })
+    } catch (error) {
+      // Quiet: a Mac with no agent running, or one that's asleep, is a normal
+      // state, not an error worth surfacing through `state.error`.
+      console.error(`findmy: ${String(error)}`)
+      this.set({ findMy: 'unavailable' })
+    }
   }
 
   private handle(event: TransportEvent): void {
@@ -177,10 +228,10 @@ export class MessagesStore {
         this.set({ chats: this.state.chats.filter((chat) => chat.guid !== event.chatGuid) })
         return
       case 'typing':
-        this.set({ typing: { ...this.state.typing, [event.chatGuid]: event.typing } })
+        this.set({ typing: { ...this.state.typing, [this.resolveChatGuid(event.chatGuid)]: event.typing } })
         return
       case 'read':
-        this.patchChat(event.chatGuid, { unread: !event.read })
+        this.patchChat(this.resolveChatGuid(event.chatGuid), { unread: !event.read })
         return
       case 'facetime': {
         const from = event.from ? handleName(event.from) : undefined
@@ -233,6 +284,15 @@ export class MessagesStore {
     // Chats that arrived through the socket since the pass started stay.
     for (const chat of this.state.chats) if (!known.has(chat.guid)) known.set(chat.guid, chat)
     this.set({ chats: sortChats([...known.values()]) })
+  }
+
+  /** Private API events may name a chat with its old `iMessage;-;` prefix while chat.db on macOS 26 says `any;-;`. Match on the identifier. */
+  private resolveChatGuid(guid: string): string {
+    if (this.state.chats.some((chat) => chat.guid === guid)) return guid
+    const separator = guid.indexOf(';')
+    const identifier = separator >= 0 ? guid.slice(guid.indexOf(';', separator + 1) + 1) : guid
+    const match = this.state.chats.find((chat) => chat.identifier === identifier || chat.guid.endsWith(`;${identifier}`))
+    return match?.guid ?? guid
   }
 
   private withPrefs(chat: Chat): Chat {

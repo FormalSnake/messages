@@ -355,6 +355,10 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
             value={query}
             placeholder="Search"
             onChange={(event) => setQuery(event.value ?? '')}
+            onSubmit={() => {
+              const target = cursor ?? order.current[0]
+              if (target) void shell.store.selectChat(target)
+            }}
             onKeyDown={(event) => {
               if (event.key === 'escape') setQuery('')
               else if (event.key === 'down') {

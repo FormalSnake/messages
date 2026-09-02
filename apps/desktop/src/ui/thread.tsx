@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useGpuix, type PublicInstance } from '@gpuix/react'
 import { deliveryState, handleName, tapbackGlyph, type Attachment, type Capabilities, type Chat, type Message, type Tapback } from '@messages/core'
 import { formatSeparator, formatTime, needsSeparator } from '@messages/core'
 import { useAppState } from './use-app-state'
@@ -176,13 +177,16 @@ function Tapbacks({ tapbacks, fromMe }: { tapbacks: Tapback[]; fromMe: boolean }
   )
 }
 
-function ReplyQuote({ original, fromMe }: { original: Message | undefined; fromMe: boolean }) {
-  if (!original) return null
-  const who = original.fromMe ? 'You' : original.sender ? handleName(original.sender) : ''
-  const body = original.text || (original.attachments.length ? 'Attachment' : '')
+function ReplyQuote({ original, replyTo, fromMe, onJump }: { original: Message | undefined; replyTo: string; fromMe: boolean; onJump: (guid: string) => void }) {
+  const who = original ? (original.fromMe ? 'You' : original.sender ? handleName(original.sender) : '') : 'Earlier message'
+  const body = original ? original.text || (original.attachments.length ? 'Attachment' : '') : 'Click to load it'
   return (
     <div
+      testId={`quote-${replyTo}`}
+      onClick={() => onJump(replyTo)}
       style={{
+        cursor: 'pointer',
+        hover: { opacity: 0.8 },
         display: 'flex',
         flexDirection: 'row',
         alignItems: 'stretch',
@@ -275,6 +279,10 @@ const MessageRow = memo(function MessageRow({
   receipt,
   capabilities,
   original,
+  highlighted = false,
+  replyCount = 0,
+  onJump,
+  onOpenThread,
 }: {
   message: Message
   chat: Chat
@@ -283,6 +291,10 @@ const MessageRow = memo(function MessageRow({
   receipt: string | null
   capabilities: Capabilities
   original?: Message
+  highlighted?: boolean
+  replyCount?: number
+  onJump: (guid: string) => void
+  onOpenThread: (guid: string) => void
 }) {
   const shell = useShell()
   const [hovered, setHovered] = useState(false)
@@ -319,7 +331,7 @@ const MessageRow = memo(function MessageRow({
   return (
     <div
       testId={`message-${message.guid}`}
-      style={{
+      style={{ backgroundColor: highlighted ? C.selectedSoft : undefined, borderRadius: RADIUS.row, 
         display: 'flex',
         flexDirection: 'column',
         width: '100%',
@@ -366,7 +378,7 @@ const MessageRow = memo(function MessageRow({
         ) : null}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start', maxWidth: BUBBLE_MAX_FRACTION, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start', maxWidth: BUBBLE_MAX_WIDTH, minWidth: 0 }}>
-            {message.replyTo ? <ReplyQuote original={original} fromMe={fromMe} /> : null}
+            {message.replyTo ? <ReplyQuote original={original} replyTo={message.replyTo} fromMe={fromMe} onJump={onJump} /> : null}
             <div style={{ position: 'relative', marginTop: hasTapbacks && !message.replyTo ? TAPBACK_LIFT : 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start' }}>
               <BubbleContent
                 message={message}
@@ -388,6 +400,15 @@ const MessageRow = memo(function MessageRow({
               {showTail && lastBlockIsText ? <Tail fromMe={fromMe} color={fill} /> : null}
               {hasTapbacks ? <Tapbacks tapbacks={message.tapbacks} fromMe={fromMe} /> : null}
             </div>
+            {replyCount > 0 ? (
+              <div
+                testId={`replies-${message.guid}`}
+                onClick={() => onOpenThread(message.guid)}
+                style={{ paddingTop: 3, paddingLeft: S.x1, paddingRight: S.x1, cursor: 'pointer', hover: { opacity: 0.8 } }}
+              >
+                <text style={{ ...TYPE.micro, fontWeight: 600, color: C.accent }}>{replyCount === 1 ? '1 reply' : `${replyCount} replies`}</text>
+              </div>
+            ) : null}
             {message.dateEdited || message.effect || receipt ? (
               <div
                 style={{
@@ -490,13 +511,69 @@ export function Thread({ chat }: { chat: Chat }) {
   const messages = state.messages[chat.guid] ?? []
   const typing = Boolean(state.typing[chat.guid])
   const loading = Boolean(state.loading[chat.guid]) && messages.length > 0
+  const [threadFor, setThreadFor] = useState<string | null>(null)
+  const [highlight, setHighlight] = useState<string | null>(null)
+  const { renderer } = useGpuix()
+  const listRef = useRef<PublicInstance | null>(null)
+  const pendingJump = useRef<string | null>(null)
+  const requested = useRef(false)
   const rows = useMemo(() => buildRows(messages, chat, typing, loading), [messages, chat, typing, loading])
   const byGuid = useMemo(() => new Map(messages.map((message) => [message.guid, message])), [messages])
-  const requested = useRef(false)
+  const replyCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const message of messages) if (message.replyTo) counts.set(message.replyTo, (counts.get(message.replyTo) ?? 0) + 1)
+    return counts
+  }, [messages])
 
   useEffect(() => {
     requested.current = false
   }, [chat.guid, messages.length])
+
+  useEffect(() => {
+    setThreadFor(null)
+    setHighlight(null)
+    pendingJump.current = null
+  }, [chat.guid])
+
+  const scrollTo = useCallback(
+    (guid: string) => {
+      const index = rows.findIndex((row) => row.kind === 'message' && row.message.guid === guid)
+      const listId = listRef.current?.id
+      if (index < 0 || listId == null || !renderer?.scrollToItem) return false
+      renderer.scrollToItem(listId, index, -96)
+      setHighlight(guid)
+      setTimeout(() => setHighlight((current) => (current === guid ? null : current)), 2200)
+      return true
+    },
+    [rows, renderer],
+  )
+
+  useEffect(() => {
+    const guid = pendingJump.current
+    if (guid && byGuid.has(guid)) {
+      pendingJump.current = null
+      scrollTo(guid)
+    }
+  }, [byGuid, scrollTo])
+
+  // Jump to a quoted message, loading older pages until it is in memory.
+  const jumpTo = useCallback(
+    (guid: string) => {
+      setThreadFor(null)
+      if (scrollTo(guid)) return
+      pendingJump.current = guid
+      void (async () => {
+        for (let page = 0; page < 12; page += 1) {
+          const store = shell.store
+          if (store.state.messages[chat.guid]?.some((message) => message.guid === guid)) return
+          if (store.state.hasOlder[chat.guid] === false) break
+          await store.loadOlder(chat.guid)
+        }
+        if (pendingJump.current === guid) pendingJump.current = null
+      })()
+    },
+    [chat.guid, scrollTo, shell.store],
+  )
 
   if (messages.length === 0 && !state.loading[chat.guid]) {
     return (
@@ -513,10 +590,54 @@ export function Thread({ chat }: { chat: Chat }) {
     )
   }
 
+  if (threadFor) {
+    const root = byGuid.get(threadFor)
+    const replies = messages.filter((message) => message.replyTo === threadFor)
+    const threadRows = buildRows(root ? [root, ...replies] : replies, chat, false, false)
+    return (
+      <div testId="thread-view" style={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, height: 40, paddingLeft: S.x3, paddingRight: S.x3, flexShrink: 0, borderBottomWidth: 1, borderColor: C.sidebarBorder, userSelect: 'none' }}>
+          <div
+            testId="thread-back"
+            onClick={() => setThreadFor(null)}
+            style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, height: 28, paddingLeft: S.x1, paddingRight: S.x2, borderRadius: RADIUS.control, cursor: 'pointer', hover: { backgroundColor: C.raised } }}
+          >
+            <Icon name="chevronLeft" size={14} color={C.accent} />
+            <text style={{ ...TYPE.body, color: C.accent }}>Back</text>
+          </div>
+          <text style={{ ...TYPE.title, color: C.text }}>Thread</text>
+          <text style={{ ...TYPE.caption, color: C.secondary }}>{replies.length === 1 ? '1 reply' : `${replies.length} replies`}</text>
+        </div>
+        <virtual-list key={`thread-${threadFor}`} estimatedItemHeight={44} overdraw={400} style={{ flexGrow: 1, minHeight: 0, width: '100%', paddingBottom: S.x2 }}>
+          {threadRows.map((row) =>
+            row.kind === 'message' ? (
+              <MessageRow
+                key={row.key}
+                message={row.message}
+                chat={chat}
+                position="single"
+                showSender={chat.isGroup && !row.message.fromMe}
+                receipt={null}
+                capabilities={state.capabilities}
+                highlighted={false}
+                replyCount={0}
+                onJump={jumpTo}
+                onOpenThread={setThreadFor}
+              />
+            ) : row.kind === 'separator' ? (
+              <Caption key={row.key}>{row.label}</Caption>
+            ) : null,
+          )}
+        </virtual-list>
+      </div>
+    )
+  }
+
   return (
     <div testId="thread" style={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <virtual-list
         key={chat.guid}
+        ref={listRef}
         alignment="bottom"
         followTail
         estimatedItemHeight={44}
@@ -558,6 +679,10 @@ export function Thread({ chat }: { chat: Chat }) {
                   receipt={row.receipt}
                   capabilities={state.capabilities}
                   original={row.message.replyTo ? byGuid.get(row.message.replyTo) : undefined}
+                  highlighted={highlight === row.message.guid}
+                  replyCount={replyCounts.get(row.message.guid) ?? 0}
+                  onJump={jumpTo}
+                  onOpenThread={setThreadFor}
                 />
               )
           }

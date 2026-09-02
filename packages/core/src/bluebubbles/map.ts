@@ -129,6 +129,8 @@ export interface MapOptions {
   attachmentPaths?: Map<string, string>
   /** Service for a message with no handle (sent by me), precomputed by the transport from the chat. */
   chatService?: Service
+  /** Local path to the group photo, fetched by the transport since map.ts stays sync. */
+  chatIcon?: string
 }
 
 // tsconfig's lib list predates ES2024.String; Bun's runtime has had
@@ -562,6 +564,7 @@ export function toHandle(raw: RawHandle, contacts?: ContactIndex): Handle {
     address: wellFormed(raw.address),
     service: toService(raw.service),
     name: contacts?.resolve(raw.address),
+    avatar: contacts?.avatar(raw.address),
   }
 }
 
@@ -636,6 +639,7 @@ export function toChat(raw: RawChat, options: MapOptions = {}): Chat {
     service,
     isGroup: raw.style === 43,
     displayName: wellFormed(raw.displayName) || undefined,
+    icon: options.chatIcon,
     participants: (raw.participants ?? []).map(h => toHandle(h, options.contacts)),
     pinned: false,
     muted: false,
@@ -658,7 +662,11 @@ export function toServerInfo(raw: RawServerInfo): ServerInfo {
   }
 }
 
-export function toContact(raw: RawContact): Contact {
+/**
+ * `avatarPath` is where the transport already wrote the photo. Without one the
+ * base64 the server sent becomes a data URL instead.
+ */
+export function toContact(raw: RawContact, avatarPath?: string): Contact {
   const addresses = [...raw.phoneNumbers, ...raw.emails]
     .map(a => a.address)
     .filter((a): a is string => Boolean(a))
@@ -678,7 +686,7 @@ export function toContact(raw: RawContact): Contact {
     addresses,
     // The server returns a bare base64 string (no data: prefix) with no mime
     // hint; Apple Contacts thumbnails are JPEG in practice.
-    avatar: raw.avatar ? `data:image/jpeg;base64,${raw.avatar}` : undefined,
+    avatar: avatarPath ?? (raw.avatar ? `data:image/jpeg;base64,${raw.avatar}` : undefined),
   }
 }
 
@@ -686,29 +694,43 @@ function normalizeDigits(address: string): string {
   return address.replace(/[^\d]/g, '')
 }
 
+interface ContactEntry {
+  name: string
+  avatar?: string
+}
+
 export class ContactIndex {
-  private readonly byDigits = new Map<string, string>()
-  private readonly byLast10 = new Map<string, string>()
-  private readonly byEmail = new Map<string, string>()
+  private readonly byDigits = new Map<string, ContactEntry>()
+  private readonly byLast10 = new Map<string, ContactEntry>()
+  private readonly byEmail = new Map<string, ContactEntry>()
 
   constructor(contacts: Contact[] = []) {
     for (const contact of contacts) {
+      const entry: ContactEntry = { name: contact.name, avatar: contact.avatar }
       for (const address of contact.addresses) {
         if (address.includes('@')) {
-          this.byEmail.set(address.toLowerCase(), contact.name)
+          this.byEmail.set(address.toLowerCase(), entry)
           continue
         }
         const digits = normalizeDigits(address)
         if (!digits) continue
-        this.byDigits.set(digits, contact.name)
+        this.byDigits.set(digits, entry)
         // Match on the last 10 digits too, so a stored "+15555550123" resolves
         // an incoming "5555550123" or "15555550123" and vice versa.
-        if (digits.length >= 10) this.byLast10.set(digits.slice(-10), contact.name)
+        if (digits.length >= 10) this.byLast10.set(digits.slice(-10), entry)
       }
     }
   }
 
   resolve(address: string): string | undefined {
+    return this.lookup(address)?.name
+  }
+
+  avatar(address: string): string | undefined {
+    return this.lookup(address)?.avatar
+  }
+
+  private lookup(address: string): ContactEntry | undefined {
     if (address.includes('@')) return this.byEmail.get(address.toLowerCase())
     const digits = normalizeDigits(address)
     if (!digits) return undefined
