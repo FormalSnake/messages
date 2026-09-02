@@ -1,5 +1,6 @@
 import { FindMyClient, normalizeAddress, type FriendLocation } from './findmy'
 import { openExternal } from './open'
+import { imageSize } from './image'
 import {
   capabilitiesFor,
   handleName,
@@ -694,10 +695,15 @@ export class MessagesStore {
   async attachmentSrc(chatGuid: string, messageGuid: string, attachmentGuid: string, name: string, mime?: string): Promise<string> {
     const local = await this.transport.attachmentPath(attachmentGuid, { name, mime })
     const target = this.findMessage(chatGuid, messageGuid)
-    if (target) {
+    const current = target?.attachments.find((item) => item.guid === attachmentGuid)
+    // chat.db often has no pixel size for an attachment; the file header does.
+    const needsSize = Boolean(current && (!current.width || !current.height) && (mime ?? current.mime ?? '').startsWith('image/'))
+    const size = needsSize ? await imageSize(local) : null
+    const fresh = this.findMessage(chatGuid, messageGuid)
+    if (fresh) {
       this.replaceMessage(chatGuid, {
-        ...target,
-        attachments: target.attachments.map((item) => (item.guid === attachmentGuid ? { ...item, localPath: local } : item)),
+        ...fresh,
+        attachments: fresh.attachments.map((item) => (item.guid === attachmentGuid ? { ...item, localPath: local, ...(size ? { width: size.width, height: size.height } : {}) } : item)),
       })
     }
     return local

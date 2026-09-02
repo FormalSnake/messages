@@ -38,6 +38,7 @@ const photos: Record<string, string> = {
   'demo-att-1': photo(200, 260, 'Point Reyes'),
   'demo-att-2': photo(20, 340, 'Golden hour'),
   'demo-att-3': photo(140, 200, 'Trailhead'),
+  'demo-att-5': `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="1300" viewBox="0 0 600 1300"><rect width="600" height="1300" fill="#2f5d8a"/><rect x="40" y="40" width="520" height="1220" rx="40" fill="#123"/><text x="60" y="140" font-family="sans-serif" font-size="48" fill="white">Tall screenshot</text><text x="60" y="1220" font-family="sans-serif" font-size="40" fill="#9cf">bottom edge</text></svg>').toString('base64')}`,
   'demo-att-4': photo(28, 300, 'Roof terrace'),
   'demo-sticker-1': stickerFace(),
 }
@@ -206,6 +207,9 @@ const seeds: Seed[] = [
     participants: [people.nadia],
     messages: [
       { text: 'Landed in Madrid. It is 38 degrees.', ago: 3 * DAY + 4 * HOUR, from: people.nadia, attachments: [attachment('demo-att-3', 'IMG_0911.HEIC', 1200, 800)] },
+      // Like the live server: no dimensions, and the file arrives after the row is on screen.
+      { text: '', ago: 3 * DAY + 3 * HOUR + 40 * MIN, attachments: [{ guid: 'demo-att-5', name: 'IMG_0912.PNG', mime: 'image/png', bytes: 1_204_000, width: 0, height: 0, isSticker: false, hidden: false }] },
+      { text: 'That is the booking, keep it somewhere', ago: 3 * DAY + 3 * HOUR + 39 * MIN },
       { text: 'Drink water. Send tapas.', ago: 3 * DAY + 3 * HOUR, dateDelivered: now - 3 * DAY, dateRead: now - 3 * DAY },
       {
         text: 'The roof terrace at sunset\nAnd the same spot at 7am, nobody about',

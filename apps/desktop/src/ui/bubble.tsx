@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EventPayload } from '@gpuix/react'
-import { type Attachment, type Chat, type Message, type MessagePart, type RichRun } from '@messages/core'
+import { type Attachment, type Chat, type Message, type MessagePart, type RichRun, fitInside } from '@messages/core'
 import { attachmentsDir, formatBytes } from '@messages/core'
 import { isAudioPlaying, openExternal, playAudio, splitLinks, stopAudio } from '@messages/core'
 import playSource from 'lucide-static/icons/play.svg' with { type: 'text' }
@@ -15,6 +15,7 @@ const STICKER_WIDTH = 110
 const PREVIEW_WIDTH = 280
 /** Cap for an inline photo or video poster; a bubble stays readable past it. */
 const MEDIA_MAX_WIDTH = 320
+const MEDIA_MAX_HEIGHT = 420
 /** Used to box an image or poster when the server has no width/height for it. */
 const FALLBACK_RATIO = 4 / 3
 const PLAY_CIRCLE = 44
@@ -45,11 +46,15 @@ function softWrap(text: string): string {
   })
 }
 
-/** Natural-size box for a photo or video poster, capped at `cap` and falling back to 4:3 when the server sent no dimensions. */
+/**
+ * Box for a photo or video poster: the image scaled to fit inside cap x 420
+ * without cropping, so the box always has the image's own aspect and the
+ * list row height is exact. Unknown sizes get a 4:3 placeholder until the
+ * store reads the file header.
+ */
 function mediaDims(attachment: Attachment, cap: number): { width: number; height: number } {
-  const width = attachment.width && attachment.height ? Math.min(cap, attachment.width) : cap
-  const height = attachment.width && attachment.height ? Math.round((width * attachment.height) / attachment.width) : Math.round(width / FALLBACK_RATIO)
-  return { width, height: Math.min(height, 420) }
+  if (attachment.width && attachment.height) return fitInside({ width: attachment.width, height: attachment.height }, cap, MEDIA_MAX_HEIGHT)
+  return { width: cap, height: Math.round(cap / FALLBACK_RATIO) }
 }
 
 export function ImageAttachment({ attachment, message, maxWidth }: { attachment: Attachment; message: Message; maxWidth?: number }) {
@@ -57,7 +62,9 @@ export function ImageAttachment({ attachment, message, maxWidth }: { attachment:
   const [failed, setFailed] = useState(false)
   const src = attachment.localPath
   const { width, height } = mediaDims(attachment, Math.min(maxWidth ?? MEDIA_MAX_WIDTH, MEDIA_MAX_WIDTH))
-  const shouldFetch = !src && attachment.bytes <= AUTO_DOWNLOAD_BYTES && !failed
+  const sizeKnown = Boolean(attachment.width && attachment.height)
+  // Fetch the file, or, for a cached file whose pixel size chat.db did not record, just its header.
+  const shouldFetch = ((!src && attachment.bytes <= AUTO_DOWNLOAD_BYTES) || (Boolean(src) && !sizeKnown)) && !failed
   useEffect(() => {
     if (!shouldFetch) return
     shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => setFailed(true))
@@ -66,9 +73,9 @@ export function ImageAttachment({ attachment, message, maxWidth }: { attachment:
     return (
       <div
         onClick={() => shell.openLightbox({ chatGuid: message.chatGuid, attachmentGuid: attachment.guid })}
-        style={{ cursor: 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a' }}
+        style={{ width, height, cursor: 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: C.received }}
       >
-        <img src={src} objectFit="cover" style={{ width, height }} />
+        <img src={src} objectFit="contain" style={{ width, height }} />
       </div>
     )
   }
