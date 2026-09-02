@@ -1,0 +1,14 @@
+{
+  "name": "messages",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "bun run --cwd apps/desktop dev",
+    "demo": "bun run --cwd apps/desktop demo",
+    "build": "bun run --cwd apps/desktop build",
+    "screenshot": "bun run --cwd apps/desktop screenshot",
+    "test": "bun run --cwd packages/core test && bun run --cwd apps/desktop test",
+    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd apps/desktop typecheck"
+  }
+}
