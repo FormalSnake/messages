@@ -42,23 +42,49 @@ function buildTransport(config: Config): Transport | null {
   return null
 }
 
-function useStore(config: Config, override: Transport | undefined, saveConfig: MessagesAppProps['saveConfig']): MessagesStore | null {
+function connectionKey(config: Config): string {
+  if (config.demo) return 'demo'
+  return config.server ? `${config.server.url}\u0000${config.server.password}` : 'none'
+}
+
+/** One store per connection. Preference edits (pins, mutes, notifications) must not reconnect. */
+function useStore(config: Config, override: Transport | undefined, saveConfig: MessagesAppProps["saveConfig"]): { store: MessagesStore | null; setActivate: (activate: () => void) => void } {
+  const latest = useRef<{ config: Config; saveConfig: MessagesAppProps['saveConfig']; store: MessagesStore | null; activate: () => void }>({ config, saveConfig, store: null, activate: () => undefined })
+  latest.current.config = config
+  latest.current.saveConfig = saveConfig
+  const key = override ? 'override' : connectionKey(config)
   const store = useMemo(() => {
-    const transport = override ?? buildTransport(config)
+    const current = latest.current.config
+    const transport = override ?? buildTransport(current)
     if (!transport) return null
     return new MessagesStore(transport, {
-      prefs: config.chats,
-      onPrefsChange: (chats) => void saveConfig({ chats }),
-      onIncoming: config.notifications ? (chat, message) => void notifyIncoming(chat, message) : undefined,
+      prefs: current.chats,
+      onPrefsChange: (chats) => void latest.current.saveConfig({ chats }),
+      onIncoming: (chat, message, target) => {
+        if (!latest.current.config.notifications) return
+        void notifyIncoming(chat, message, { target, icon: NOTIFICATION_ICON }).then((action) => {
+          if (action !== 'open') return
+          void latest.current.store?.selectChat(chat.guid)
+          latest.current.activate()
+        })
+      },
     })
-  }, [config, override, saveConfig])
+  }, [key, override])
+  latest.current.store = store
   useEffect(() => {
     if (!store) return
     void store.start()
     return () => store.stop()
   }, [store])
-  return store
+  return {
+    store,
+    setActivate: (activate: () => void) => {
+      latest.current.activate = activate
+    },
+  }
 }
+
+const NOTIFICATION_ICON = new URL('../../assets/icon.svg', import.meta.url).pathname
 
 export function MessagesApp({ config: initialConfig, saveConfig, transport }: MessagesAppProps) {
   const [config, setConfig] = useState(initialConfig)
@@ -70,7 +96,7 @@ export function MessagesApp({ config: initialConfig, saveConfig, transport }: Me
     },
     [config, saveConfig],
   )
-  const store = useStore(config, transport, persist)
+  const { store, setActivate } = useStore(config, transport, persist)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const connectTo = (server: ServerConfig) => {
     setSettingsOpen(false)
@@ -90,7 +116,7 @@ export function MessagesApp({ config: initialConfig, saveConfig, transport }: Me
   }
   return (
     <Frame>
-      <Workspace
+      <Workspace setActivate={setActivate}
         key={store === null ? 'none' : config.demo ? 'demo' : config.server?.url}
         store={store}
         config={config}
@@ -116,6 +142,7 @@ function Frame({ children }: { children: React.ReactNode }) {
 function Workspace({
   store,
   config,
+  setActivate,
   settingsOpen,
   setSettingsOpen,
   onConnect,
@@ -123,6 +150,7 @@ function Workspace({
 }: {
   store: MessagesStore
   config: Config
+  setActivate: (activate: () => void) => void
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
   onConnect: (server: ServerConfig) => void
@@ -130,6 +158,9 @@ function Workspace({
 }) {
   const state = useAppState(store)
   const { renderer } = useGpuix()
+  useEffect(() => {
+    setActivate(() => renderer?.activateWindow?.())
+  }, [renderer, setActivate])
   const { ime } = useWindowInsets()
   const { width } = useWindowSize()
   const [menu, setMenu] = useState<MenuRequest | null>(null)

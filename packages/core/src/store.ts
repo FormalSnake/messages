@@ -52,7 +52,7 @@ export interface AppState {
 export interface StoreOptions {
   prefs?: Record<string, ChatPrefs>
   onPrefsChange?: (prefs: Record<string, ChatPrefs>) => void
-  onIncoming?: (chat: Chat, message: Message) => void
+  onIncoming?: (chat: Chat, message: Message, target?: Message) => void
   pageSize?: number
   reconcileEveryMs?: number
 }
@@ -215,8 +215,15 @@ export class MessagesStore {
   }
 
   async refreshChats(): Promise<void> {
-    const page = await this.transport.listChats({ limit: 200 })
-    const chats = page.items.map((chat) => this.withPrefs(chat))
+    const pageSize = 200
+    const chats: Chat[] = []
+    for (let offset = 0; offset < 5000; offset += pageSize) {
+      const page = await this.transport.listChats({ limit: pageSize, offset })
+      chats.push(...page.items.map((chat) => this.withPrefs(chat)))
+      // The first page is enough to paint; the rest streams in behind it.
+      if (offset === 0) this.set({ chats: sortChats(chats) })
+      if (!page.hasMore) break
+    }
     for (const chat of chats) {
       if (chat.lastMessage) this.stashReaction(chat.lastMessage)
     }
@@ -269,9 +276,13 @@ export class MessagesStore {
     }
   }
 
-  private stashReaction(message: Message): boolean {
+  private stashReaction(message: Message, options: { fromServer?: boolean; silent?: boolean } = {}): boolean {
     if (!message.reaction) return false
     const target = this.findMessage(message.chatGuid, message.reaction.targetGuid)
+    if (options.fromServer && !options.silent && !message.fromMe && !message.reaction.removed) {
+      const chat = this.state.chats.find((item) => item.guid === message.chatGuid)
+      if (chat && !chat.muted) this.options.onIncoming?.(chat, message, target)
+    }
     if (target) {
       this.applyReactionTo(message.chatGuid, target, message)
     } else {
@@ -303,7 +314,7 @@ export class MessagesStore {
   applyMessage(incoming: Message, options: { fromServer?: boolean; silent?: boolean } = {}): void {
     const chatGuid = incoming.chatGuid
     if (incoming.reaction) {
-      this.stashReaction(incoming)
+      this.stashReaction(incoming, options)
       return
     }
     const list = this.state.messages[chatGuid] ?? []
