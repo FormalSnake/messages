@@ -8,6 +8,7 @@ import {
   type Message,
   type Reaction,
   type ServerInfo,
+  type Service,
   type Tapback,
   type TapbackKind,
 } from './model'
@@ -220,14 +221,18 @@ export class MessagesStore {
     for (let offset = 0; offset < 5000; offset += pageSize) {
       const page = await this.transport.listChats({ limit: pageSize, offset })
       chats.push(...page.items.map((chat) => this.withPrefs(chat)))
-      // The first page is enough to paint; the rest streams in behind it.
-      if (offset === 0) this.set({ chats: sortChats(chats) })
+      // On first load the first page is enough to paint. A refresh keeps the
+      // full list on screen until the new one is complete.
+      if (offset === 0 && this.state.chats.length === 0) this.set({ chats: sortChats(chats) })
       if (!page.hasMore) break
     }
     for (const chat of chats) {
       if (chat.lastMessage) this.stashReaction(chat.lastMessage)
     }
-    this.set({ chats: sortChats(chats) })
+    const known = new Map(chats.map((chat) => [chat.guid, chat]))
+    // Chats that arrived through the socket since the pass started stay.
+    for (const chat of this.state.chats) if (!known.has(chat.guid)) known.set(chat.guid, chat)
+    this.set({ chats: sortChats([...known.values()]) })
   }
 
   private withPrefs(chat: Chat): Chat {
@@ -426,7 +431,7 @@ export class MessagesStore {
       text: body,
       fromMe: true,
       date: Date.now(),
-      service: chat?.service ?? 'iMessage',
+      service: this.serviceFor(chatGuid),
       attachments: [],
       tapbacks: [],
       replyTo,
@@ -454,7 +459,7 @@ export class MessagesStore {
       text: '',
       fromMe: true,
       date: Date.now(),
-      service: chat?.service ?? 'iMessage',
+      service: this.serviceFor(chatGuid),
       attachments: [{ guid: tempGuid, name, mime: file.type || 'application/octet-stream', bytes: file.size, isSticker: false, hidden: false, localPath: path }],
       tapbacks: [],
       isAudio: false,
@@ -467,6 +472,16 @@ export class MessagesStore {
     } catch (error) {
       this.applyMessage({ ...optimistic, error: error instanceof Error ? error.message : String(error) })
     }
+  }
+
+  /** The service the conversation is actually on: the latest message wins over the chat row, which macOS 26 no longer types. */
+  private serviceFor(chatGuid: string): Service {
+    const list = this.state.messages[chatGuid] ?? []
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const message = list[index]!
+      if (!message.groupEvent && !message.reaction) return message.service
+    }
+    return this.state.chats.find((item) => item.guid === chatGuid)?.service ?? 'iMessage'
   }
 
   async retry(chatGuid: string, messageGuid: string): Promise<void> {

@@ -624,7 +624,11 @@ export function toMessage(raw: RawMessage, chatGuid?: string, options: MapOption
 }
 
 export function toChat(raw: RawChat, options: MapOptions = {}): Chat {
-  const service = chatService(raw.guid, raw.participants)
+  const fromParticipants = chatService(raw.guid, raw.participants)
+  // On macOS 26 the chat row and its handles no longer say which service a
+  // conversation uses; the latest message's handle does (for sent DMs it is
+  // the recipient's handle).
+  const service = raw.lastMessage?.handle?.service ? toService(raw.lastMessage.handle.service) : fromParticipants
   const lastMessage = raw.lastMessage ? toMessage(raw.lastMessage, raw.guid, { ...options, chatService: service }) : undefined
   return {
     guid: raw.guid,
