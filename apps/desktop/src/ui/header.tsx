@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
-import { chatTitle, copyText, formatAddress, handleName, matchFriend, openExternal, type Chat, type Handle } from '@messages/core'
+import { chatTitle, copyText, formatAddress, handleName, matchFriend, openExternal, type Chat, type Handle, contactAddresses } from '@messages/core'
 import { C, INFO_WIDTH, RADIUS, S, TITLEBAR_HEIGHT, TYPE } from './theme'
 import { Icon, type IconName } from './icons'
 import { LocationCard } from './location'
@@ -13,7 +13,7 @@ export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: b
   const state = useAppState(shell.store)
   const title = chatTitle(chat)
   const first = chat.participants[0]
-  const sharing = !chat.isGroup && first ? matchFriend(Object.values(state.locations), [first.address]) : undefined
+  const sharing = !chat.isGroup && first ? matchFriend(Object.values(state.locations), [first.address, ...contactAddresses(state.contacts, first.address)]) : undefined
   const subtitle =
     (chat.isGroup
       ? chat.participants.map(handleName).join(', ')
@@ -255,7 +255,7 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
       <SectionLabel inset={S.x4}>{chat.isGroup ? 'People' : 'Contact'}</SectionLabel>
       <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, flexShrink: 0 }}>
         {chat.participants.map((handle) => {
-          const location = matchFriend(Object.values(state.locations), [handle.address])
+          const location = matchFriend(Object.values(state.locations), [handle.address, ...contactAddresses(state.contacts, handle.address)])
           return (
             <Fragment key={handle.address}>
               <Participant handle={handle} chat={chat} manage={manage} />

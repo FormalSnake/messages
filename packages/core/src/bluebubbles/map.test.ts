@@ -837,3 +837,12 @@ describe('toParts', () => {
     expect(toMessage(rawMessage(), DM_GUID).parts).toBeUndefined()
   })
 })
+
+describe('ContactIndex without country codes', () => {
+  test('resolves a +34 handle against a contact stored with nine local digits', () => {
+    const index = new ContactIndex([{ id: '1', name: 'Marta', addresses: ['612 34 56 78'] }])
+    expect(index.resolve('+34612345678')).toBe('Marta')
+    expect(index.resolve('0034612345678')).toBe('Marta')
+    expect(index.resolve('+34600000000')).toBeUndefined()
+  })
+})
