@@ -201,6 +201,11 @@ function locationTimestampMs(value: PlistValue | undefined): number | undefined 
 export async function readFriendLocations(dbPaths: string[], key: Uint8Array, sqlitePath: string): Promise<FriendRow[]> {
   const decrypted = resolveDecryptedDb(dbPaths, key)
   if (!decrypted) return []
+  // The store runs in WAL mode; header bytes 18 and 19 say so, and SQLite then
+  // wants a -shm file it cannot create on a read-only open. The WAL frames are
+  // already merged above, so present the copy as a plain rollback database.
+  decrypted[18] = 1
+  decrypted[19] = 1
 
   await mkdir(path.dirname(sqlitePath), { recursive: true })
   await writeFile(sqlitePath, decrypted, { mode: 0o600 })

@@ -13,7 +13,8 @@ import { asNumber, asRecord, asString, type PlistValue } from './plist'
 
 const home = homedir()
 
-const KEYS_DIR = path.join(home, '.config', 'messages', 'findmy')
+// Tests point this at an empty directory; the agent itself never sets it.
+const KEYS_DIR = process.env.MESSAGES_FINDMY_KEYS_DIR ?? path.join(home, '.config', 'messages', 'findmy')
 export const LOCAL_STORAGE_KEY_PATH = path.join(KEYS_DIR, 'LocalStorage.key')
 export const FMF_KEY_PATH = path.join(KEYS_DIR, 'FMFDataManager.bplist')
 export const FMIP_KEY_PATH = path.join(KEYS_DIR, 'FMIPDataManager.bplist')

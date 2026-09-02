@@ -45,7 +45,7 @@ function buildTransport(config: Config): Transport | null {
 
 function connectionKey(config: Config): string {
   if (config.demo) return 'demo'
-  return config.server ? `${config.server.url}\u0000${config.server.password}` : 'none'
+  return config.server ? `${config.server.url}\u0000${config.server.password}\u0000${config.findMy?.url ?? ''}` : 'none'
 }
 
 /** One store per connection. Preference edits (pins, mutes, notifications) must not reconnect. */
@@ -60,6 +60,7 @@ function useStore(config: Config, override: Transport | undefined, saveConfig: M
     if (!transport) return null
     return new MessagesStore(transport, {
       prefs: current.chats,
+      findMy: current.findMy,
       onPrefsChange: (chats) => void latest.current.saveConfig({ chats }),
       onIncoming: (chat, message, target) => {
         if (!latest.current.config.notifications) return

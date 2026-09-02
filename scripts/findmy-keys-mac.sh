@@ -4,6 +4,9 @@
 # lldb to Find My). Run it after that reboot; keys survive later reboots.
 set -euo pipefail
 
+# The extractor uses BSD stat/id/pkill; a Nix or Homebrew coreutils earlier in PATH breaks it.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
 EXTRACTOR="${FINDMY_EXTRACTOR:-$HOME/Developer/findmy-key-extractor}"
 KEY_DIR="$HOME/.config/messages/findmy"
 LABEL="es.canarycoders.messages.agent"

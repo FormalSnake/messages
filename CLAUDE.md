@@ -40,6 +40,12 @@ caches with keys from `~/.config/messages/findmy/` and serves
 client reads it through `FindMyClient` in `packages/core/src/findmy.ts` when
 `config.findMy` is set.
 
+Find My keys come from `manonstreet/findmy-key-extractor`, driven by
+`scripts/findmy-keys-mac.sh`. Two things bit us: the extractor needs Apple's
+`stat`/`id` (the script puts `/usr/bin` first because Nix coreutils shadow
+them), and the decrypted `LocalStorage.db` must have its WAL header bytes
+reset to 1 or SQLite refuses a read-only open (`localstorage.ts`).
+
 ## Commands
 
 ```
