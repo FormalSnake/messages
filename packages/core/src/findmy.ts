@@ -89,6 +89,13 @@ export function normalizeAddress(address: string): string {
   return digits.length >= 9 ? digits.slice(-9) : digits
 }
 
+/** Every address of the contact that owns `address`, so a chat on someone's email still finds their phone in Find My. */
+export function contactAddresses(contacts: Array<{ addresses: string[] }>, address: string): string[] {
+  const wanted = normalizeAddress(address)
+  const owner = contacts.find((contact) => contact.addresses.some((item) => normalizeAddress(item) === wanted))
+  return owner ? owner.addresses : []
+}
+
 /** Matches a chat participant's addresses against Find My friends. */
 export function matchFriend(friends: FriendLocation[], addresses: string[]): FriendLocation | undefined {
   const wanted = new Set(addresses.map(normalizeAddress))

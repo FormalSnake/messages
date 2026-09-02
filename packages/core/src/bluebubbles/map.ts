@@ -701,7 +701,7 @@ interface ContactEntry {
 
 export class ContactIndex {
   private readonly byDigits = new Map<string, ContactEntry>()
-  private readonly byLast10 = new Map<string, ContactEntry>()
+  private readonly byLast9 = new Map<string, ContactEntry>()
   private readonly byEmail = new Map<string, ContactEntry>()
 
   constructor(contacts: Contact[] = []) {
@@ -715,9 +715,10 @@ export class ContactIndex {
         const digits = normalizeDigits(address)
         if (!digits) continue
         this.byDigits.set(digits, entry)
-        // Match on the last 10 digits too, so a stored "+15555550123" resolves
-        // an incoming "5555550123" or "15555550123" and vice versa.
-        if (digits.length >= 10) this.byLast10.set(digits.slice(-10), entry)
+        // Contacts often store a number without its country code ("699 68 62 42")
+        // while chat.db has "+34699686242". The last nine digits survive both
+        // that and a trunk zero, and Messages.app matches about as loosely.
+        if (digits.length >= 9) this.byLast9.set(digits.slice(-9), entry)
       }
     }
   }
@@ -736,7 +737,7 @@ export class ContactIndex {
     if (!digits) return undefined
     const exact = this.byDigits.get(digits)
     if (exact) return exact
-    if (digits.length >= 10) return this.byLast10.get(digits.slice(-10))
+    if (digits.length >= 9) return this.byLast9.get(digits.slice(-9))
     return undefined
   }
 }
