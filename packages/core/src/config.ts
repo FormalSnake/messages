@@ -12,6 +12,14 @@ export interface FindMyConfig {
   token: string
 }
 
+export interface CanaryLLMConfig {
+  apiKey: string
+  /** Gateway model id, `provider/model` format. Defaults to a cheap Gemini flash-lite model. */
+  model?: string
+  /** Target language for translation. Defaults to the system locale's language, then English. */
+  language?: string
+}
+
 export interface Config {
   server: ServerConfig | null
   /** Font family override. Defaults per platform in the theme. */
@@ -23,6 +31,8 @@ export interface Config {
   chats: Record<string, { pinned?: boolean; muted?: boolean }>
   /** Address of the `@messages/mac-agent` on the Mac, for Find My locations. */
   findMy?: FindMyConfig
+  /** CanaryLLM gateway for the summarize/translate/transcribe buttons. Unset hides all three. */
+  canaryllm?: CanaryLLMConfig
 }
 
 const home = homedir()
@@ -62,6 +72,8 @@ export async function loadConfig(): Promise<Config> {
   const findMyUrl = process.env.MESSAGES_FINDMY_URL
   const findMyToken = process.env.MESSAGES_FINDMY_TOKEN
   if (findMyUrl && findMyToken) config.findMy = { url: findMyUrl, token: findMyToken }
+  const canaryllmKey = process.env.MESSAGES_CANARYLLM_KEY
+  if (canaryllmKey) config.canaryllm = { ...config.canaryllm, apiKey: canaryllmKey }
   return config
 }
 

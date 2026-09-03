@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TooltipProvider, useGpuix, useWindowInsets, useWindowSize, type PublicInstance } from '@gpuix/react'
 import {
   BlueBubblesTransport,
+  CanaryLLMClient,
   DemoTransport,
   MessagesStore,
   attachmentsDir,
@@ -91,6 +92,18 @@ function useStore(config: Config, override: Transport | undefined, saveConfig: M
 
 const NOTIFICATION_ICON = new URL('../../assets/icon.svg', import.meta.url).pathname
 
+/** `config.canaryllm.language`, else the system locale's language written out in English, else English. */
+function defaultTranslateLanguage(configured: string | undefined): string {
+  if (configured?.trim()) return configured.trim()
+  try {
+    const locale = Intl.DateTimeFormat().resolvedOptions().locale
+    const language = new Intl.DisplayNames(['en'], { type: 'language' }).of(locale.split('-')[0] ?? locale)
+    return language ?? 'English'
+  } catch {
+    return 'English'
+  }
+}
+
 export function MessagesApp({ config: initialConfig, saveConfig, transport }: MessagesAppProps) {
   const [config, setConfig] = useState(initialConfig)
   const persist = useCallback(
@@ -174,6 +187,11 @@ function Workspace({
   const [toast, setToast] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ chatGuid: string; attachmentGuid: string } | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
+  const assistant = useMemo(
+    () => (config.canaryllm?.apiKey ? new CanaryLLMClient({ apiKey: config.canaryllm.apiKey, model: config.canaryllm.model }) : null),
+    [config.canaryllm?.apiKey, config.canaryllm?.model],
+  )
+  const assistantLanguage = useMemo(() => defaultTranslateLanguage(config.canaryllm?.language), [config.canaryllm?.language])
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
   const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
@@ -215,8 +233,10 @@ function Workspace({
         setLightbox(target)
       },
       closeLightbox: () => setLightbox(null),
+      assistant,
+      assistantLanguage,
     }),
-    [store, renderer, setSettingsOpen],
+    [store, renderer, setSettingsOpen, assistant, assistantLanguage],
   )
 
   const stepChat = (delta: number) => {
