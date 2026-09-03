@@ -10,6 +10,7 @@ import {
   type Contact,
   type Message,
   type Reaction,
+  type ScheduledMessage,
   type ServerInfo,
   type Service,
   type Tapback,
@@ -45,6 +46,7 @@ export interface AppState {
   selectedChat: string | null
   drafts: Record<string, string>
   contacts: Contact[]
+  scheduled: ScheduledMessage[]
   /** Guid of the message being replied to in the composer, per chat. */
   replyingTo: Record<string, string | undefined>
   /** Guid of the message being edited in the composer, per chat. */
@@ -130,6 +132,7 @@ export class MessagesStore {
       selectedChat: null,
       drafts: {},
       contacts: [],
+      scheduled: [],
       replyingTo: {},
       editing: {},
       facetime: null,
@@ -188,6 +191,7 @@ export class MessagesStore {
       if (first && !this.state.selectedChat) await this.selectChat(first.guid)
     }
     void this.transport.listContacts().then((contacts) => this.set({ contacts })).catch(() => undefined)
+    if (this.state.capabilities.scheduledMessages) await this.refreshScheduled()
     const every = this.options.reconcileEveryMs ?? 30_000
     if (every > 0) this.reconcileTimer = setInterval(() => void this.reconcile(), every)
     void this.refreshLocations()
@@ -289,8 +293,18 @@ export class MessagesStore {
         const page = await this.transport.loadMessages(selected, { limit: PAGE })
         for (const message of page.items) this.applyMessage(message, { fromServer: true, silent: true })
       }
+      if (this.state.capabilities.scheduledMessages) await this.refreshScheduled()
     } catch (error) {
       console.error(`reconcile: ${String(error)}`)
+    }
+  }
+
+  async refreshScheduled(): Promise<void> {
+    try {
+      const scheduled = await this.transport.listScheduled()
+      this.set({ scheduled })
+    } catch (error) {
+      console.error(`scheduled: ${String(error)}`)
     }
   }
 
@@ -532,6 +546,33 @@ export class MessagesStore {
       this.applyMessage({ ...sent, tempGuid })
     } catch (error) {
       this.applyMessage({ ...optimistic, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  async scheduleSend(chatGuid: string, text: string, sendAt: number): Promise<void> {
+    const body = text.trim()
+    if (!body) return
+    this.set({
+      drafts: { ...this.state.drafts, [chatGuid]: '' },
+      editing: { ...this.state.editing, [chatGuid]: undefined },
+      replyingTo: { ...this.state.replyingTo, [chatGuid]: undefined },
+    })
+    void this.stopTyping(chatGuid)
+    try {
+      const message = await this.transport.scheduleText(chatGuid, body, sendAt)
+      this.set({ scheduled: [...this.state.scheduled, message] })
+    } catch (error) {
+      this.set({ error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  async cancelScheduled(id: string): Promise<void> {
+    const previous = this.state.scheduled
+    this.set({ scheduled: previous.filter((item) => item.id !== id) })
+    try {
+      await this.transport.cancelScheduled(id)
+    } catch (error) {
+      this.set({ scheduled: previous, error: error instanceof Error ? error.message : String(error) })
     }
   }
 

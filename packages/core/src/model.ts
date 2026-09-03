@@ -148,6 +148,13 @@ export interface Chat {
   lastActivity: number
 }
 
+export interface ScheduledMessage {
+  id: string
+  chatGuid: string
+  text: string
+  sendAt: number
+}
+
 export interface ServerInfo {
   version: string
   macosVersion?: string

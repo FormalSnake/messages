@@ -1,12 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix, type PublicInstance } from '@gpuix/react'
-import { clipboardAttachments, handleName, pickFiles, type Chat } from '@messages/core'
+import { clipboardAttachments, handleName, parseScheduleTime, pickFiles, type Chat } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { IconButton, TextField, overlayShadow } from './primitives'
 import { primaryModifier, useShell } from './context'
 import { useAppState } from './use-app-state'
 import { effectName } from './thread'
+import { ScheduledMessages } from './scheduled'
+
+const HOUR = 60 * 60_000
+
+/** Today (or tomorrow, if that has already passed) at `hour:minute` local time. */
+function nextClockTime(hour: number, minute: number): number {
+  const date = new Date()
+  date.setHours(hour, minute, 0, 0)
+  if (date.getTime() <= Date.now()) date.setDate(date.getDate() + 1)
+  return date.getTime()
+}
+
+/** Tomorrow at `hour:minute`, unconditionally, for a menu item that always means "tomorrow". */
+function tomorrowAt(hour: number, minute: number): number {
+  const date = new Date()
+  date.setDate(date.getDate() + 1)
+  date.setHours(hour, minute, 0, 0)
+  return date.getTime()
+}
 
 const EFFECTS = [
   'com.apple.MobileSMS.expressivesend.impact',
@@ -73,6 +92,9 @@ export function Composer({ chat }: { chat: Chat }) {
   const [effect, setEffect] = useState('none')
   const [attachOpen, setAttachOpen] = useState(false)
   const [attachPath, setAttachPath] = useState('')
+  const [schedulePanel, setSchedulePanel] = useState<{ x: number; y: number } | null>(null)
+  const [scheduleInput, setScheduleInput] = useState('')
+  const [scheduleError, setScheduleError] = useState<string | null>(null)
   const textareaRef = useRef<PublicInstance | null>(null)
   const ready = draft.trim().length > 0
   const isSms = chat.service !== 'iMessage'
@@ -86,6 +108,41 @@ export function Composer({ chat }: { chat: Chat }) {
     if (!text.trim()) return
     void store.send(chat.guid, text, { effect: effect === 'none' ? undefined : effect })
     setEffect('none')
+  }
+
+  const openScheduleMenu = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
+    if (!event.isRightClick || !ready || !state.capabilities.scheduledMessages) return
+    const x = event.x ?? 0
+    const y = event.y ?? 0
+    shell.openMenu({
+      x,
+      y,
+      placement: 'above',
+      items: [
+        { label: 'Send in 1 hour', icon: 'schedule', onSelect: () => void store.scheduleSend(chat.guid, draft, Date.now() + HOUR) },
+        { label: 'Send tonight at 20:00', icon: 'schedule', onSelect: () => void store.scheduleSend(chat.guid, draft, nextClockTime(20, 0)) },
+        { label: 'Send tomorrow at 09:00', icon: 'schedule', onSelect: () => void store.scheduleSend(chat.guid, draft, tomorrowAt(9, 0)) },
+        {
+          label: 'Send at…',
+          icon: 'schedule',
+          onSelect: () => {
+            setScheduleInput('')
+            setScheduleError(null)
+            setSchedulePanel({ x, y })
+          },
+        },
+      ],
+    })
+  }
+
+  const submitSchedule = () => {
+    const result = parseScheduleTime(scheduleInput)
+    if ('error' in result) {
+      setScheduleError(result.error)
+      return
+    }
+    void store.scheduleSend(chat.guid, draft, result.sendAt)
+    setSchedulePanel(null)
   }
 
   const sendFile = () => {
@@ -118,6 +175,7 @@ export function Composer({ chat }: { chat: Chat }) {
       testId="composer"
       style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, paddingLeft: S.x3, paddingRight: S.x3, paddingTop: S.x2, paddingBottom: S.x3, userSelect: 'none' }}
     >
+      <ScheduledMessages chatGuid={chat.guid} />
       {replyTarget ? (
         <Banner
           testId="reply-banner"
@@ -249,6 +307,7 @@ export function Composer({ chat }: { chat: Chat }) {
           <div
             testId="send"
             onClick={() => send(draft)}
+            onAuxClick={openScheduleMenu}
             style={{
               width: 24,
               height: 24,
@@ -268,6 +327,41 @@ export function Composer({ chat }: { chat: Chat }) {
           </div>
         </div>
       </div>
+
+      {schedulePanel ? (
+        <anchored deferred occlude priority={2} position={schedulePanel} anchor="bottomLeft" fit="snap" snapMargin={S.x2}>
+          <div
+            testId="schedule-panel"
+            tabIndex={-1}
+            onMouseDownOutside={() => setSchedulePanel(null)}
+            onKeyDown={(event) => {
+              if (event.key === 'escape') setSchedulePanel(null)
+            }}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: S.x2,
+              minWidth: 240,
+              padding: S.x2,
+              borderRadius: RADIUS.menu,
+              backgroundColor: C.overlay,
+              borderWidth: 1,
+              borderColor: C.overlayBorder,
+              boxShadow: overlayShadow,
+            }}
+          >
+            <TextField
+              testId="schedule-time"
+              value={scheduleInput}
+              onChange={setScheduleInput}
+              onSubmit={submitSchedule}
+              placeholder="HH:MM, tomorrow HH:MM, or YYYY-MM-DD HH:MM"
+              autoFocus
+            />
+            {scheduleError ? <text style={{ ...TYPE.caption, color: C.danger }}>{scheduleError}</text> : null}
+          </div>
+        </anchored>
+      ) : null}
     </div>
   )
 }
