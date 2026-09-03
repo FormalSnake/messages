@@ -64,6 +64,14 @@ picker.
 | Desktop notifications | yes | yes |
 | Search across all messages | yes | yes |
 
+The sidebar search box takes a small query language on top of plain text:
+`from:name` or `from:me`, `has:photo`, `has:video`, `has:file`, `has:link`,
+`before:2024-01-15`, `after:2024-01-15`, and `in:chat name`, any combination
+of them alongside free text. A name in `from:` or `in:` can be quoted to keep
+its spaces (`from:"Priya Natarajan"`). Clicking a result opens the
+conversation and scrolls to that message, paging in older history if it
+is not loaded yet.
+
 The app asks the server what it can do and hides the rest, so a Mac with SIP
 on still gives you a usable client.
 
