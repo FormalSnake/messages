@@ -8,6 +8,10 @@ export interface ServerConfig {
   password: string
 }
 
+export interface KlipyConfig {
+  apiKey: string
+}
+
 export interface Config {
   server: ServerConfig | null
   /** Font family override. Defaults per platform in the theme. */
@@ -19,6 +23,8 @@ export interface Config {
   chats: Record<string, ChatPrefs>
   /** Address of the `@messages/mac-agent` on the Mac: Find My locations and prefs shared between clients. */
   agent?: AgentConfig
+  /** Klipy GIF API key (see `gifs.ts`). The composer's GIF button only shows up when this is set. */
+  klipy?: KlipyConfig
 }
 
 const home = homedir()
@@ -58,6 +64,8 @@ export async function loadConfig(): Promise<Config> {
   const agentUrl = process.env.MESSAGES_AGENT_URL
   const agentToken = process.env.MESSAGES_AGENT_TOKEN
   if (agentUrl && agentToken) config.agent = { url: agentUrl, token: agentToken }
+  const klipyKey = process.env.MESSAGES_KLIPY_KEY
+  if (klipyKey) config.klipy = { apiKey: klipyKey }
   return config
 }
 

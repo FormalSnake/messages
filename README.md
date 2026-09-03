@@ -132,6 +132,20 @@ surfaces and the rest is derived.
 { "canvas": "#1c1917", "sidebar": "#232020", "text": "#b4bdc3", "accent": "#6099c0" }
 ```
 
+## GIFs
+
+The composer's GIF button searches [Klipy](https://klipy.com), a free GIF
+API. Create an app key at [partner.klipy.com](https://partner.klipy.com/)
+(API Keys) and add it to the client config:
+
+```json
+{ "klipy": { "apiKey": "…from partner.klipy.com" } }
+```
+
+A key in Testing mode is capped at 100 requests/hour; request Production
+access in the same panel once you're done testing. The button only appears
+once `klipy` is set.
+
 ## Install on Linux
 
 You need [Bun](https://bun.sh) and a GPU with Vulkan. On NixOS you also need
