@@ -32,13 +32,32 @@ guid that the server echo replaces, and `store.reconcile()` re-reads the chat
 list, messages created since the last pass, and the open thread every 30s and
 after every reconnect. The UI never refetches on navigation.
 
+Sends go through an outbox in the store: one at a time, in order, queued
+while the connection is down and flushed on reconnect. A send the server
+refused (`TransportError`) fails at once; one the network dropped is retried
+a few times. The connection itself is retried with backoff until it comes up.
+The reconcile sweep asks for ten messages at a time and keeps paging, so a
+long absence catches up progressively instead of in one request that hangs.
+
 `apps/mac-agent` (`@messages/mac-agent`) runs on the Mac as a launchd user
 agent (`scripts/install-mac-agent.sh`, label `es.canarycoders.messages.agent`,
 port 1236, token in `~/.config/messages/agent.json`). It decrypts the Find My
 caches with keys from `~/.config/messages/findmy/` and serves
-`/findmy/friends` and `/findmy/devices`; `/health` says which keys exist. The
-client reads it through `FindMyClient` in `packages/core/src/findmy.ts` when
-`config.findMy` is set.
+`/findmy/friends` and `/findmy/devices`; `/health` says which keys exist. It
+also keeps `~/.config/messages/prefs.json`, the pinned and muted state shared
+between clients (`PUT /prefs`, newest entry per chat wins), and reports the
+chats pinned in Messages.app itself, read from
+`~/Library/Preferences/com.apple.messages.pinning.plist`. The client talks to
+it through `MacAgentClient` in `packages/core/src/agent.ts` when
+`config.agent` is set; `isPinned` in the same file decides between a Mac pin
+and a client change.
+
+Colours live in `apps/desktop/src/ui/theme.ts` (`C`). A flat JSON of palette
+tokens at `~/.config/messages/theme.json` overrides them and is polled every
+second, which is how matugen drives the app on Linux (template in the nix
+config, `matugen-templates/messages.json.tmpl`). The palette is mutated in
+place and the tree remounts, so never capture a `C.*` value in a module-level
+constant.
 
 Find My keys come from `manonstreet/findmy-key-extractor`, driven by
 `scripts/findmy-keys-mac.sh`. Two things bit us: the extractor needs Apple's
@@ -103,6 +122,10 @@ server cannot do instead of failing on click.
   parser reject the whole commit ("unexpected end of hex escape") and React
   then dies with "Should not already be working". Never index a string with
   `[0]` (use `firstGrapheme`), and run server strings through `wellFormed`.
+- A child with a background fill (`backgroundColor` or a gradient) swallows
+  the click meant for an ancestor's `onClick`; a border, a shadow, opacity or
+  a `<text>` do not. Give such decorations `pointerEvents: 'none'` (avatars,
+  dots, badges) or put the handler on the filled element itself.
 
 ## Server quirks worth knowing
 

@@ -333,8 +333,11 @@ export class DemoTransport implements Transport {
     this.emit({ type: 'connection', status: 'connecting' })
     const info: ServerInfo = { version: 'demo', macosVersion: '15.6', privateApi: true, helperConnected: true, icloudAccount: 'you@icloud.com' }
     this.later(50, () => this.emit({ type: 'connection', status: 'online' }))
+    void this.listContacts().then((contacts) => this.emit({ type: 'contacts', contacts }))
     return info
   }
+
+  seedContacts(): void {}
 
   disconnect(): void {
     for (const timer of this.timers) clearTimeout(timer)

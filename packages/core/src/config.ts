@@ -1,15 +1,11 @@
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
+import type { AgentConfig, ChatPrefs } from './agent'
 
 export interface ServerConfig {
   url: string
   password: string
-}
-
-export interface FindMyConfig {
-  url: string
-  token: string
 }
 
 export interface Config {
@@ -20,9 +16,9 @@ export interface Config {
   /** Run against the built-in fixtures instead of a server. */
   demo: boolean
   /** Pinned and muted state lives here; chat.db has no per-client flags. */
-  chats: Record<string, { pinned?: boolean; muted?: boolean }>
-  /** Address of the `@messages/mac-agent` on the Mac, for Find My locations. */
-  findMy?: FindMyConfig
+  chats: Record<string, ChatPrefs>
+  /** Address of the `@messages/mac-agent` on the Mac: Find My locations and prefs shared between clients. */
+  agent?: AgentConfig
 }
 
 const home = homedir()
@@ -59,9 +55,9 @@ export async function loadConfig(): Promise<Config> {
   if (url && password) config.server = { url, password }
   if (process.env.MESSAGES_FONT) config.font = process.env.MESSAGES_FONT
   if (process.env.MESSAGES_DEMO === '1') config.demo = true
-  const findMyUrl = process.env.MESSAGES_FINDMY_URL
-  const findMyToken = process.env.MESSAGES_FINDMY_TOKEN
-  if (findMyUrl && findMyToken) config.findMy = { url: findMyUrl, token: findMyToken }
+  const agentUrl = process.env.MESSAGES_AGENT_URL
+  const agentToken = process.env.MESSAGES_AGENT_TOKEN
+  if (agentUrl && agentToken) config.agent = { url: agentUrl, token: agentToken }
   return config
 }
 

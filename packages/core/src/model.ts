@@ -134,6 +134,8 @@ export interface Message {
 export interface Chat {
   guid: string
   identifier: string
+  /** chat.db's group_id, the id Messages.app's own pin list uses for a group. */
+  groupId?: string
   service: Service
   isGroup: boolean
   displayName?: string

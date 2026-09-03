@@ -3,12 +3,13 @@ import { mkdir, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
 import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from '../model'
-import type {
-  Page,
-  SendAttachmentOptions,
-  SendTextOptions,
-  Transport,
-  TransportEvent,
+import {
+  TransportError,
+  type Page,
+  type SendAttachmentOptions,
+  type SendTextOptions,
+  type Transport,
+  type TransportEvent,
 } from '../transport'
 import {
   ContactIndex,
@@ -31,9 +32,9 @@ export interface BlueBubblesOptions {
   attachmentsDir: string
 }
 
-export class BlueBubblesError extends Error {
-  constructor(public status: number, message: string) {
-    super(message)
+export class BlueBubblesError extends TransportError {
+  constructor(status: number, message: string) {
+    super(status, message)
     this.name = 'BlueBubblesError'
   }
 }
@@ -77,6 +78,7 @@ export class BlueBubblesTransport implements Transport {
 
   private socket: Socket | undefined
   private contacts = new ContactIndex()
+  private contactsSeeded = false
   private serverInfo: ServerInfo | null = null
   private readonly listeners = new Set<(event: TransportEvent) => void>()
   private readonly downloads = new Map<string, Promise<string>>()
@@ -100,11 +102,16 @@ export class BlueBubblesTransport implements Transport {
       this.serverInfo = info
       this.emit({ type: 'server', info })
 
-      try {
-        this.contacts = new ContactIndex(await this.listContacts())
-      } catch (err) {
-        console.error('BlueBubbles: failed to load contacts', err)
-      }
+      // The contact list carries every avatar as base64, so it is the slow
+      // request. With a seeded index the socket opens first and the fresh
+      // list lands whenever it lands; only a cold start waits for names.
+      const contacts = this.listContacts()
+        .then(list => {
+          this.contacts = new ContactIndex(list)
+          this.emit({ type: 'contacts', contacts: list })
+        })
+        .catch(err => console.error('BlueBubbles: failed to load contacts', err))
+      if (!this.contactsSeeded) await contacts
 
       await this.openSocket()
       return info
@@ -117,6 +124,12 @@ export class BlueBubblesTransport implements Transport {
   disconnect(): void {
     this.socket?.disconnect()
     this.socket = undefined
+  }
+
+  seedContacts(contacts: Contact[]): void {
+    if (contacts.length === 0) return
+    this.contacts = new ContactIndex(contacts)
+    this.contactsSeeded = true
   }
 
   subscribe(listener: (event: TransportEvent) => void): () => void {
@@ -476,6 +489,8 @@ export class BlueBubblesTransport implements Transport {
   }
 
   private openSocket(): Promise<void> {
+    // A retry after a failed attempt must not leave the old socket reconnecting beside the new one.
+    this.socket?.disconnect()
     return new Promise((resolve, reject) => {
       const socket = io(this.options.url, {
         query: { password: this.options.password },

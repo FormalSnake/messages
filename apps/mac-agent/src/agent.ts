@@ -9,6 +9,12 @@ import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { cachedDevices, cachedFriends, keyAvailability } from './findmy/index'
+import { pinnedOnMac } from './pinning'
+import { loadPrefs, updatePrefs } from './prefs'
+
+const MAX_PREFS_BODY_BYTES = 1024 * 1024
+
+class BodyTooLargeError extends Error {}
 
 interface AgentConfig {
   token: string
@@ -53,6 +59,36 @@ function errorResponse(error: unknown): Response {
   return json({ error: error instanceof Error ? error.message : String(error) }, { status: 503 })
 }
 
+/** Reads the body as text, aborting once it exceeds `maxBytes` rather than trusting `content-length`. */
+async function readCappedBody(request: Request, maxBytes: number): Promise<string> {
+  const reader = request.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel()
+      throw new BodyTooLargeError('request body exceeds 1 MB')
+    }
+    chunks.push(value)
+  }
+  const buffer = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(buffer)
+}
+
+function prefsResponse(prefs: { chats: unknown }): Response {
+  const mac = pinnedOnMac()
+  return json({ chats: prefs.chats, macPinned: mac.identifiers, macPinnedAt: mac.updatedAt })
+}
+
 export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
   const config = await loadOrCreateConfig()
 
@@ -62,9 +98,30 @@ export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
     async fetch(request) {
       const url = new URL(request.url)
 
-      if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true, keys: keyAvailability() })
+      if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true, keys: keyAvailability(), prefs: true })
 
       if (!authorized(request, config.token)) return json({ error: 'unauthorized' }, { status: 401 })
+
+      if (request.method === 'GET' && url.pathname === '/prefs') {
+        try {
+          return prefsResponse(await loadPrefs(configDir))
+        } catch (error) {
+          return errorResponse(error)
+        }
+      }
+
+      if (request.method === 'PUT' && url.pathname === '/prefs') {
+        try {
+          const body = JSON.parse(await readCappedBody(request, MAX_PREFS_BODY_BYTES)) as unknown
+          if (typeof body !== 'object' || body === null || Array.isArray(body)) return json({ error: 'expected an object with a chats field' }, { status: 400 })
+          const chats = (body as { chats?: unknown }).chats
+          if (typeof chats !== 'object' || chats === null || Array.isArray(chats)) return json({ error: 'expected an object with a chats field' }, { status: 400 })
+          return prefsResponse(await updatePrefs(configDir, { chats: chats as Record<string, unknown> }))
+        } catch (error) {
+          if (error instanceof BodyTooLargeError) return json({ error: error.message }, { status: 413 })
+          return json({ error: 'invalid JSON body' }, { status: 400 })
+        }
+      }
 
       if (request.method === 'GET' && url.pathname === '/findmy/friends') {
         try {
