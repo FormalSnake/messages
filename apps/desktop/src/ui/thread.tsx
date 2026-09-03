@@ -387,7 +387,6 @@ const MessageRow = memo(function MessageRow({
                 textColor={textColor}
                 handlers={{
                   radius: bubbleRadius(fromMe, position),
-                  dimmed: state === 'sending',
                   paddingTop: hasTapbacks ? 11 : 7,
                   onClick: onBubbleClick,
                   onMenu: openMessageMenu,

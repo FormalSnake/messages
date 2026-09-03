@@ -1,3 +1,6 @@
+import { decode as decodeJpeg } from 'jpeg-js'
+import { PNG } from 'pngjs'
+
 export interface ImageSize {
   width: number
   height: number
@@ -109,4 +112,78 @@ export async function imageSize(source: string): Promise<ImageSize | null> {
 export function fitInside(size: ImageSize, maxWidth: number, maxHeight: number): ImageSize {
   const scale = Math.min(maxWidth / size.width, maxHeight / size.height, 1)
   return { width: Math.max(1, Math.round(size.width * scale)), height: Math.max(1, Math.round(size.height * scale)) }
+}
+
+interface Pixels {
+  width: number
+  height: number
+  data: Uint8Array
+}
+
+function decodePixels(bytes: Uint8Array): Pixels | null {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return decodeJpeg(bytes, { useTArray: true, formatAsRGBA: true })
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) {
+    const png = PNG.sync.read(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength))
+    return { width: png.width, height: png.height, data: png.data }
+  }
+  return null
+}
+
+/** The centre square of `image`, box-filtered down to `side` pixels a side, never scaled up. */
+export function squareCrop(image: Pixels, side: number): Pixels {
+  const source = Math.min(image.width, image.height)
+  const ox = Math.floor((image.width - source) / 2)
+  const oy = Math.floor((image.height - source) / 2)
+  const target = Math.min(side, source)
+  const out = new Uint8Array(target * target * 4)
+  const data = image.data
+  for (let ty = 0; ty < target; ty += 1) {
+    const y0 = oy + Math.floor((ty * source) / target)
+    const y1 = Math.max(y0 + 1, oy + Math.floor(((ty + 1) * source) / target))
+    for (let tx = 0; tx < target; tx += 1) {
+      const x0 = ox + Math.floor((tx * source) / target)
+      const x1 = Math.max(x0 + 1, ox + Math.floor(((tx + 1) * source) / target))
+      let r = 0
+      let g = 0
+      let b = 0
+      let a = 0
+      let count = 0
+      for (let y = y0; y < y1; y += 1) {
+        for (let x = x0; x < x1; x += 1) {
+          const index = (y * image.width + x) * 4
+          r += data[index]!
+          g += data[index + 1]!
+          b += data[index + 2]!
+          a += data[index + 3]!
+          count += 1
+        }
+      }
+      const offset = (ty * target + tx) * 4
+      out[offset] = Math.round(r / count)
+      out[offset + 1] = Math.round(g / count)
+      out[offset + 2] = Math.round(b / count)
+      out[offset + 3] = Math.round(a / count)
+    }
+  }
+  return { width: target, height: target, data: out }
+}
+
+/**
+ * A square PNG of a JPEG or PNG, or null for anything else. GPUI on Linux
+ * paints an `objectFit: cover` photo past its box instead of clipping it, so
+ * a portrait contact photo in a circle came out as a tall pill; a square file
+ * needs no clipping at all.
+ */
+export function squareThumbnail(bytes: Uint8Array, side = 256): Buffer | null {
+  let image: Pixels | null
+  try {
+    image = decodePixels(bytes)
+  } catch {
+    return null
+  }
+  if (!image) return null
+  const cropped = squareCrop(image, side)
+  const png = new PNG({ width: cropped.width, height: cropped.height })
+  png.data = Buffer.from(cropped.data.buffer, cropped.data.byteOffset, cropped.data.byteLength)
+  return PNG.sync.write(png)
 }

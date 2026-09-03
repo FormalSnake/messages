@@ -17,6 +17,7 @@ const PINNED_CELL = 92
 interface RowProps {
   chat: Chat
   selected: boolean
+  typing?: boolean
   /** The row the keyboard is on. gpuix has no focus event, so the list owns this. */
   cursored: boolean
   onSelect: (guid: string) => void
@@ -80,10 +81,10 @@ export function confirmDelete(chat: Chat, shell: ReturnType<typeof useShell>): v
   })
 }
 
-const ChatRow = memo(function ChatRow({ chat, selected, cursored, onSelect, onArrow, register }: RowProps) {
+const ChatRow = memo(function ChatRow({ chat, selected, typing = false, cursored, onSelect, onArrow, register }: RowProps) {
   const shell = useShell()
   const title = chatTitle(chat)
-  const preview = previewText(chat.lastMessage, chat)
+  const preview = typing ? 'Typing…' : previewText(chat.lastMessage, chat)
   const fg = selected ? C.onAccent : C.text
   const muted = selected ? C.onAccentSoft : C.secondary
   return (
@@ -128,7 +129,7 @@ const ChatRow = memo(function ChatRow({ chat, selected, cursored, onSelect, onAr
           {chat.muted ? <Icon name="mute" size={11} color={muted} /> : null}
           <text style={{ ...TYPE.micro, color: muted, whiteSpace: 'nowrap', flexShrink: 0 }}>{chat.lastActivity ? formatListDate(chat.lastActivity) : ''}</text>
         </div>
-        <text style={{ ...TYPE.preview, color: muted, lineClamp: 2, textOverflow: 'ellipsis', width: '100%', minWidth: 0 }}>{preview}</text>
+        <text style={{ ...TYPE.preview, color: typing && !selected ? C.accent : muted, lineClamp: 2, textOverflow: 'ellipsis', width: '100%', minWidth: 0 }}>{preview}</text>
       </div>
     </div>
   )
@@ -413,6 +414,7 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
             key={chat.guid}
             chat={chat}
             selected={chat.guid === state.selectedChat}
+            typing={Boolean(state.typing[chat.guid])}
             cursored={chat.guid === cursor}
             onSelect={select}
             onArrow={onArrow}

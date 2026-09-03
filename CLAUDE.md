@@ -122,6 +122,11 @@ server cannot do instead of failing on click.
   parser reject the whole commit ("unexpected end of hex escape") and React
   then dies with "Should not already be working". Never index a string with
   `[0]` (use `firstGrapheme`), and run server strings through `wellFormed`.
+- On Linux an `<img objectFit="cover">` whose scaled bitmap is bigger than
+  its box is painted whole, not clipped (a portrait photo in a circle comes
+  out as a tall pill); macOS clips it. Contact photos and group icons are
+  therefore cut square on disk (`squareThumbnail` in `image.ts`) before the
+  renderer sees them.
 - A child with a background fill (`backgroundColor` or a gradient) swallows
   the click meant for an ancestor's `onClick`; a border, a shadow, opacity or
   a `<text>` do not. Give such decorations `pointerEvents: 'none'` (avatars,

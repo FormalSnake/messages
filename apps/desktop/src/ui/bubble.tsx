@@ -269,7 +269,6 @@ function RichText({ runs, fromMe, color }: { runs: RichRun[]; fromMe: boolean; c
 /** Row-level behaviour the thread attaches to every surface: run-aware corners, menus, hover time. */
 export interface BubbleHandlers {
   radius?: Partial<Record<'borderTopLeftRadius' | 'borderTopRightRadius' | 'borderBottomLeftRadius' | 'borderBottomRightRadius', number>>
-  dimmed?: boolean
   paddingTop?: number
   onClick?: (event: EventPayload) => void
   onMenu?: (event: EventPayload) => void
@@ -292,7 +291,6 @@ function TextBubble({ children, fill, fromMe, handlers }: { children: React.Reac
         borderRadius: RADIUS.bubble,
         ...handlers?.radius,
         backgroundColor: fill,
-        opacity: handlers?.dimmed ? 0.7 : 1,
         alignSelf: fromMe ? 'flex-end' : 'flex-start',
         maxWidth: '100%',
         cursor: 'default',
@@ -528,7 +526,7 @@ function AnyAttachment({ attachment, message, fromMe, maxWidth, handlers }: { at
     <div
       onClick={handlers.onClick}
       onAuxClick={handlers.onAttachmentMenu ? (event) => handlers.onAttachmentMenu?.(attachment, event) : handlers.onMenu}
-      style={{ alignSelf: fromMe ? 'flex-end' : 'flex-start', maxWidth: '100%', opacity: handlers.dimmed ? 0.7 : 1 }}
+      style={{ alignSelf: fromMe ? 'flex-end' : 'flex-start', maxWidth: '100%' }}
     >
       {body}
     </div>
