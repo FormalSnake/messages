@@ -144,6 +144,8 @@ export interface Chat {
   participants: Handle[]
   pinned: boolean
   muted: boolean
+  /** false skips the read receipt when this conversation is marked read; the local unread dot still clears. Defaults to true. */
+  readReceipts?: boolean
   archived: boolean
   unread: boolean
   lastMessage?: Message
