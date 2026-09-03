@@ -3,7 +3,8 @@ import { normalizeAddress, type FriendLocation } from './findmy'
 import { openExternal } from './open'
 import { imageSize } from './image'
 import { snapshotForCache, type StateCache } from './cache'
-import { conversationGuid, conversationMembers, groupChats, type Grouping } from './conversations'
+import { writeConversationExport } from './export'
+import { conversationGuid, conversationHandles, conversationHasOlder, conversationMembers, conversationMessages, groupChats, type Grouping } from './conversations'
 import {
   capabilitiesFor,
   handleName,
@@ -56,6 +57,8 @@ export interface AppState extends Grouping {
   locationsUpdatedAt: number
   /** `off` when no Mac agent is configured; `unavailable` once a fetch has failed. */
   findMy: 'off' | 'unavailable' | 'ok'
+  /** Guid of the conversation currently paging its history for an export, so the UI can say so. */
+  exportingChat: string | null
 }
 
 export interface StoreOptions {
@@ -83,6 +86,9 @@ const CONNECT_RETRY_MS = 2000
 const CONNECT_RETRY_MAX_MS = 30_000
 const SEND_ATTEMPTS = 4
 const SEND_RETRY_MS = 2000
+const DRAFT_SYNC_DEBOUNCE_MS = 2000
+/** Exporting stops once the conversation runs out of history or hits this many messages. */
+const EXPORT_MAX_MESSAGES = 2000
 
 let tempCounter = 0
 function nextTempGuid(): string {
@@ -128,6 +134,9 @@ export class MessagesStore {
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private typingSent = new Set<string>()
   private typingShown = new Map<string, ReturnType<typeof setTimeout>>()
+  private draftSyncTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** When the composer for a chat was last typed into, so a stale remote draft never overwrites newer local text. */
+  private draftEditedAt = new Map<string, number>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
   private reconciling = false
   private agent: MacAgentClient | null
@@ -164,6 +173,7 @@ export class MessagesStore {
       locations: {},
       locationsUpdatedAt: 0,
       findMy: 'off',
+      exportingChat: null,
       primaryOf: {},
       merged: {},
     }
@@ -236,6 +246,7 @@ export class MessagesStore {
     this.locationsTimer = null
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
     for (const timer of this.typingShown.values()) clearTimeout(timer)
+    for (const timer of this.draftSyncTimers.values()) clearTimeout(timer)
     this.transport.disconnect()
     void this.options.cache?.flush()
   }
@@ -429,7 +440,7 @@ export class MessagesStore {
 
   private withPrefs(chat: Chat): Chat {
     const prefs = this.prefs[chat.guid]
-    return { ...chat, pinned: isPinned(prefs), muted: prefs?.muted ?? false }
+    return { ...chat, pinned: isPinned(prefs), muted: prefs?.muted ?? false, readReceipts: prefs?.readReceipts ?? true }
   }
 
   private upsertChat(chat: Chat): void {
@@ -580,6 +591,7 @@ export class MessagesStore {
 
   setDraft(chatGuid: string, text: string): void {
     this.set({ drafts: { ...this.state.drafts, [chatGuid]: text } })
+    this.scheduleDraftSync(chatGuid, text)
     if (!this.state.capabilities.typing) return
     if (text.length === 0) {
       void this.stopTyping(chatGuid)
@@ -592,6 +604,31 @@ export class MessagesStore {
     const existing = this.typingTimers.get(chatGuid)
     if (existing) clearTimeout(existing)
     this.typingTimers.set(chatGuid, setTimeout(() => void this.stopTyping(chatGuid), TYPING_IDLE_MS))
+  }
+
+  /** Debounces the draft into `prefs` and out to the agent, off for the demo transport. */
+  private scheduleDraftSync(chatGuid: string, text: string): void {
+    if (this.transport.kind === 'demo') return
+    this.draftEditedAt.set(chatGuid, Date.now())
+    const existing = this.draftSyncTimers.get(chatGuid)
+    if (existing) clearTimeout(existing)
+    this.draftSyncTimers.set(
+      chatGuid,
+      setTimeout(() => {
+        this.draftSyncTimers.delete(chatGuid)
+        this.savePrefs(chatGuid, { draft: text })
+      }, DRAFT_SYNC_DEBOUNCE_MS),
+    )
+  }
+
+  /** Cancels a pending draft sync and, if the agent might still hold one, tells it the draft is gone. */
+  private clearDraftSync(chatGuid: string): void {
+    const timer = this.draftSyncTimers.get(chatGuid)
+    if (timer) clearTimeout(timer)
+    this.draftSyncTimers.delete(chatGuid)
+    this.draftEditedAt.delete(chatGuid)
+    if (this.transport.kind === 'demo' || !this.prefs[chatGuid]?.draft) return
+    this.savePrefs(chatGuid, { draft: '' })
   }
 
   private showTyping(chatGuid: string, typing: boolean): void {
@@ -629,6 +666,7 @@ export class MessagesStore {
     if (!body) return
     const editingGuid = this.state.editing[chatGuid]
     this.set({ drafts: { ...this.state.drafts, [chatGuid]: '' }, editing: { ...this.state.editing, [chatGuid]: undefined } })
+    this.clearDraftSync(chatGuid)
     void this.stopTyping(chatGuid)
     if (editingGuid) {
       await this.edit(chatGuid, editingGuid, body)
@@ -785,10 +823,12 @@ export class MessagesStore {
   }
 
   async markRead(chatGuid: string): Promise<void> {
+    // "Read without receipts" clears the dot for every member but skips the network call, so the other side never learns.
+    const sendReceipt = this.prefs[conversationGuid(this.state, chatGuid)]?.readReceipts ?? true
     for (const member of conversationMembers(this.state, chatGuid)) {
       if (!this.state.chats.find((chat) => chat.guid === member)?.unread) continue
       this.patchChat(member, { unread: false })
-      if (this.state.capabilities.readReceipts) await this.transport.markRead(member).catch(() => undefined)
+      if (sendReceipt && this.state.capabilities.readReceipts) await this.transport.markRead(member).catch(() => undefined)
     }
   }
 
@@ -812,6 +852,14 @@ export class MessagesStore {
     this.patchChat(chatGuid, { muted: !chat.muted })
   }
 
+  toggleReadReceipts(chatGuid: string): void {
+    const chat = this.state.chats.find((item) => item.guid === chatGuid)
+    if (!chat) return
+    const readReceipts = !(chat.readReceipts ?? true)
+    this.savePrefs(chatGuid, { readReceipts })
+    this.patchChat(chatGuid, { readReceipts })
+  }
+
   private savePrefs(chatGuid: string, patch: ChatPrefs): void {
     this.prefs = { ...this.prefs, [chatGuid]: { ...this.prefs[chatGuid], ...patch, updatedAt: Date.now() } }
     this.options.onPrefsChange?.(this.prefs)
@@ -826,7 +874,7 @@ export class MessagesStore {
     if (!this.agent || this.state.status !== 'online') return
     const mine: Record<string, ChatPrefs> = {}
     for (const [guid, entry] of Object.entries(this.prefs)) {
-      if (entry.updatedAt) mine[guid] = { pinned: entry.pinned, muted: entry.muted, updatedAt: entry.updatedAt }
+      if (entry.updatedAt) mine[guid] = { pinned: entry.pinned, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
     }
     try {
       this.applySharedPrefs(await this.agent.syncPrefs(mine))
@@ -845,23 +893,53 @@ export class MessagesStore {
     }
     for (const [guid, entry] of Object.entries(shared.chats)) {
       const local = next[guid]
-      if (!local?.updatedAt || (entry.updatedAt ?? 0) > local.updatedAt) next[guid] = { ...local, pinned: entry.pinned, muted: entry.muted, updatedAt: entry.updatedAt }
+      if (!local?.updatedAt || (entry.updatedAt ?? 0) > local.updatedAt) {
+        next[guid] = { ...local, pinned: entry.pinned, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
+      }
     }
     for (const identifier of shared.macPinned) {
       const chat = this.chatForPin(identifier)
       if (chat) next[chat.guid] = { ...next[chat.guid], macPinned: true, macPinnedAt: shared.macPinnedAt ?? 0 }
     }
+    // The draft that won the merge above still yields to text typed locally after its timestamp, even before that edit reaches `prefs`.
+    let drafts = this.state.drafts
+    for (const [guid, entry] of Object.entries(next)) {
+      if (entry.draft === undefined || entry.draft === (drafts[guid] ?? '')) continue
+      const current = drafts[guid] ?? ''
+      if (current.length > 0 && (this.draftEditedAt.get(guid) ?? 0) >= (entry.updatedAt ?? 0)) continue
+      drafts = { ...drafts, [guid]: entry.draft }
+    }
     const changed = JSON.stringify(next) !== JSON.stringify(this.prefs)
     this.prefs = next
-    if (!changed) return
-    this.options.onPrefsChange?.(this.prefs)
-    this.set({ chats: sortChats(this.state.chats.map((chat) => this.withPrefs(chat))) })
+    if (changed) this.options.onPrefsChange?.(this.prefs)
+    const patch: Partial<AppState> = {}
+    if (changed) patch.chats = sortChats(this.state.chats.map((chat) => this.withPrefs(chat)))
+    if (drafts !== this.state.drafts) patch.drafts = drafts
+    if (Object.keys(patch).length > 0) this.set(patch)
   }
 
   async deleteChat(chatGuid: string): Promise<void> {
     await this.transport.deleteChat(chatGuid)
     const chats = this.state.chats.filter((chat) => chat.guid !== chatGuid)
     this.set({ chats, selectedChat: this.state.selectedChat === chatGuid ? (chats[0]?.guid ?? null) : this.state.selectedChat })
+  }
+
+  /** Pages in the rest of the conversation's history, writes it to Markdown in Downloads, and opens the file. */
+  async exportConversation(chatGuid: string): Promise<void> {
+    const primary = conversationGuid(this.state, chatGuid)
+    if (this.state.exportingChat) return
+    this.set({ exportingChat: primary })
+    try {
+      while (conversationHasOlder(this.state, primary) && conversationMessages(this.state, primary).length < EXPORT_MAX_MESSAGES) {
+        await this.loadEarlier(primary)
+      }
+      const chat = this.state.chats.find((item) => item.guid === primary)
+      if (!chat) return
+      const path = await writeConversationExport(chat, conversationHandles(this.state, primary), conversationMessages(this.state, primary))
+      openExternal(path)
+    } finally {
+      this.set({ exportingChat: null })
+    }
   }
 
   async createChat(addresses: string[], firstMessage: string): Promise<void> {

@@ -11,6 +11,8 @@ import path from 'node:path'
 export interface ChatPrefs {
   pinned?: boolean
   muted?: boolean
+  readReceipts?: boolean
+  draft?: string
   updatedAt: number
 }
 
@@ -35,6 +37,8 @@ function sanitizeEntry(raw: unknown): ChatPrefs | null {
   const entry: ChatPrefs = { updatedAt: record.updatedAt }
   if (typeof record.pinned === 'boolean') entry.pinned = record.pinned
   if (typeof record.muted === 'boolean') entry.muted = record.muted
+  if (typeof record.readReceipts === 'boolean') entry.readReceipts = record.readReceipts
+  if (typeof record.draft === 'string') entry.draft = record.draft
   return entry
 }
 

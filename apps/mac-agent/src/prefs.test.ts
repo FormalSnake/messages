@@ -33,6 +33,18 @@ describe('mergePrefs', () => {
     expect(merged.chats.a).toEqual({ pinned: true, updatedAt: 100 })
   })
 
+  test('keeps readReceipts and draft, the same as pinned and muted', () => {
+    const current = { version: 1 as const, chats: {} }
+    const merged = mergePrefs(current, { chats: { a: { readReceipts: false, draft: 'still typing', updatedAt: 100 } } })
+    expect(merged.chats.a).toEqual({ readReceipts: false, draft: 'still typing', updatedAt: 100 })
+  })
+
+  test('drops readReceipts and draft when they are the wrong type', () => {
+    const current = { version: 1 as const, chats: {} }
+    const merged = mergePrefs(current, { chats: { a: { readReceipts: 'off', draft: 42, updatedAt: 100 } } })
+    expect(merged.chats.a).toEqual({ updatedAt: 100 })
+  })
+
   test('a chat absent from current is added from incoming', () => {
     const merged = mergePrefs({ version: 1, chats: {} }, { chats: { a: { muted: true, updatedAt: 5 } } })
     expect(merged.chats.a).toEqual({ muted: true, updatedAt: 5 })

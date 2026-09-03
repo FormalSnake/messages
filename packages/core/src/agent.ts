@@ -22,6 +22,10 @@ export interface AgentHealth {
 export interface ChatPrefs {
   pinned?: boolean
   muted?: boolean
+  /** false skips the read receipt when this conversation is marked read; the local unread dot still clears. */
+  readReceipts?: boolean
+  /** The composer text for this chat, synced between clients. */
+  draft?: string
   /** When a client last changed this entry; the newer entry wins between clients. */
   updatedAt?: number
   /** Pinned in Messages.app on the Mac, and when that list was last edited. */

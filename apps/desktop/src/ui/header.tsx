@@ -252,6 +252,12 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
       <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, flexShrink: 0 }}>
         <Row icon={chat.pinned ? 'pinOff' : 'pin'} label={chat.pinned ? 'Unpin' : 'Pin'} testId="toggle-pin" onClick={() => store.togglePin(chat.guid)} />
         <Row icon={chat.muted ? 'unmute' : 'mute'} label={chat.muted ? 'Show alerts' : 'Hide alerts'} testId="toggle-mute" onClick={() => store.toggleMute(chat.guid)} />
+        <Row
+          icon={chat.readReceipts === false ? 'eye' : 'eyeOff'}
+          label={chat.readReceipts === false ? 'Send read receipts' : 'Read without receipts'}
+          testId="toggle-read-receipts"
+          onClick={() => store.toggleReadReceipts(chat.guid)}
+        />
         <Row icon="markUnread" label="Mark as unread" value={shortcut('U', { shift: true })} onClick={() => void store.markUnread(chat.guid)} />
       </div>
 
@@ -307,6 +313,12 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, paddingBottom: S.x4, flexShrink: 0 }}>
+        <Row
+          icon="download"
+          label={state.exportingChat === chat.guid ? 'Exporting…' : 'Export conversation…'}
+          testId="export-chat"
+          onClick={() => void store.exportConversation(chat.guid)}
+        />
         {chat.isGroup && state.capabilities.groupManagement ? <Row icon="leave" label="Leave conversation" danger onClick={leave} /> : null}
         <Row icon="trash" label="Delete conversation" danger testId="delete-chat" onClick={() => confirmDelete(chat, shell)} />
       </div>
