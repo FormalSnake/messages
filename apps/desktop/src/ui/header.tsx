@@ -1,12 +1,17 @@
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   chatTitle,
   conversationHandles,
+  conversationHasOlder,
+  conversationLoading,
+  conversationMessages,
   copyText,
   formatAddress,
+  formatBytes,
   handleName,
   matchFriend,
   openExternal,
+  type Attachment,
   type Chat,
   type Handle,
   type Message,
@@ -332,6 +337,116 @@ function people(chat: Chat, state: ReturnType<typeof useAppState>): Array<{ hand
   return first ? [{ handle: first, addresses: handles.map((handle) => handle.address) }] : []
 }
 
+interface GalleryItem {
+  attachment: Attachment
+  message: Message
+}
+
+const GALLERY_COLUMNS = 3
+const GALLERY_GAP = S.x1
+/** INFO_WIDTH minus the panel's own S.x4 inset on each side minus the two gaps between columns, split three ways. */
+const GALLERY_THUMB = (INFO_WIDTH - S.x4 * 2 - GALLERY_GAP * (GALLERY_COLUMNS - 1)) / GALLERY_COLUMNS
+
+/** Newest first: every visible, non-sticker attachment across what is loaded, images for the grid and everything else for the file list. */
+function galleryItems(messages: Message[]): { images: GalleryItem[]; files: GalleryItem[] } {
+  const images: GalleryItem[] = []
+  const files: GalleryItem[] = []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!
+    for (const attachment of message.attachments) {
+      if (attachment.hidden || attachment.isSticker) continue
+      ;(attachment.mime.startsWith('image/') ? images : files).push({ attachment, message })
+    }
+  }
+  return { images, files }
+}
+
+function GalleryThumbnail({ attachment, message }: { attachment: Attachment; message: Message }) {
+  const shell = useShell()
+  const [failed, setFailed] = useState(false)
+  const src = attachment.localPath
+  useEffect(() => {
+    if (src || failed) return
+    shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => setFailed(true))
+  }, [src, failed, shell.store, message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime])
+  return (
+    <div
+      testId={`gallery-photo-${attachment.guid}`}
+      onClick={() => shell.openLightbox({ chatGuid: message.chatGuid, attachmentGuid: attachment.guid })}
+      style={{ width: GALLERY_THUMB, height: GALLERY_THUMB, borderRadius: RADIUS.control, overflow: 'hidden', backgroundColor: C.raised, cursor: 'pointer', hover: { opacity: 0.9 } }}
+    >
+      {src ? <img src={src} objectFit="contain" style={{ width: GALLERY_THUMB, height: GALLERY_THUMB }} /> : null}
+    </div>
+  )
+}
+
+function GalleryFile({ attachment, message }: { attachment: Attachment; message: Message }) {
+  const shell = useShell()
+  const open = async () => {
+    const local = attachment.localPath ?? (await shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => undefined))
+    if (local) openExternal(local)
+  }
+  return (
+    <div
+      testId={`gallery-file-${attachment.guid}`}
+      tabIndex={0}
+      onClick={() => void open()}
+      onKeyDown={(event) => {
+        if (event.key === 'enter' || event.key === 'space') void open()
+      }}
+      style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, height: 36, paddingLeft: S.x2, paddingRight: S.x2, borderRadius: RADIUS.control, cursor: 'pointer', flexShrink: 0, hover: { backgroundColor: C.raised } }}
+    >
+      <Icon name={message.isAudio ? 'audio' : 'file'} size={15} color={C.secondary} />
+      <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
+        <text style={{ ...TYPE.body, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{message.isAudio ? 'Audio message' : attachment.name}</text>
+        <text style={{ ...TYPE.micro, color: C.secondary }}>{formatBytes(attachment.bytes)}</text>
+      </div>
+    </div>
+  )
+}
+
+function GallerySection({ chat }: { chat: Chat }) {
+  const shell = useShell()
+  const { store } = shell
+  const state = useAppState(store)
+  const messages = conversationMessages(state, chat.guid)
+  const { images, files } = useMemo(() => galleryItems(messages), [messages])
+  const hasOlder = conversationHasOlder(state, chat.guid)
+  const loading = conversationLoading(state, chat.guid)
+
+  if (images.length === 0 && files.length === 0 && !hasOlder) return null
+
+  return (
+    <>
+      <div style={{ paddingTop: S.x4, paddingBottom: S.x4, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+        <Divider />
+      </div>
+      <SectionLabel inset={S.x4}>Photos and files</SectionLabel>
+      {images.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: GALLERY_GAP, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+          {images.map(({ attachment, message }) => (
+            <GalleryThumbnail key={attachment.guid} attachment={attachment} message={message} />
+          ))}
+        </div>
+      ) : null}
+      {files.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, paddingTop: images.length > 0 ? S.x2 : 0, flexShrink: 0 }}>
+          {files.map(({ attachment, message }) => (
+            <GalleryFile key={attachment.guid} attachment={attachment} message={message} />
+          ))}
+        </div>
+      ) : null}
+      {hasOlder ? (
+        <div style={{ paddingLeft: S.x4, paddingRight: S.x4, paddingTop: S.x2, paddingBottom: S.x2, flexShrink: 0 }}>
+          <Button testId="gallery-load-older" onClick={() => void store.loadEarlier(chat.guid)} disabled={loading}>
+            {loading ? 'Loading…' : 'Load older'}
+          </Button>
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean }) {
   const shell = useShell()
   const { store } = shell
@@ -424,6 +539,8 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
           <text style={{ ...TYPE.caption, color: C.secondary, paddingLeft: S.x2, paddingTop: S.x1 }}>Find My needs the Mac agent (see README)</text>
         ) : null}
       </div>
+
+      <GallerySection chat={chat} />
 
       {manage ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: S.x2, paddingTop: S.x3, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>

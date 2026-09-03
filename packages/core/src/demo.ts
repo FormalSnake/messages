@@ -1,6 +1,13 @@
 import { existsSync } from 'node:fs'
+import { splitLinks } from './open'
 import type { Attachment, Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
-import type { Page, SendAttachmentOptions, SendTextOptions, Transport, TransportEvent } from './transport'
+import type { Page, SearchFilters, SendAttachmentOptions, SendTextOptions, Transport, TransportEvent } from './transport'
+
+function matchesAttachmentFilter(attachment: Attachment, filter: NonNullable<SearchFilters['attachments']>): boolean {
+  if (filter === 'image') return attachment.mime.startsWith('image/')
+  if (filter === 'video') return attachment.mime.startsWith('video/')
+  return !attachment.mime.startsWith('image/') && !attachment.mime.startsWith('video/')
+}
 
 const MIN = 60_000
 const HOUR = 60 * MIN
@@ -364,13 +371,21 @@ export class DemoTransport implements Transport {
     return { items, hasMore: items.length < all.length }
   }
 
-  async searchMessages(query: string, options: { chatGuid?: string; limit?: number; after?: number } = {}): Promise<Message[]> {
+  async searchMessages(query: string, options: SearchFilters = {}): Promise<Message[]> {
     const needle = query.trim().toLowerCase()
     const out: Message[] = []
     for (const [chatGuid, list] of this.messages) {
       if (options.chatGuid && chatGuid !== options.chatGuid) continue
+      if (options.chatGuids && !options.chatGuids.includes(chatGuid)) continue
       for (const message of list) {
+        // Exclusive: the reconcile sweep passes the last-synced date and wants only what came after it.
         if (options.after !== undefined && message.date <= options.after) continue
+        // Inclusive, matching the real server's date query (see buildSearchWhere in bluebubbles/client.ts).
+        if (options.before !== undefined && message.date > options.before) continue
+        if (options.fromMe && !message.fromMe) continue
+        if (options.senders && !(message.sender && options.senders.includes(message.sender.address))) continue
+        if (options.attachments && !message.attachments.some((item) => matchesAttachmentFilter(item, options.attachments!))) continue
+        if (options.links && !(message.urlPreview || splitLinks(message.text).some((segment) => segment.kind === 'link'))) continue
         if (needle && !message.text.toLowerCase().includes(needle)) continue
         out.push(message)
       }

@@ -205,6 +205,7 @@ function Workspace({
     [config.canaryllm?.apiKey, config.canaryllm?.model],
   )
   const assistantLanguage = useMemo(() => defaultTranslateLanguage(config.canaryllm?.language), [config.canaryllm?.language])
+  const pendingJump = useRef<{ chatGuid: string; messageGuid: string } | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
   const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
@@ -251,6 +252,19 @@ function Workspace({
         setLightbox(target)
       },
       closeLightbox: () => setLightbox(null),
+      jumpTo: (chatGuid, messageGuid) => {
+        // A search result names one member of a merged conversation; the thread that opens is keyed on the primary.
+        const primary = conversationGuid(store.state, chatGuid)
+        pendingJump.current = { chatGuid: primary, messageGuid }
+        setMenu(null)
+        void store.selectChat(primary)
+      },
+      consumeJump: (chatGuid) => {
+        if (pendingJump.current?.chatGuid !== chatGuid) return undefined
+        const messageGuid = pendingJump.current.messageGuid
+        pendingJump.current = null
+        return messageGuid
+      },
       confirm: (request) => {
         setMenu(null)
         setConfirm(request)
