@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isPinned } from './agent'
+import { favoriteGifs, type Gif } from './gifs'
 import type { Chat, Contact, Message, ScheduledMessage, ServerInfo } from './model'
 import { MessagesStore } from './store'
 import { TransportError, type Page, type SearchFilters, type Transport, type TransportEvent } from './transport'
@@ -8,6 +9,10 @@ const info: ServerInfo = { version: 'test', macosVersion: '15.0', privateApi: fa
 
 function chat(guid: string, lastActivity = 1000): Chat {
   return { guid, identifier: guid, service: 'iMessage', isGroup: false, participants: [{ address: guid, service: 'iMessage' }], pinned: false, muted: false, archived: false, unread: false, lastActivity }
+}
+
+function gif(id: string): Gif {
+  return { id, previewUrl: `https://static.klipy.com/${id}/sm.gif`, gifUrl: `https://static.klipy.com/${id}/hd.gif`, width: 200, height: 200 }
 }
 
 let seq = 0
@@ -416,6 +421,76 @@ describe('drafts', () => {
     await store.syncPrefs()
 
     expect(store.state.drafts.a).toBe('local text')
+    store.stop()
+  })
+})
+
+describe('gif favorites', () => {
+  const agentConfig = { url: 'http://mac.local:1236', token: 'tok' }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stubAgent(): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ chats: {}, gifs: {}, macPinned: [], macPinnedAt: null }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('favorites a gif and lists it newest first, then unfavorites it with a tombstone', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+
+    store.toggleGifFavorite(gif('one'))
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    store.toggleGifFavorite(gif('two'))
+    expect(favoriteGifs(store.state.gifFavorites).map((item) => item.id)).toEqual(['two', 'one'])
+
+    store.toggleGifFavorite(gif('one'))
+    expect(favoriteGifs(store.state.gifFavorites).map((item) => item.id)).toEqual(['two'])
+    expect(store.state.gifFavorites.one).toMatchObject({ removed: true })
+    store.stop()
+  })
+
+  it('syncs favorites through the agent and merges a newer remote entry in', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const fetchMock = stubAgent()
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, agent: agentConfig })
+    await store.start()
+
+    store.toggleGifFavorite(gif('one'))
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    const synced = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body))
+    expect(synced.gifs.one).toMatchObject({ gif: gif('one') })
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ chats: {}, gifs: { two: { gif: gif('two'), updatedAt: Date.now() + 1000 } }, macPinned: [], macPinnedAt: null }), { status: 200 }),
+    )
+    await store.syncPrefs()
+
+    expect(favoriteGifs(store.state.gifFavorites).map((item) => item.id)).toEqual(['two', 'one'])
+    store.stop()
+  })
+
+  it('never lets a stale remote favorite overwrite a newer local unfavorite', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const fetchMock = stubAgent()
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, agent: agentConfig })
+    await store.start()
+
+    store.toggleGifFavorite(gif('one'))
+    store.toggleGifFavorite(gif('one'))
+    const localUpdatedAt = store.state.gifFavorites.one?.updatedAt ?? 0
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ chats: {}, gifs: { one: { gif: gif('one'), updatedAt: localUpdatedAt - 500 } }, macPinned: [], macPinnedAt: null }), { status: 200 }),
+    )
+    await store.syncPrefs()
+
+    expect(store.state.gifFavorites.one).toMatchObject({ removed: true, updatedAt: localUpdatedAt })
     store.stop()
   })
 })
