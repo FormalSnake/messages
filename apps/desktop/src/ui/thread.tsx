@@ -27,6 +27,13 @@ import { useShell, type MenuItem } from './context'
 
 type Position = 'single' | 'first' | 'middle' | 'last'
 
+/** One message's translation, kept in `Thread` state keyed by guid rather than in the store. */
+interface Translation {
+  loading: boolean
+  text?: string
+  error?: string
+}
+
 type Row =
   | { kind: 'separator'; key: string; label: string }
   | { kind: 'event'; key: string; text: string }
@@ -224,7 +231,7 @@ function tapbackItem(message: Message, chat: Chat, capabilities: Capabilities): 
   return capabilities.reactions && !failed ? [{ kind: 'tapbacks', chatGuid: chat.guid, messageGuid: message.guid }] : []
 }
 
-function messageMenu(message: Message, chat: Chat, capabilities: Capabilities, shell: ReturnType<typeof useShell>): MenuItem[] {
+function messageMenu(message: Message, chat: Chat, capabilities: Capabilities, shell: ReturnType<typeof useShell>, hasTranslation: boolean, onToggleTranslate: (message: Message) => void): MenuItem[] {
   const { store } = shell
   const age = Date.now() - message.date
   const items: MenuItem[] = tapbackItem(message, chat, capabilities)
@@ -232,6 +239,8 @@ function messageMenu(message: Message, chat: Chat, capabilities: Capabilities, s
   if (failed) items.push({ label: 'Try again', icon: 'refresh', onSelect: () => void store.retry(chat.guid, message.guid) })
   if (capabilities.replies && !failed) items.push({ label: 'Reply', icon: 'reply', onSelect: () => store.setReplyingTo(chat.guid, message.guid) })
   if (message.text) items.push({ label: 'Copy', icon: 'copy', onSelect: () => void copyText(message.text) })
+  if (shell.assistant && message.text.trim())
+    items.push({ label: hasTranslation ? 'Hide translation' : 'Translate', icon: 'sparkles', onSelect: () => onToggleTranslate(message) })
   for (const segment of splitLinks(message.text)) {
     if (segment.kind === 'link') items.push({ label: 'Open link', icon: 'open', onSelect: () => openExternal(segment.href) })
   }
@@ -295,8 +304,10 @@ const MessageRow = memo(function MessageRow({
   original,
   highlighted = false,
   replyCount = 0,
+  translation,
   onJump,
   onOpenThread,
+  onToggleTranslate,
 }: {
   message: Message
   chat: Chat
@@ -307,8 +318,10 @@ const MessageRow = memo(function MessageRow({
   original?: Message
   highlighted?: boolean
   replyCount?: number
+  translation?: Translation
   onJump: (guid: string) => void
   onOpenThread: (guid: string) => void
+  onToggleTranslate: (message: Message) => void
 }) {
   const shell = useShell()
   const [hovered, setHovered] = useState(false)
@@ -327,7 +340,7 @@ const MessageRow = memo(function MessageRow({
 
   const openMessageMenu = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
     if (!event.isRightClick) return
-    shell.openMenu({ x: event.x ?? 0, y: event.y ?? 0, items: messageMenu(message, chat, capabilities, shell) })
+    shell.openMenu({ x: event.x ?? 0, y: event.y ?? 0, items: messageMenu(message, chat, capabilities, shell, Boolean(translation), onToggleTranslate) })
   }
   const openPicker = (event: { x?: number; y?: number }) => {
     if (!capabilities.reactions || state === 'failed') return
@@ -413,6 +426,13 @@ const MessageRow = memo(function MessageRow({
               {showTail && lastBlockIsText ? <Tail fromMe={fromMe} color={fill} /> : null}
               {hasTapbacks ? <Tapbacks tapbacks={message.tapbacks} fromMe={fromMe} /> : null}
             </div>
+            {translation ? (
+              <div style={{ paddingTop: 3, paddingLeft: S.x1, paddingRight: S.x1, maxWidth: '100%' }}>
+                <text testId={`translation-${message.guid}`} style={{ ...TYPE.caption, color: translation.error ? C.danger : C.secondary }}>
+                  {translation.loading ? 'Translating…' : (translation.error ?? translation.text)}
+                </text>
+              </div>
+            ) : null}
             {replyCount > 0 ? (
               <div
                 testId={`replies-${message.guid}`}
@@ -527,12 +547,42 @@ export function Thread({ chat }: { chat: Chat }) {
   const listKey = conversationKey(state, chat.guid)
   const [threadFor, setThreadFor] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<string | null>(null)
+  const [translations, setTranslations] = useState<Record<string, Translation>>({})
+  const translateControllers = useRef(new Map<string, AbortController>())
   const { renderer } = useGpuix()
   const listRef = useRef<PublicInstance | null>(null)
   const pendingJump = useRef<string | null>(null)
   const requested = useRef(false)
   const online = state.status === 'online'
   const rows = useMemo(() => buildRows(messages, chat, typing, loading, online), [messages, chat, typing, loading, online])
+
+  const toggleTranslate = useCallback(
+    (message: Message) => {
+      const assistant = shell.assistant
+      if (!assistant) return
+      const guid = message.guid
+      if (translations[guid]) {
+        translateControllers.current.get(guid)?.abort()
+        translateControllers.current.delete(guid)
+        setTranslations((current) => {
+          const next = { ...current }
+          delete next[guid]
+          return next
+        })
+        return
+      }
+      const controller = new AbortController()
+      translateControllers.current.set(guid, controller)
+      setTranslations((current) => ({ ...current, [guid]: { loading: true } }))
+      assistant
+        .translate(message.text, shell.assistantLanguage, { signal: controller.signal })
+        .then((text) => setTranslations((current) => (current[guid] ? { ...current, [guid]: { loading: false, text } } : current)))
+        .catch((error: unknown) =>
+          setTranslations((current) => (current[guid] ? { ...current, [guid]: { loading: false, error: error instanceof Error ? error.message : String(error) } } : current)),
+        )
+    },
+    [shell, translations],
+  )
   const byGuid = useMemo(() => new Map(messages.map((message) => [message.guid, message])), [messages])
   const replyCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -548,6 +598,9 @@ export function Thread({ chat }: { chat: Chat }) {
     setThreadFor(null)
     setHighlight(null)
     pendingJump.current = null
+    for (const controller of translateControllers.current.values()) controller.abort()
+    translateControllers.current.clear()
+    setTranslations({})
   }, [listKey])
 
   const scrollTo = useCallback(
@@ -636,8 +689,10 @@ export function Thread({ chat }: { chat: Chat }) {
                 capabilities={state.capabilities}
                 highlighted={false}
                 replyCount={0}
+                translation={translations[row.message.guid]}
                 onJump={jumpTo}
                 onOpenThread={setThreadFor}
+                onToggleTranslate={toggleTranslate}
               />
             ) : row.kind === 'separator' ? (
               <Caption key={row.key}>{row.label}</Caption>
@@ -696,8 +751,10 @@ export function Thread({ chat }: { chat: Chat }) {
                   original={row.message.replyTo ? byGuid.get(row.message.replyTo) : undefined}
                   highlighted={highlight === row.message.guid}
                   replyCount={replyCounts.get(row.message.guid) ?? 0}
+                  translation={translations[row.message.guid]}
                   onJump={jumpTo}
                   onOpenThread={setThreadFor}
+                  onToggleTranslate={toggleTranslate}
                 />
               )
           }
