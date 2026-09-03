@@ -46,6 +46,7 @@ import eye from 'lucide-static/icons/eye.svg' with { type: 'text' }
 import eyeOff from 'lucide-static/icons/eye-off.svg' with { type: 'text' }
 import imagePlay from 'lucide-static/icons/image-play.svg' with { type: 'text' }
 import clock from 'lucide-static/icons/clock.svg' with { type: 'text' }
+import heart from 'lucide-static/icons/heart.svg' with { type: 'text' }
 import { C } from './theme'
 
 /**
@@ -108,6 +109,7 @@ const SOURCES = {
   conversation: messageSquare,
   removePerson: userMinus,
   schedule: clock,
+  heart,
 } as const
 
 export type IconName = keyof typeof SOURCES
@@ -139,4 +141,11 @@ export function Icon({
   opacity?: number
 }) {
   return <svg source={(strong ? ICONS_BOLD : ICONS)[name]} style={{ width: size, height: size, flexShrink: 0, color, opacity }} />
+}
+
+/** Lucide ships outline icons only; swapping the empty fill for the baked colour gives the solid look a favorited heart needs. */
+const HEART_FILLED = bake(heart.replace('fill="none"', 'fill="currentColor"'))
+
+export function HeartIcon({ size = 14, color = C.secondary, filled = false }: { size?: number; color?: string; filled?: boolean }) {
+  return <svg source={filled ? HEART_FILLED : ICONS.heart} style={{ width: size, height: size, flexShrink: 0, color }} />
 }

@@ -84,9 +84,9 @@ async function readCappedBody(request: Request, maxBytes: number): Promise<strin
   return new TextDecoder().decode(buffer)
 }
 
-function prefsResponse(prefs: { chats: unknown }): Response {
+function prefsResponse(prefs: { chats: unknown; gifs: unknown }): Response {
   const mac = pinnedOnMac()
-  return json({ chats: prefs.chats, macPinned: mac.identifiers, macPinnedAt: mac.updatedAt })
+  return json({ chats: prefs.chats, gifs: prefs.gifs, macPinned: mac.identifiers, macPinnedAt: mac.updatedAt })
 }
 
 export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
@@ -116,7 +116,10 @@ export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
           if (typeof body !== 'object' || body === null || Array.isArray(body)) return json({ error: 'expected an object with a chats field' }, { status: 400 })
           const chats = (body as { chats?: unknown }).chats
           if (typeof chats !== 'object' || chats === null || Array.isArray(chats)) return json({ error: 'expected an object with a chats field' }, { status: 400 })
-          return prefsResponse(await updatePrefs(configDir, { chats: chats as Record<string, unknown> }))
+          // An older client sends no `gifs` field at all; treat that as "no change" rather than wiping the server's favorites.
+          const gifsField = (body as { gifs?: unknown }).gifs
+          const gifs = typeof gifsField === 'object' && gifsField !== null && !Array.isArray(gifsField) ? (gifsField as Record<string, unknown>) : {}
+          return prefsResponse(await updatePrefs(configDir, { chats: chats as Record<string, unknown>, gifs }))
         } catch (error) {
           if (error instanceof BodyTooLargeError) return json({ error: error.message }, { status: 413 })
           return json({ error: 'invalid JSON body' }, { status: 400 })

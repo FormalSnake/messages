@@ -2,6 +2,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import type { AgentConfig, ChatPrefs } from './agent'
+import type { GifFavorite } from './gifs'
 
 export interface ServerConfig {
   url: string
@@ -33,6 +34,8 @@ export interface Config {
   agent?: AgentConfig
   /** Klipy GIF API key (see `gifs.ts`). The composer's GIF button only shows up when this is set. */
   klipy?: KlipyConfig
+  /** Favorited GIFs, keyed by gif id; synced through the Mac agent same as `chats`. */
+  gifFavorites?: Record<string, GifFavorite>
   /** CanaryLLM gateway for the summarize, translate and transcribe buttons. Unset hides all three. */
   canaryllm?: CanaryLLMConfig
 }

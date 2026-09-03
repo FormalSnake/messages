@@ -1,21 +1,35 @@
-import { useEffect, useState } from 'react'
-import { attachmentsDir, downloadGif, downloadGifPreview, type Gif } from '@messages/core'
+import { useEffect, useMemo, useState } from 'react'
+import { attachmentsDir, downloadGif, downloadGifPreview, favoriteGifs, type Gif } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
-import { Icon } from './icons'
+import { HeartIcon, Icon } from './icons'
 import { overlayShadow } from './primitives'
 import { useShell } from './context'
+import { useAppState } from './use-app-state'
 
 const PANEL_WIDTH = 300
 const PANEL_HEIGHT = 340
 const CELL_HEIGHT = 84
 const DEBOUNCE_MS = 300
 
-function GifCell({ item, previewPath, onSelect }: { item: Gif; previewPath: string | undefined; onSelect: () => void }) {
+function GifCell({
+  item,
+  previewPath,
+  favorited,
+  onSelect,
+  onToggleFavorite,
+}: {
+  item: Gif
+  previewPath: string | undefined
+  favorited: boolean
+  onSelect: () => void
+  onToggleFavorite: () => void
+}) {
   return (
     <div
       testId={`gif-${item.id}`}
       onClick={onSelect}
       style={{
+        position: 'relative',
         height: CELL_HEIGHT,
         borderRadius: RADIUS.control,
         overflow: 'hidden',
@@ -29,6 +43,27 @@ function GifCell({ item, previewPath, onSelect }: { item: Gif; previewPath: stri
       }}
     >
       {previewPath ? <img src={previewPath} objectFit="contain" style={{ width: '100%', height: '100%' }} /> : null}
+      <div
+        testId={`gif-favorite-${item.id}`}
+        onClick={onToggleFavorite}
+        style={{
+          position: 'absolute',
+          top: S.x1,
+          right: S.x1,
+          width: 20,
+          height: 20,
+          borderRadius: RADIUS.pill,
+          backgroundColor: C.overlay,
+          opacity: 0.85,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer',
+          hover: { opacity: 1 },
+        }}
+      >
+        <HeartIcon size={11} color={favorited ? C.danger : C.onAccentSoft} filled={favorited} />
+      </div>
     </div>
   )
 }
@@ -36,11 +71,18 @@ function GifCell({ item, previewPath, onSelect }: { item: Gif; previewPath: stri
 export function GifPicker({ anchor, chatGuid, onClose }: { anchor: { x: number; y: number }; chatGuid: string; onClose: () => void }) {
   const shell = useShell()
   const { gifs, store } = shell
+  const state = useAppState(store)
   const [query, setQuery] = useState('')
   const [committed, setCommitted] = useState('')
   const [items, setItems] = useState<Gif[]>([])
   const [loading, setLoading] = useState(true)
   const [previews, setPreviews] = useState<Record<string, string>>({})
+  const [favoritePreviews, setFavoritePreviews] = useState<Record<string, string>>({})
+
+  const term = committed.trim()
+  const showFavorites = term.length === 0
+  const favorites = useMemo(() => favoriteGifs(state.gifFavorites), [state.gifFavorites])
+  const favoriteIds = useMemo(() => new Set(favorites.map((item) => item.id)), [favorites])
 
   // Debounce keystrokes; onSubmit below commits immediately on Enter.
   useEffect(() => {
@@ -52,7 +94,6 @@ export function GifPicker({ anchor, chatGuid, onClose }: { anchor: { x: number; 
     if (!gifs) return
     let cancelled = false
     setLoading(true)
-    const term = committed.trim()
     const request = term ? gifs.search(term, 1) : gifs.trending(1)
     request
       .then((page) => {
@@ -84,6 +125,21 @@ export function GifPicker({ anchor, chatGuid, onClose }: { anchor: { x: number; 
       cancelled = true
     }
   }, [items])
+
+  // A cache hit resolves without a network call, which is what keeps favorites usable offline.
+  useEffect(() => {
+    let cancelled = false
+    for (const favorite of favorites) {
+      downloadGifPreview(favorite, attachmentsDir)
+        .then((path) => {
+          if (!cancelled) setFavoritePreviews((current) => ({ ...current, [favorite.id]: path }))
+        })
+        .catch(() => undefined)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [favorites])
 
   if (!gifs) return null
 
@@ -143,25 +199,42 @@ export function GifPicker({ anchor, chatGuid, onClose }: { anchor: { x: number; 
           />
         </div>
 
-        <div
-          testId="gif-grid"
-          style={{
-            flexGrow: 1,
-            minHeight: 0,
-            overflowY: 'scroll',
-            display: loading || items.length === 0 ? 'flex' : 'grid',
-            alignItems: loading || items.length === 0 ? 'center' : undefined,
-            justifyContent: loading || items.length === 0 ? 'center' : undefined,
-            gridTemplateColumns: loading || items.length === 0 ? undefined : 3,
-            gap: loading || items.length === 0 ? undefined : S.x1,
-          }}
-        >
+        <div testId="gif-grid" style={{ flexGrow: 1, minHeight: 0, overflowY: 'scroll', display: 'flex', flexDirection: 'column', gap: S.x3 }}>
+          {showFavorites && favorites.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: S.x1, flexShrink: 0 }}>
+              <text style={{ ...TYPE.caption, color: C.secondary }}>Favorites</text>
+              <div style={{ display: 'grid', gridTemplateColumns: 3, gap: S.x1 }}>
+                {favorites.map((item) => (
+                  <GifCell key={item.id} item={item} previewPath={favoritePreviews[item.id]} favorited onSelect={() => pick(item)} onToggleFavorite={() => store.toggleGifFavorite(item)} />
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {loading ? (
-            <text style={{ ...TYPE.caption, color: C.secondary }}>Loading…</text>
+            <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <text style={{ ...TYPE.caption, color: C.secondary }}>Loading…</text>
+            </div>
           ) : items.length === 0 ? (
-            <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>{`No GIFs for "${committed.trim()}"`}</text>
+            <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>{`No GIFs for "${term}"`}</text>
+            </div>
           ) : (
-            items.map((item) => <GifCell key={item.id} item={item} previewPath={previews[item.id]} onSelect={() => pick(item)} />)
+            <div style={{ display: 'flex', flexDirection: 'column', gap: S.x1, flexShrink: 0 }}>
+              {showFavorites ? <text style={{ ...TYPE.caption, color: C.secondary }}>Trending</text> : null}
+              <div style={{ display: 'grid', gridTemplateColumns: 3, gap: S.x1 }}>
+                {items.map((item) => (
+                  <GifCell
+                    key={item.id}
+                    item={item}
+                    previewPath={previews[item.id]}
+                    favorited={favoriteIds.has(item.id)}
+                    onSelect={() => pick(item)}
+                    onToggleFavorite={() => store.toggleGifFavorite(item)}
+                  />
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </div>
