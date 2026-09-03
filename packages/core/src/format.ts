@@ -45,7 +45,7 @@ export function needsSeparator(previous: number | undefined, current: number): b
   return previous === undefined || current - previous > 60 * 60 * 1000
 }
 
-function hhmm(ms: number): string {
+export function hhmm(ms: number): string {
   const date = new Date(ms)
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }

@@ -18,7 +18,7 @@ function message(chatGuid: string, text: string, date: number, fromMe = false): 
 
 /** Every failure the network can produce and every answer the server can give, on demand. */
 class FakeTransport implements Transport {
-  readonly kind = 'demo' as const
+  kind: Transport['kind'] = 'bluebubbles'
   private listeners = new Set<(event: TransportEvent) => void>()
   connectAttempts = 0
   failConnects = 0
@@ -27,6 +27,8 @@ class FakeTransport implements Transport {
   sendCalls: string[] = []
   sendFailures: Array<'network' | 'server'> = []
   searchCalls: number[] = []
+  /** The server capabilities `connect()` reports; override before `start()` to test the private-API paths. */
+  serverInfo: ServerInfo = info
 
   emit(event: TransportEvent): void {
     for (const listener of this.listeners) listener(event)
@@ -40,7 +42,7 @@ class FakeTransport implements Transport {
       throw new TypeError('fetch failed')
     }
     this.emit({ type: 'connection', status: 'online' })
-    return info
+    return this.serverInfo
   }
 
   disconnect(): void {}
@@ -99,7 +101,10 @@ class FakeTransport implements Transport {
   createChat(): Promise<Chat> {
     throw new Error('not in this test')
   }
-  async markRead(): Promise<void> {}
+  markReadCalls: string[] = []
+  async markRead(chatGuid: string): Promise<void> {
+    this.markReadCalls.push(chatGuid)
+  }
   async deleteChat(): Promise<void> {}
   async react(): Promise<void> {}
   async setTyping(): Promise<void> {}
@@ -302,5 +307,93 @@ describe('pins', () => {
     expect(isPinned({ pinned: false, updatedAt: 200, macPinned: true, macPinnedAt: 100 })).toBe(false)
     expect(isPinned({ pinned: false, updatedAt: 50, macPinned: true, macPinnedAt: 100 })).toBe(true)
     expect(isPinned({ pinned: true, updatedAt: 50 })).toBe(true)
+  })
+})
+
+describe('read receipts', () => {
+  it('turns them off without telling the server, and back on again', async () => {
+    const transport = new FakeTransport()
+    transport.serverInfo = { ...info, privateApi: true, helperConnected: true }
+    transport.chats = [chat('a')]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+
+    store.toggleReadReceipts('a')
+    expect(store.state.chats.find((item) => item.guid === 'a')?.readReceipts).toBe(false)
+    await store.markUnread('a')
+    await store.markRead('a')
+    expect(store.state.chats.find((item) => item.guid === 'a')?.unread).toBe(false)
+    expect(transport.markReadCalls).toEqual([])
+
+    store.toggleReadReceipts('a')
+    await store.markUnread('a')
+    await store.markRead('a')
+    expect(transport.markReadCalls).toEqual(['a'])
+    store.stop()
+  })
+})
+
+describe('drafts', () => {
+  const agentConfig = { url: 'http://mac.local:1236', token: 'tok' }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  function stubAgent(): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ chats: {}, macPinned: [], macPinnedAt: null, friends: [], updatedAt: 0 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('debounces a local edit 2s before syncing, and clears the synced draft once the message sends', async () => {
+    vi.useFakeTimers()
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const fetchMock = stubAgent()
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, agent: agentConfig })
+    await store.start()
+    fetchMock.mockClear()
+
+    store.setDraft('a', 'hey there')
+    expect(fetchMock).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const synced = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(synced.chats.a).toMatchObject({ draft: 'hey there' })
+
+    await store.send('a', 'hey there')
+    const cleared = JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body))
+    expect(cleared.chats.a).toMatchObject({ draft: '' })
+    store.stop()
+    vi.useRealTimers()
+  })
+
+  it('puts a newer remote draft into the composer when the local box is empty', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const fetchMock = stubAgent()
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, agent: agentConfig })
+    await store.start()
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ chats: { a: { draft: 'from my phone', updatedAt: Date.now() } }, macPinned: [], macPinnedAt: null }), { status: 200 }))
+    await store.syncPrefs()
+
+    expect(store.state.drafts.a).toBe('from my phone')
+    store.stop()
+  })
+
+  it('never lets a stale remote draft that arrives late overwrite text typed more recently', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const fetchMock = stubAgent()
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, agent: agentConfig })
+    await store.start()
+
+    const editedAt = Date.now()
+    store.setDraft('a', 'local text')
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ chats: { a: { draft: 'their text', updatedAt: editedAt - 1000 } }, macPinned: [], macPinnedAt: null }), { status: 200 }))
+    await store.syncPrefs()
+
+    expect(store.state.drafts.a).toBe('local text')
+    store.stop()
   })
 })
