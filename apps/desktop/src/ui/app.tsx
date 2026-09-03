@@ -187,7 +187,6 @@ function Workspace({
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
   const gifs = useMemo(() => (config.klipy ? new KlipyClient(config.klipy) : null), [config.klipy?.apiKey])
-  const workspaceRef = useRef<PublicInstance | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
   const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
@@ -268,7 +267,6 @@ function Workspace({
   return (
     <ShellContext.Provider value={shell}>
       <div
-        ref={workspaceRef}
         tabIndex={-1}
         onKeyDown={(event) => {
           const primary = primaryModifier(event.modifiers)
@@ -281,17 +279,7 @@ function Workspace({
             else if (settingsOpen) setSettingsOpen(false)
             return
           }
-          if (!primary) {
-            // gpuix delivers a keyDown only to the element that currently holds
-            // keyboard focus, so this workspace handler only fires with its own
-            // elementId when nothing more specific (the search field, the
-            // composer, a menu) has taken focus over it.
-            if (event.elementId === workspaceRef.current?.id) {
-              if (event.key === 'j') stepChat(1)
-              else if (event.key === 'k') stepChat(-1)
-            }
-            return
-          }
+          if (!primary) return
           if (event.key === 'n') shell.startNewChat()
           else if (event.key === 'k') shell.openSwitcher()
           else if (event.key === 'f') shell.focusSearch()

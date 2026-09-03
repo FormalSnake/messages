@@ -75,7 +75,6 @@ on still gives you a usable client.
 - `Ctrl+I`: toggle conversation details
 - `Ctrl+[` and `Ctrl+]`: step to the previous or next conversation
 - `Ctrl+1` to `Ctrl+6`: tapback the other side's last message (love, like, dislike, laugh, emphasize, question)
-- `j` and `k`: step conversations too, while the search field and composer are not focused
 - `Shift+Ctrl+U`: mark the conversation unread
 
 Use `Cmd` in place of `Ctrl` on macOS.
