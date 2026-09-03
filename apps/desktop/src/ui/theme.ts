@@ -1,5 +1,5 @@
 // Apple's dark-appearance system colours: the app should read as Messages, not as a theme of it.
-export const C = {
+const APPLE = {
   canvas: '#1c1c1e',
   sidebar: '#232325',
   sidebarBorder: '#2c2c2e',
@@ -35,6 +35,50 @@ export const C = {
   pressWash: '#ffffff26',
   transparent: '#00000000',
 } as const
+
+export type PaletteToken = keyof typeof APPLE
+export type Palette = Record<PaletteToken, string>
+
+/**
+ * The live palette. `applyPalette` mutates it in place and the app remounts,
+ * so every style object built at render time picks up the new colours.
+ */
+export const C: Palette = { ...APPLE }
+
+const HEX = /^#(?:[0-9a-f]{6}|[0-9a-f]{8})$/i
+
+/** Tokens a theme file rarely spells out, filled in from the ones it does. Washes come from the text colour so they show on a light theme too. */
+function derived(base: Palette): Partial<Palette> {
+  const opaque = (color: string) => color.slice(0, 7)
+  return {
+    selected: base.accent,
+    imessage: base.accent,
+    tapbackMine: base.accent,
+    unread: base.accent,
+    focusRing: base.accent,
+    selectedSoft: `${opaque(base.accent)}33`,
+    dangerSoft: `${opaque(base.danger)}26`,
+    onAccentSoft: `${opaque(base.onAccent)}b8`,
+    hoverWash: `${opaque(base.text)}14`,
+    pressWash: `${opaque(base.text)}26`,
+    receivedText: base.text,
+    offline: base.danger,
+  }
+}
+
+/** Applies a theme file's tokens over the Apple defaults. Unknown keys and anything but `#rrggbb` or `#rrggbbaa` are ignored. */
+export function applyPalette(theme: Record<string, unknown>): void {
+  const given: Partial<Palette> = {}
+  for (const [key, value] of Object.entries(theme)) {
+    if (key in APPLE && typeof value === 'string' && HEX.test(value)) given[key as PaletteToken] = value
+  }
+  const base: Palette = { ...APPLE, ...given }
+  Object.assign(C, base, derived(base), given)
+}
+
+export function resetPalette(): void {
+  Object.assign(C, APPLE)
+}
 
 const darwin = typeof process !== 'undefined' && process.platform === 'darwin'
 

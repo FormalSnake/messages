@@ -13,6 +13,7 @@ const AUTO_DOWNLOAD_BYTES = 25 * 1024 * 1024
 const AUTO_DOWNLOAD_VIDEO_BYTES = 60 * 1024 * 1024
 const STICKER_WIDTH = 110
 const PREVIEW_WIDTH = 280
+const PREVIEW_IMAGE_HEIGHT = 150
 /** Cap for an inline photo or video poster; a bubble stays readable past it. */
 const MEDIA_MAX_WIDTH = 320
 const MEDIA_MAX_HEIGHT = 420
@@ -75,7 +76,7 @@ export function ImageAttachment({ attachment, message, maxWidth }: { attachment:
         onClick={() => shell.openLightbox({ chatGuid: message.chatGuid, attachmentGuid: attachment.guid })}
         style={{ width, height, cursor: 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: C.received }}
       >
-        <img src={src} objectFit="contain" style={{ width, height }} />
+        <img src={src} objectFit="contain" style={{ width, height, borderRadius: RADIUS.bubble }} />
       </div>
     )
   }
@@ -383,7 +384,7 @@ function VideoAttachment({ attachment, message, fromMe, maxWidth }: { attachment
       onClick={() => void open()}
       style={{ width, height, borderRadius: RADIUS.bubble, overflow: 'hidden', position: 'relative', cursor: 'pointer', backgroundColor: '#1c1c1e', hover: { opacity: 0.94 } }}
     >
-      {poster ? <img src={poster} objectFit="cover" style={{ width, height }} /> : null}
+      {poster ? <img src={poster} objectFit="cover" style={{ width, height, borderRadius: RADIUS.bubble }} /> : null}
       <div
         style={{
           position: 'absolute',
@@ -452,12 +453,18 @@ function LinkPreview({ message, fromMe }: { message: Message; fromMe: boolean })
     shell.store.attachmentSrc(message.chatGuid, message.guid, image.guid, 'preview.jpg', 'image/jpeg').catch(() => setFailed(true))
   }, [image, src, failed, shell.store, message.chatGuid, message.guid])
   if (!preview) return null
+  // The list measures the row once, so the picture's box is there from the first paint, filled or not.
+  const hasPicture = Boolean(src || (image && !failed))
   return (
     <div
       onClick={() => openExternal(preview.url)}
       style={{ width: PREVIEW_WIDTH, borderRadius: RADIUS.bubble, overflow: 'hidden', backgroundColor: C.received, cursor: 'pointer', alignSelf: fromMe ? 'flex-end' : 'flex-start', hover: { opacity: 0.9 } }}
     >
-      {src ? <img src={src} objectFit="cover" style={{ width: PREVIEW_WIDTH, height: 150, borderTopLeftRadius: RADIUS.bubble, borderTopRightRadius: RADIUS.bubble }} /> : null}
+      {hasPicture ? (
+        <div style={{ width: PREVIEW_WIDTH, height: PREVIEW_IMAGE_HEIGHT, backgroundColor: C.raised, borderTopLeftRadius: RADIUS.bubble, borderTopRightRadius: RADIUS.bubble, overflow: 'hidden' }}>
+          {src ? <img src={src} objectFit="cover" style={{ width: PREVIEW_WIDTH, height: PREVIEW_IMAGE_HEIGHT, borderTopLeftRadius: RADIUS.bubble, borderTopRightRadius: RADIUS.bubble }} /> : null}
+        </div>
+      ) : null}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingLeft: 12, paddingRight: 12, paddingTop: 8, paddingBottom: 9 }}>
         {preview.title ? <text style={{ ...TYPE.body, fontWeight: 600, color: C.text, lineClamp: 2 }}>{preview.title}</text> : null}
         <text style={{ ...TYPE.caption, color: C.secondary }}>{preview.siteName || hostOf(preview.url)}</text>

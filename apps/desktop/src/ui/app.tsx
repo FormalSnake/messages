@@ -27,6 +27,8 @@ import { ConnectScreen } from './connect'
 import { NewChat } from './new-chat'
 import { FaceTimeBanner } from './facetime'
 import { Lightbox } from './lightbox'
+import { ConfirmDialog, type ConfirmRequest } from './confirm'
+import { watchTheme } from './live-theme'
 
 export interface MessagesAppProps {
   config: Config
@@ -47,7 +49,7 @@ function buildTransport(config: Config): Transport | null {
 
 function connectionKey(config: Config): string {
   if (config.demo) return 'demo'
-  return config.server ? `${config.server.url}\u0000${config.server.password}\u0000${config.findMy?.url ?? ''}` : 'none'
+  return config.server ? `${config.server.url}\u0000${config.server.password}\u0000${config.agent?.url ?? ''}` : 'none'
 }
 
 /** One store per connection. Preference edits (pins, mutes, notifications) must not reconnect. */
@@ -62,7 +64,7 @@ function useStore(config: Config, override: Transport | undefined, saveConfig: M
     if (!transport) return null
     return new MessagesStore(transport, {
       prefs: current.chats,
-      findMy: current.findMy,
+      agent: current.agent,
       cache: current.demo ? undefined : new StateCache(cacheDir),
       onPrefsChange: (chats) => void latest.current.saveConfig({ chats }),
       onIncoming: (chat, message, target) => {
@@ -103,6 +105,9 @@ export function MessagesApp({ config: initialConfig, saveConfig, transport }: Me
   )
   const { store, setActivate } = useStore(config, transport, persist)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // The palette is swapped in place, so a theme change remounts the tree to repaint every style object.
+  const [themeVersion, setThemeVersion] = useState(0)
+  useEffect(() => watchTheme(() => setThemeVersion((version) => version + 1)), [])
   const connectTo = (server: ServerConfig) => {
     setSettingsOpen(false)
     void persist({ server, demo: false })
@@ -114,13 +119,13 @@ export function MessagesApp({ config: initialConfig, saveConfig, transport }: Me
 
   if (!store) {
     return (
-      <Frame>
+      <Frame key={themeVersion}>
         <ConnectScreen initialUrl="" initialPassword="" connecting={false} server={null} onConnect={(url, password) => connectTo({ url, password })} onDemo={useDemo} />
       </Frame>
     )
   }
   return (
-    <Frame>
+    <Frame key={themeVersion}>
       <Workspace setActivate={setActivate}
         key={store === null ? 'none' : config.demo ? 'demo' : config.server?.url}
         store={store}
@@ -173,6 +178,7 @@ function Workspace({
   const [infoOpen, setInfoOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ chatGuid: string; attachmentGuid: string } | null>(null)
+  const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
@@ -215,6 +221,10 @@ function Workspace({
         setLightbox(target)
       },
       closeLightbox: () => setLightbox(null),
+      confirm: (request) => {
+        setMenu(null)
+        setConfirm(request)
+      },
     }),
     [store, renderer, setSettingsOpen],
   )
@@ -239,6 +249,7 @@ function Workspace({
           const primary = primaryModifier(event.modifiers)
           if (event.key === 'escape') {
             if (menu) setMenu(null)
+            else if (confirm) setConfirm(null)
             else if (newChat) setNewChat(false)
             else if (infoOpen) setInfoOpen(false)
             else if (settingsOpen) setSettingsOpen(false)
@@ -268,12 +279,14 @@ function Workspace({
               <Composer chat={selected} />
             </>
           ) : (
-            <EmptyState status={state.status} onNew={shell.startNewChat} />
+            <EmptyState status={state.status} reason={state.connectionError} onNew={shell.startNewChat} />
           )}
         </div>
         {infoOpen && selected && !newChat ? <InfoPanel chat={selected} floating={infoFloats} /> : null}
 
         {menu ? <ContextMenu request={menu} /> : null}
+
+        {confirm ? <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} /> : null}
 
         {lightbox ? <Lightbox target={lightbox} /> : null}
 
@@ -313,7 +326,7 @@ function Workspace({
             <ConnectScreen
               initialUrl={config.server?.url ?? ''}
               initialPassword={config.server?.password ?? ''}
-              error={state.status === 'offline' ? state.error : undefined}
+              error={state.status === 'offline' ? state.connectionError : undefined}
               connecting={state.status === 'connecting'}
               server={state.server}
               onConnect={(url, password) => onConnect({ url, password })}
@@ -327,15 +340,19 @@ function Workspace({
   )
 }
 
-function EmptyState({ status, onNew }: { status: string; onNew: () => void }) {
+function EmptyState({ status, reason, onNew }: { status: string; reason?: string; onNew: () => void }) {
   const online = status === 'online'
+  const title = online ? 'No conversation selected' : status === 'connecting' ? 'Connecting to your Mac…' : 'Your Mac is not answering'
+  const body = online
+    ? 'Pick one on the left, or start a new one.'
+    : status === 'connecting'
+      ? 'Conversations appear once the server answers.'
+      : `Retrying. ${reason ? `Last attempt: ${reason}.` : 'Check that BlueBubbles is running and reachable.'}`
   return (
     <div style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: S.x2, paddingLeft: S.x6, paddingRight: S.x6 }}>
       <Icon name="conversation" size={30} color={C.tertiary} />
-      <text style={{ ...TYPE.title, fontSize: 15, color: C.text, textAlign: 'center' }}>{online ? 'No conversation selected' : 'Connecting to your Mac…'}</text>
-      <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>
-        {online ? 'Pick one on the left, or start a new one.' : 'Conversations appear once the server answers.'}
-      </text>
+      <text style={{ ...TYPE.title, fontSize: 15, color: C.text, textAlign: 'center' }}>{title}</text>
+      <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>{body}</text>
       {online ? (
         <div style={{ paddingTop: S.x2 }}>
           <Button kind="primary" onClick={onNew}>{`New message  ${shortcut('N')}`}</Button>

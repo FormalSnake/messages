@@ -40,7 +40,7 @@ function Suggestion({ address, name, onSelect }: { address: string; name?: strin
         active: { backgroundColor: C.raisedHover },
       }}
     >
-      <Avatar handle={{ address, service: 'iMessage', name }} size={30} surface={C.canvas} />
+      <Avatar handle={{ address, service: 'iMessage', name }} size={30} />
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
         <text style={{ ...TYPE.body, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{name ?? formatAddress(address)}</text>
         {name ? <text style={{ ...TYPE.micro, color: C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{formatAddress(address)}</text> : null}

@@ -16,10 +16,10 @@ const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
 const config: Config = { server: null, notifications: false, demo: true, chats: {} }
 
-function mount() {
+function mount(overrides: Partial<Config> = {}) {
   const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
   const transport = new DemoTransport()
-  render(<MessagesApp config={config} saveConfig={async () => undefined} transport={transport} />)
+  render(<MessagesApp config={{ ...config, ...overrides }} saveConfig={async () => undefined} transport={transport} />)
   return { renderer, transport }
 }
 
@@ -63,6 +63,27 @@ describeNative('messages app', () => {
     await app.close()
   })
 
+  it('opens a pinned conversation by clicking its picture', async () => {
+    const { renderer } = mount({ chats: { 'iMessage;+;chat240119384759': { pinned: true }, 'SMS;-;+14155550188': { pinned: true }, 'iMessage;+;chat881204957120': { pinned: true } } })
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+
+    // A click lands on the element's centre, which for a pinned cell is the picture itself.
+    await app.getByTestId('pinned-chat240119384759').click()
+    await app.getByTestId('thread').getByText('Sunday lunch is at ours, 1pm. Bring the good bread.').waitFor({ timeoutMs: 10_000 })
+    expect(await app.getByTestId('thread-title').textContent()).toBe('Family')
+
+    await app.getByTestId('pinned-+14155550188').click()
+    await app.getByTestId('thread').getByText('Perfect see you there').waitFor({ timeoutMs: 10_000 })
+    expect(await app.getByTestId('thread-title').textContent()).toBe('Jordan Lee')
+
+    await app.getByTestId('pinned-chat881204957120').click()
+    await app.getByTestId('thread').getByText('Agree with Ben. Also the placeholder contrast is under 3:1.').waitFor({ timeoutMs: 10_000 })
+    expect(await app.getByTestId('thread-title').textContent()).toBe('Design crit')
+
+    await app.close()
+  })
+
   it('starts a new conversation from the compose button', async () => {
     const { renderer } = mount()
     const app = await connectTest(renderer)
@@ -75,6 +96,26 @@ describeNative('messages app', () => {
     await app.getByTestId('new-chat-send').click()
     await app.getByTestId('thread').getByText('PR looks good').waitFor({ timeoutMs: 10_000 })
     expect(await app.getByTestId('thread-title').textContent()).toBe('Ben Okafor')
+
+    await app.close()
+  })
+
+  it('masks the server password until it is revealed', async () => {
+    const { renderer } = mount()
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+
+    await app.getByTestId('settings').click()
+    await app.getByTestId('server-password').waitFor({ timeoutMs: 10_000 })
+    await app.getByTestId('server-password').fill('hunter2')
+    let painted = renderer.getPaintedText()
+    expect(painted).toContain('•••••••')
+    expect(painted).not.toContain('hunter2')
+
+    await app.getByTestId('server-password-reveal').click()
+    for (let tries = 0; tries < 50 && !renderer.getPaintedText().includes('hunter2'); tries += 1) await new Promise((resolve) => setTimeout(resolve, 100))
+    painted = renderer.getPaintedText()
+    expect(painted).toContain('hunter2')
 
     await app.close()
   })

@@ -56,7 +56,7 @@ function eventText(message: Message, chat: Chat): string | null {
   return chat ? null : null
 }
 
-export function buildRows(messages: Message[], chat: Chat, typing: boolean, loading: boolean): Row[] {
+export function buildRows(messages: Message[], chat: Chat, typing: boolean, loading: boolean, online = true): Row[] {
   const rows: Row[] = []
   if (loading) rows.push({ kind: 'loading', key: 'loading' })
   let lastMineIndex = -1
@@ -87,7 +87,7 @@ export function buildRows(messages: Message[], chat: Chat, typing: boolean, load
     if (message.fromMe) {
       const state = deliveryState(message)
       if (state === 'failed') receipt = 'Not delivered'
-      else if (state === 'sending') receipt = 'Sending…'
+      else if (state === 'sending') receipt = online ? 'Sending…' : 'Waiting for connection…'
       else if (index === lastReadIndex && message.dateRead) receipt = `Read ${formatTime(message.dateRead)}`
       else if (index === lastMineIndex && lastReadIndex < index) receipt = state === 'delivered' ? 'Delivered' : message.service === 'iMessage' ? 'Sent' : 'Sent as text message'
     }
@@ -196,7 +196,7 @@ function ReplyQuote({ original, replyTo, fromMe, onJump }: { original: Message |
         alignSelf: fromMe ? 'flex-end' : 'flex-start',
       }}
     >
-      <div style={{ width: 2, borderRadius: 1, backgroundColor: fromMe ? C.imessage : C.tertiary, flexShrink: 0 }} />
+      <div style={{ width: 2, borderRadius: 1, backgroundColor: fromMe ? C.imessage : C.tertiary, flexShrink: 0, pointerEvents: 'none' }} />
       <div style={{ display: 'flex', flexDirection: 'column', flexShrink: 1, minWidth: 0 }}>
         <text style={{ ...TYPE.micro, fontWeight: 600, color: C.secondary }}>{who}</text>
         <text style={{ ...TYPE.caption, color: C.secondary, lineClamp: 2, textOverflow: 'ellipsis' }}>{body}</text>
@@ -366,7 +366,7 @@ const MessageRow = memo(function MessageRow({
       >
         {showAvatar ? (
           <div style={{ width: AVATAR_COLUMN, flexShrink: 0, display: 'flex', alignItems: 'flex-end' }}>
-            {showTail ? <Avatar handle={message.sender} size={AVATAR_COLUMN} surface={C.canvas} /> : null}
+            {showTail ? <Avatar handle={message.sender} size={AVATAR_COLUMN} /> : null}
           </div>
         ) : null}
         {fromMe ? (
@@ -471,7 +471,7 @@ function TypingRow({ chat }: { chat: Chat }) {
   const who = chat.participants[0]
   return (
     <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x2, width: '100%', paddingLeft: THREAD_INSET, paddingRight: THREAD_INSET, paddingTop: GAP_BETWEEN_RUNS }}>
-      {chat.isGroup ? <div style={{ width: AVATAR_COLUMN, flexShrink: 0 }}>{who ? <Avatar handle={who} size={AVATAR_COLUMN} surface={C.canvas} /> : null}</div> : null}
+      {chat.isGroup ? <div style={{ width: AVATAR_COLUMN, flexShrink: 0 }}>{who ? <Avatar handle={who} size={AVATAR_COLUMN} /> : null}</div> : null}
       <div style={{ position: 'relative' }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 5, height: 34, paddingLeft: S.x3, paddingRight: S.x3, borderRadius: RADIUS.bubble, backgroundColor: C.received }}>
           {[0.35, 0.6, 1].map((opacity, index) => (
@@ -517,7 +517,8 @@ export function Thread({ chat }: { chat: Chat }) {
   const listRef = useRef<PublicInstance | null>(null)
   const pendingJump = useRef<string | null>(null)
   const requested = useRef(false)
-  const rows = useMemo(() => buildRows(messages, chat, typing, loading), [messages, chat, typing, loading])
+  const online = state.status === 'online'
+  const rows = useMemo(() => buildRows(messages, chat, typing, loading, online), [messages, chat, typing, loading, online])
   const byGuid = useMemo(() => new Map(messages.map((message) => [message.guid, message])), [messages])
   const replyCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -581,7 +582,7 @@ export function Thread({ chat }: { chat: Chat }) {
         testId="thread"
         style={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: S.x3, paddingLeft: S.x6, paddingRight: S.x6 }}
       >
-        <Avatar chat={chat} size={64} surface={C.canvas} />
+        <Avatar chat={chat} size={64} />
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x1 }}>
           <text style={{ ...TYPE.title, color: C.text, textAlign: 'center' }}>{chat.service === 'iMessage' ? 'iMessage' : 'Text message'}</text>
           <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>Send the first message below.</text>
