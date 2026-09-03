@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useWindowSize } from '@gpuix/react'
-import { formatBytes, openExternal, type Attachment, type Message } from '@messages/core'
+import { conversationMessages, formatBytes, openExternal, type Attachment, type Message } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
 import { IconButton } from './primitives'
 import { useShell, type LightboxTarget } from './context'
@@ -14,7 +14,7 @@ export function Lightbox({ target }: { target: LightboxTarget }) {
   const shell = useShell()
   const state = useAppState(shell.store)
   const { width, height } = useWindowSize()
-  const messages = state.messages[target.chatGuid] ?? []
+  const messages = conversationMessages(state, target.chatGuid)
 
   // Every non-hidden photo across the loaded thread, in the date order the
   // messages already carry.

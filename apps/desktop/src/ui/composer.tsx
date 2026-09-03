@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Select, SelectContent, SelectItem, SelectTrigger, useGpuix, type PublicInstance } from '@gpuix/react'
-import { clipboardAttachments, handleName, pickFiles, type Chat } from '@messages/core'
+import { clipboardAttachments, conversationMessages, handleName, pickFiles, type Chat } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { IconButton, TextField, overlayShadow } from './primitives'
@@ -67,7 +67,7 @@ export function Composer({ chat }: { chat: Chat }) {
   const draft = state.drafts[chat.guid] ?? ''
   const replyGuid = state.replyingTo[chat.guid]
   const editGuid = state.editing[chat.guid]
-  const messages = state.messages[chat.guid] ?? []
+  const messages = conversationMessages(state, chat.guid)
   const replyTarget = replyGuid ? messages.find((item) => item.guid === replyGuid) : undefined
   const editTarget = editGuid ? messages.find((item) => item.guid === editGuid) : undefined
   const [effect, setEffect] = useState('none')

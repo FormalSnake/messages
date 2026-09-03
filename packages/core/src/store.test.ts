@@ -243,6 +243,36 @@ describe('reading', () => {
   })
 })
 
+describe('conversations', () => {
+  it('folds two chats with the same person into one, replies to the newer one and reads both', async () => {
+    const transport = new FakeTransport()
+    const phone = chat('any;-;+32470000001', 5000)
+    const email = chat('any;-;papa@example.com', 1000)
+    phone.participants = [{ address: '+32470000001', service: 'iMessage' }]
+    email.participants = [{ address: 'papa@example.com', service: 'iMessage' }]
+    email.unread = true
+    transport.chats = [phone, email, chat('c', 100)]
+    transport.messages.push(message('any;-;papa@example.com', 'from the email', 900), message('any;-;+32470000001', 'from the phone', 4900))
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    transport.emit({ type: 'contacts', contacts: [{ id: 'papa', name: 'Papa', addresses: ['+32 470 00 00 01', 'papa@example.com'] }] })
+
+    expect(store.state.merged[phone.guid]).toEqual([phone.guid, email.guid])
+    expect(store.state.primaryOf[email.guid]).toBe(phone.guid)
+    await store.selectChat(email.guid)
+    expect(store.state.selectedChat).toBe(phone.guid)
+    const { conversationMessages, conversationChats } = await import('./conversations')
+    expect(conversationMessages(store.state, phone.guid).map((item) => item.text)).toEqual(['from the email', 'from the phone'])
+    expect(conversationChats(store.state).map((item) => item.guid)).toEqual([phone.guid, 'c'])
+    expect(store.state.chats.find((item) => item.guid === email.guid)?.unread).toBe(false)
+
+    await store.send(phone.guid, 'hello')
+    await settle()
+    expect(transport.messages[transport.messages.length - 1]?.chatGuid).toBe(phone.guid)
+    store.stop()
+  })
+})
+
 describe('pins', () => {
   it('lets a newer client change win over a Mac pin, and the Mac win over an older one', () => {
     expect(isPinned(undefined)).toBe(false)
