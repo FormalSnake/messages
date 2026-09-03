@@ -3,6 +3,7 @@ import { TooltipProvider, useGpuix, useWindowInsets, useWindowSize, type PublicI
 import {
   BlueBubblesTransport,
   DemoTransport,
+  KlipyClient,
   MessagesStore,
   attachmentsDir,
   notifyIncoming,
@@ -174,6 +175,7 @@ function Workspace({
   const [toast, setToast] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ chatGuid: string; attachmentGuid: string } | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
+  const gifs = useMemo(() => (config.klipy ? new KlipyClient(config.klipy) : null), [config.klipy?.apiKey])
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
   const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
@@ -191,6 +193,7 @@ function Workspace({
   const shell = useMemo<Shell>(
     () => ({
       store,
+      gifs,
       openMenu: setMenu,
       closeMenu: () => setMenu(null),
       openSettings: () => setSettingsOpen(true),
@@ -216,7 +219,7 @@ function Workspace({
       },
       closeLightbox: () => setLightbox(null),
     }),
-    [store, renderer, setSettingsOpen],
+    [store, gifs, renderer, setSettingsOpen],
   )
 
   const stepChat = (delta: number) => {

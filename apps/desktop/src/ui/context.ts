@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { MessagesStore } from '@messages/core'
+import type { KlipyClient, MessagesStore } from '@messages/core'
 import type { IconName } from './icons'
 
 export type MenuItem =
@@ -40,6 +40,8 @@ export interface LightboxTarget {
 
 export interface Shell {
   store: MessagesStore
+  /** Set only when the user configured a Klipy API key; the composer's GIF button hides otherwise. */
+  gifs: KlipyClient | null
   openMenu: (request: MenuRequest) => void
   closeMenu: () => void
   openSettings: () => void

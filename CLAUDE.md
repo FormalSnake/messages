@@ -40,6 +40,9 @@ caches with keys from `~/.config/messages/findmy/` and serves
 client reads it through `FindMyClient` in `packages/core/src/findmy.ts` when
 `config.findMy` is set.
 
+The composer's GIF picker talks to the Klipy GIF API through `KlipyClient` in
+`packages/core/src/gifs.ts`, shown only when `config.klipy` (an `apiKey`) is set.
+
 Find My keys come from `manonstreet/findmy-key-extractor`, driven by
 `scripts/findmy-keys-mac.sh`. Two things bit us: the extractor needs Apple's
 `stat`/`id` (the script puts `/usr/bin` first because Nix coreutils shadow

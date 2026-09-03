@@ -114,6 +114,20 @@ agent's address and token to the client config:
 
 Keys survive reboots, so you can put the boot argument back afterwards.
 
+## GIFs
+
+The composer's GIF button searches [Klipy](https://klipy.com), a free GIF
+API. Create an app key at [partner.klipy.com](https://partner.klipy.com/)
+(API Keys) and add it to the client config:
+
+```json
+{ "klipy": { "apiKey": "…from partner.klipy.com" } }
+```
+
+A key in Testing mode is capped at 100 requests/hour; request Production
+access in the same panel once you're done testing. The button only appears
+once `klipy` is set.
+
 ## Install on Linux
 
 You need [Bun](https://bun.sh) and a GPU with Vulkan. On NixOS you also need
