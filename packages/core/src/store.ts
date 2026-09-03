@@ -1,4 +1,5 @@
-import { FindMyClient, normalizeAddress, type FriendLocation } from './findmy'
+import { MacAgentClient, isPinned, type AgentConfig, type ChatPrefs, type SharedPrefs } from './agent'
+import { normalizeAddress, type FriendLocation } from './findmy'
 import { openExternal } from './open'
 import { imageSize } from './image'
 import { snapshotForCache, type StateCache } from './cache'
@@ -15,7 +16,7 @@ import {
   type Tapback,
   type TapbackKind,
 } from './model'
-import type { ConnectionStatus, Transport, TransportEvent } from './transport'
+import { isRetryable, type ConnectionStatus, type Transport, type TransportEvent } from './transport'
 
 export interface FaceTimeCall {
   callUuid: string
@@ -26,13 +27,11 @@ export interface FaceTimeCall {
   error?: string
 }
 
-export interface ChatPrefs {
-  pinned?: boolean
-  muted?: boolean
-}
-
 export interface AppState {
   status: ConnectionStatus
+  /** Why the last connection attempt failed, while `status` is not `online`. */
+  connectionError?: string
+  /** A failed action worth a toast. Connection trouble stays in `connectionError`. */
   error?: string
   server: ServerInfo | null
   capabilities: Capabilities
@@ -54,7 +53,7 @@ export interface AppState {
   /** Find My friend locations, keyed by `normalizeAddress`. */
   locations: Record<string, FriendLocation>
   locationsUpdatedAt: number
-  /** `off` when no Find My agent is configured; `unavailable` once a fetch has failed. */
+  /** `off` when no Mac agent is configured; `unavailable` once a fetch has failed. */
   findMy: 'off' | 'unavailable' | 'ok'
 }
 
@@ -64,8 +63,8 @@ export interface StoreOptions {
   onIncoming?: (chat: Chat, message: Message, target?: Message) => void
   pageSize?: number
   reconcileEveryMs?: number
-  /** Address of the `@messages/mac-agent` on the Mac. Omit to leave Find My off. */
-  findMy?: { url: string; token: string }
+  /** Address of the `@messages/mac-agent` on the Mac. Omit to leave Find My and prefs sync off. */
+  agent?: AgentConfig
   /** Last known state, painted before the server answers and kept current afterwards. */
   cache?: StateCache
 }
@@ -74,7 +73,13 @@ const LOCATIONS_POLL_MS = 60_000
 const LOCATIONS_MIN_INTERVAL_MS = 20_000
 
 const PAGE = 50
+/** The server is slow per message once attributedBody is requested, and one big request can hang it for minutes. */
+const SWEEP_PAGE = 10
 const TYPING_IDLE_MS = 3000
+const CONNECT_RETRY_MS = 2000
+const CONNECT_RETRY_MAX_MS = 30_000
+const SEND_ATTEMPTS = 4
+const SEND_RETRY_MS = 2000
 
 let tempCounter = 0
 function nextTempGuid(): string {
@@ -97,6 +102,19 @@ function insertSorted(list: Message[], message: Message): Message[] {
   return next
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** A send waiting its turn. Sends go out one at a time, in order, and wait for the connection to come back. */
+interface Outgoing {
+  chatGuid: string
+  tempGuid: string
+  optimistic: Message
+  attempts: number
+  run: () => Promise<Message>
+}
+
 export class MessagesStore {
   state: AppState
   private listeners = new Set<() => void>()
@@ -107,9 +125,14 @@ export class MessagesStore {
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private typingSent = new Set<string>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
-  private findMyClient: FindMyClient | null
+  private reconciling = false
+  private agent: MacAgentClient | null
   private locationsTimer: ReturnType<typeof setInterval> | null = null
   private lastLocationsFetchAt = 0
+  private outbox: Outgoing[] = []
+  private flushing = false
+  private stopped = false
+  private wakers = new Set<() => void>()
 
   constructor(
     public readonly transport: Transport,
@@ -117,7 +140,7 @@ export class MessagesStore {
   ) {
     this.options = options
     this.prefs = options.prefs ?? {}
-    this.findMyClient = options.findMy ? new FindMyClient(options.findMy) : null
+    this.agent = options.agent ? new MacAgentClient(options.agent) : null
     this.state = {
       status: 'connecting',
       server: null,
@@ -168,32 +191,30 @@ export class MessagesStore {
         selectedChat: cached.selectedChat && cached.chats.some((chat) => chat.guid === cached.selectedChat) ? cached.selectedChat : (cached.chats[0]?.guid ?? null),
         lastSyncAt: cached.savedAt,
       })
+      this.transport.seedContacts(cached.contacts)
     }
     this.unsubscribe = this.transport.subscribe((event) => this.handle(event))
-    try {
-      const info = await this.transport.connect()
-      this.set({ server: info, capabilities: capabilitiesFor(info), error: undefined })
-    } catch (error) {
-      this.set({ status: 'offline', error: error instanceof Error ? error.message : String(error) })
-      return
-    }
+    const info = await this.connectUntilUp()
+    if (!info) return
     if (cached && this.state.chats.length > 0) {
       // Painted from disk already; bring the list and the open thread up to date.
       this.set({ status: 'online' })
       await this.reconcile()
-      if (this.state.selectedChat && !this.state.messages[this.state.selectedChat]) await this.loadOlder(this.state.selectedChat)
+      if (this.state.selectedChat && this.state.hasOlder[this.state.selectedChat] === undefined) await this.loadOlder(this.state.selectedChat)
     } else {
       await this.refreshChats()
       const first = this.state.chats[0]
       if (first && !this.state.selectedChat) await this.selectChat(first.guid)
     }
-    void this.transport.listContacts().then((contacts) => this.set({ contacts })).catch(() => undefined)
     const every = this.options.reconcileEveryMs ?? 30_000
     if (every > 0) this.reconcileTimer = setInterval(() => void this.reconcile(), every)
+    void this.syncPrefs()
     void this.refreshLocations()
   }
 
   stop(): void {
+    this.stopped = true
+    for (const wake of this.wakers) wake()
     this.unsubscribe?.()
     this.unsubscribe = null
     if (this.reconcileTimer) clearInterval(this.reconcileTimer)
@@ -203,6 +224,36 @@ export class MessagesStore {
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
     this.transport.disconnect()
     void this.options.cache?.flush()
+  }
+
+  /** Keeps trying with backoff until the server answers. Only `stop()` gives up. */
+  private async connectUntilUp(): Promise<ServerInfo | null> {
+    let delay = CONNECT_RETRY_MS
+    while (!this.stopped) {
+      try {
+        const info = await this.transport.connect()
+        this.set({ server: info, capabilities: capabilitiesFor(info), connectionError: undefined })
+        return info
+      } catch (error) {
+        this.set({ status: 'offline', connectionError: errorText(error) })
+        await this.pause(delay)
+        delay = Math.min(delay * 2, CONNECT_RETRY_MAX_MS)
+      }
+    }
+    return null
+  }
+
+  /** A sleep that `stop()` and a reconnect can cut short. */
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer)
+        this.wakers.delete(wake)
+        resolve()
+      }
+      const timer = setTimeout(wake, ms)
+      this.wakers.add(wake)
+    })
   }
 
   /** The details panel is the only Find My consumer, so it drives the poll: on while it's open, off otherwise. */
@@ -218,12 +269,12 @@ export class MessagesStore {
   }
 
   async refreshLocations(): Promise<void> {
-    if (!this.findMyClient) return
+    if (!this.agent) return
     const now = Date.now()
     if (now - this.lastLocationsFetchAt < LOCATIONS_MIN_INTERVAL_MS) return
     this.lastLocationsFetchAt = now
     try {
-      const { friends } = await this.findMyClient.friends()
+      const { friends } = await this.agent.friends()
       const locations: Record<string, FriendLocation> = {}
       for (const friend of friends) for (const address of friend.addresses) locations[normalizeAddress(address)] = friend
       this.set({ locations, locationsUpdatedAt: Date.now(), findMy: 'ok' })
@@ -239,12 +290,20 @@ export class MessagesStore {
     switch (event.type) {
       case 'connection': {
         const wasOffline = this.state.status !== 'online'
-        this.set({ status: event.status, error: event.error })
-        if (event.status === 'online' && wasOffline && this.state.chats.length > 0) void this.reconcile()
+        this.set({ status: event.status, connectionError: event.status === 'online' ? undefined : event.error })
+        if (event.status === 'online' && wasOffline) {
+          for (const wake of this.wakers) wake()
+          if (this.state.chats.length > 0) void this.reconcile()
+          void this.flushOutbox()
+          void this.syncPrefs()
+        }
         return
       }
       case 'server':
         this.set({ server: event.info, capabilities: capabilitiesFor(event.info) })
+        return
+      case 'contacts':
+        this.set({ contacts: event.contacts })
         return
       case 'message':
         this.applyMessage(event.message, { fromServer: true })
@@ -275,15 +334,25 @@ export class MessagesStore {
   }
 
   // Safety net for anything the socket dropped: the chat list and the open
-  // thread are re-read, and messages created since the last pass are folded in.
+  // thread are re-read, and messages created since the last pass are folded
+  // in, one small page at a time so a long absence catches up progressively.
   async reconcile(): Promise<void> {
-    if (this.state.status !== 'online') return
-    const since = this.state.lastSyncAt
-    this.set({ lastSyncAt: Date.now() })
+    if (this.state.status !== 'online' || this.reconciling) return
+    this.reconciling = true
+    const startedAt = Date.now()
     try {
       await this.refreshChats()
-      const recent = await this.transport.searchMessages('', { limit: 200, after: since })
-      for (const message of recent) this.applyMessage(message, { fromServer: true, silent: true })
+      let since = this.state.lastSyncAt
+      for (;;) {
+        const recent = await this.transport.searchMessages('', { limit: SWEEP_PAGE, after: since })
+        for (const message of recent) this.applyMessage(message, { fromServer: true, silent: true })
+        if (recent.length < SWEEP_PAGE) break
+        // `after` is exclusive, so the newest date of the page is the next cursor.
+        since = Math.max(since + 1, ...recent.map((message) => message.date))
+        this.set({ lastSyncAt: since })
+        if (this.stopped || this.state.status !== 'online') return
+      }
+      this.set({ lastSyncAt: startedAt })
       const selected = this.state.selectedChat
       if (selected) {
         const page = await this.transport.loadMessages(selected, { limit: PAGE })
@@ -291,6 +360,8 @@ export class MessagesStore {
       }
     } catch (error) {
       console.error(`reconcile: ${String(error)}`)
+    } finally {
+      this.reconciling = false
     }
   }
 
@@ -323,9 +394,21 @@ export class MessagesStore {
     return match?.guid ?? guid
   }
 
+  /** The chat behind an entry of the Mac's pin list: chat.db's group id for a group, an address for a one-to-one chat. */
+  private chatForPin(identifier: string): Chat | undefined {
+    const byId = this.state.chats.find((chat) => chat.groupId === identifier || chat.guid === identifier)
+    if (byId) return byId
+    if (identifier.includes(';')) {
+      const guid = this.resolveChatGuid(identifier)
+      return this.state.chats.find((chat) => chat.guid === guid)
+    }
+    const wanted = normalizeAddress(identifier)
+    return this.state.chats.find((chat) => !chat.isGroup && chat.participants.some((handle) => normalizeAddress(handle.address) === wanted))
+  }
+
   private withPrefs(chat: Chat): Chat {
     const prefs = this.prefs[chat.guid]
-    return { ...chat, pinned: prefs?.pinned ?? false, muted: prefs?.muted ?? false }
+    return { ...chat, pinned: isPinned(prefs), muted: prefs?.muted ?? false }
   }
 
   private upsertChat(chat: Chat): void {
@@ -345,7 +428,8 @@ export class MessagesStore {
     if (previous && previous !== chatGuid) void this.stopTyping(previous)
     this.set({ selectedChat: chatGuid })
     if (!chatGuid) return
-    if (!this.state.messages[chatGuid]) await this.loadOlder(chatGuid)
+    // A chat the socket or the sweep touched holds a few recent rows and no page boundary yet; page it before showing it.
+    if (this.state.hasOlder[chatGuid] === undefined) await this.loadOlder(chatGuid)
     const chat = this.state.chats.find((item) => item.guid === chatGuid)
     if (chat?.unread) void this.markRead(chatGuid)
   }
@@ -363,7 +447,7 @@ export class MessagesStore {
         hasOlder: { ...this.state.hasOlder, [chatGuid]: page.hasMore },
       })
     } catch (error) {
-      this.set({ error: error instanceof Error ? error.message : String(error) })
+      this.set({ error: errorText(error) })
     } finally {
       this.set({ loading: { ...this.state.loading, [chatGuid]: false } })
     }
@@ -501,7 +585,6 @@ export class MessagesStore {
   async send(chatGuid: string, text: string, options: { effect?: string } = {}): Promise<void> {
     const body = text.trim()
     if (!body) return
-    const chat = this.state.chats.find((item) => item.guid === chatGuid)
     const editingGuid = this.state.editing[chatGuid]
     this.set({ drafts: { ...this.state.drafts, [chatGuid]: '' }, editing: { ...this.state.editing, [chatGuid]: undefined } })
     void this.stopTyping(chatGuid)
@@ -527,16 +610,10 @@ export class MessagesStore {
       isAudio: false,
     }
     this.applyMessage(optimistic)
-    try {
-      const sent = await this.transport.sendText(chatGuid, body, { replyTo, effect: options.effect, tempGuid })
-      this.applyMessage({ ...sent, tempGuid })
-    } catch (error) {
-      this.applyMessage({ ...optimistic, error: error instanceof Error ? error.message : String(error) })
-    }
+    this.enqueue({ chatGuid, tempGuid, optimistic, attempts: 0, run: () => this.transport.sendText(chatGuid, body, { replyTo, effect: options.effect, tempGuid }) })
   }
 
   async sendAttachment(chatGuid: string, path: string): Promise<void> {
-    const chat = this.state.chats.find((item) => item.guid === chatGuid)
     const tempGuid = nextTempGuid()
     const name = path.split('/').pop() ?? 'attachment'
     const file = Bun.file(path)
@@ -553,12 +630,54 @@ export class MessagesStore {
       isAudio: false,
     }
     this.applyMessage(optimistic)
+    this.enqueue({
+      chatGuid,
+      tempGuid,
+      optimistic,
+      attempts: 0,
+      run: async () => {
+        const sent = await this.transport.sendAttachment(chatGuid, path, { name, tempGuid })
+        return { ...sent, attachments: sent.attachments.map((item) => ({ ...item, localPath: item.localPath ?? path })) }
+      },
+    })
+  }
+
+  private enqueue(item: Outgoing): void {
+    this.outbox.push(item)
+    void this.flushOutbox()
+  }
+
+  /** How many sends are still waiting for the server. */
+  get pendingSends(): number {
+    return this.outbox.length
+  }
+
+  // One send at a time, in order. A send the server refused fails right away;
+  // one the network lost is retried, and the whole queue waits out a dropped
+  // connection instead of failing every message behind it.
+  private async flushOutbox(): Promise<void> {
+    if (this.flushing) return
+    this.flushing = true
     try {
-      const sent = await this.transport.sendAttachment(chatGuid, path, { name, tempGuid })
-      const attachments = sent.attachments.map((item) => ({ ...item, localPath: item.localPath ?? path }))
-      this.applyMessage({ ...sent, attachments, tempGuid })
-    } catch (error) {
-      this.applyMessage({ ...optimistic, error: error instanceof Error ? error.message : String(error) })
+      while (this.outbox.length > 0 && !this.stopped) {
+        if (this.state.status !== 'online') return
+        const item = this.outbox[0]!
+        try {
+          const sent = await item.run()
+          this.outbox.shift()
+          this.applyMessage({ ...sent, tempGuid: item.tempGuid })
+        } catch (error) {
+          item.attempts += 1
+          if (!isRetryable(error) || item.attempts >= SEND_ATTEMPTS) {
+            this.outbox.shift()
+            this.applyMessage({ ...item.optimistic, error: errorText(error) })
+          } else {
+            await this.pause(SEND_RETRY_MS * item.attempts)
+          }
+        }
+      }
+    } finally {
+      this.flushing = false
     }
   }
 
@@ -594,7 +713,7 @@ export class MessagesStore {
       await this.transport.react(chatGuid, messageGuid, kind, { emoji, remove })
     } catch (error) {
       this.replaceMessage(chatGuid, target)
-      this.set({ error: error instanceof Error ? error.message : String(error) })
+      this.set({ error: errorText(error) })
     }
   }
 
@@ -607,7 +726,7 @@ export class MessagesStore {
       this.applyMessage(updated)
     } catch (error) {
       this.replaceMessage(chatGuid, target)
-      this.set({ error: error instanceof Error ? error.message : String(error) })
+      this.set({ error: errorText(error) })
     }
   }
 
@@ -619,7 +738,7 @@ export class MessagesStore {
       await this.transport.unsendMessage(chatGuid, messageGuid)
     } catch (error) {
       this.replaceMessage(chatGuid, target)
-      this.set({ error: error instanceof Error ? error.message : String(error) })
+      this.set({ error: errorText(error) })
     }
   }
 
@@ -650,8 +769,49 @@ export class MessagesStore {
   }
 
   private savePrefs(chatGuid: string, patch: ChatPrefs): void {
-    this.prefs = { ...this.prefs, [chatGuid]: { ...this.prefs[chatGuid], ...patch } }
+    this.prefs = { ...this.prefs, [chatGuid]: { ...this.prefs[chatGuid], ...patch, updatedAt: Date.now() } }
     this.options.onPrefsChange?.(this.prefs)
+    void this.syncPrefs()
+  }
+
+  /**
+   * Pins and mutes travel through the Mac agent: this client's entries go up,
+   * the merged set and the pins made in Messages.app on the Mac come back.
+   */
+  async syncPrefs(): Promise<void> {
+    if (!this.agent || this.state.status !== 'online') return
+    const mine: Record<string, ChatPrefs> = {}
+    for (const [guid, entry] of Object.entries(this.prefs)) {
+      if (entry.updatedAt) mine[guid] = { pinned: entry.pinned, muted: entry.muted, updatedAt: entry.updatedAt }
+    }
+    try {
+      this.applySharedPrefs(await this.agent.syncPrefs(mine))
+    } catch (error) {
+      console.error(`prefs: ${String(error)}`)
+    }
+  }
+
+  private applySharedPrefs(shared: SharedPrefs): void {
+    const next: Record<string, ChatPrefs> = {}
+    // Pins made before sync existed carry no time. Once the Mac's own list is in, that list is the truth and they yield to it.
+    const macListKnown = shared.macPinnedAt !== null
+    for (const [guid, entry] of Object.entries(this.prefs)) {
+      next[guid] = { ...entry, macPinned: undefined, macPinnedAt: undefined }
+      if (macListKnown && entry.pinned && !entry.updatedAt) delete next[guid]!.pinned
+    }
+    for (const [guid, entry] of Object.entries(shared.chats)) {
+      const local = next[guid]
+      if (!local?.updatedAt || (entry.updatedAt ?? 0) > local.updatedAt) next[guid] = { ...local, pinned: entry.pinned, muted: entry.muted, updatedAt: entry.updatedAt }
+    }
+    for (const identifier of shared.macPinned) {
+      const chat = this.chatForPin(identifier)
+      if (chat) next[chat.guid] = { ...next[chat.guid], macPinned: true, macPinnedAt: shared.macPinnedAt ?? 0 }
+    }
+    const changed = JSON.stringify(next) !== JSON.stringify(this.prefs)
+    this.prefs = next
+    if (!changed) return
+    this.options.onPrefsChange?.(this.prefs)
+    this.set({ chats: sortChats(this.state.chats.map((chat) => this.withPrefs(chat))) })
   }
 
   async deleteChat(chatGuid: string): Promise<void> {
@@ -665,7 +825,7 @@ export class MessagesStore {
     try {
       chat = await this.transport.createChat(addresses, firstMessage)
     } catch (error) {
-      this.set({ error: error instanceof Error ? error.message : String(error) })
+      this.set({ error: errorText(error) })
       throw error
     }
     this.upsertChat(chat)
@@ -694,7 +854,7 @@ export class MessagesStore {
       this.set({ facetime: { ...call, status: 'ready', link } })
       openExternal(link)
     } catch (error) {
-      this.set({ facetime: { ...call, status: 'failed', error: error instanceof Error ? error.message : String(error) } })
+      this.set({ facetime: { ...call, status: 'failed', error: errorText(error) } })
     }
   }
 
@@ -711,7 +871,7 @@ export class MessagesStore {
       await this.send(chatGuid, link)
       openExternal(link)
     } catch (error) {
-      this.set({ error: error instanceof Error ? error.message : String(error) })
+      this.set({ error: errorText(error) })
     }
   }
 

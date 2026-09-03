@@ -1,7 +1,6 @@
 /**
- * Client for the `@messages/mac-agent` HTTP server: the Mac decrypts Find My's
- * on-disk caches (see that package's `src/findmy/`) and this talks to it over
- * the network, the same way `bluebubbles/client.ts` talks to BlueBubbles.
+ * Find My locations as the Mac agent serves them (see `agent.ts`), and the
+ * address matching and map tiles the details panel needs to show them.
  */
 
 import { mkdir, stat } from 'node:fs/promises'
@@ -28,54 +27,6 @@ export interface DeviceLocation {
   /** 0-1 charge level, when Apple reports one. */
   battery?: number
   timestamp?: number
-}
-
-export interface FindMyHealth {
-  ok: boolean
-  keys: { friends: boolean; fmf: boolean; fmip: boolean }
-}
-
-export interface FindMyClientOptions {
-  url: string
-  token: string
-}
-
-const TIMEOUT_MS = 10_000
-
-async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
-  try {
-    const response = await fetch(url, { ...init, signal: controller.signal })
-    if (!response.ok) throw new Error(`findmy: ${url} returned ${response.status}`)
-    return (await response.json()) as T
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-export class FindMyClient {
-  constructor(private readonly options: FindMyClientOptions) {}
-
-  private endpoint(pathname: string): string {
-    return new URL(pathname, this.options.url).toString()
-  }
-
-  private authHeaders(): HeadersInit {
-    return { authorization: `Bearer ${this.options.token}` }
-  }
-
-  health(): Promise<FindMyHealth> {
-    return fetchJson<FindMyHealth>(this.endpoint('/health'))
-  }
-
-  friends(): Promise<{ friends: FriendLocation[]; updatedAt: number }> {
-    return fetchJson(this.endpoint('/findmy/friends'), { headers: this.authHeaders() })
-  }
-
-  devices(): Promise<{ devices: DeviceLocation[]; updatedAt: number }> {
-    return fetchJson(this.endpoint('/findmy/devices'), { headers: this.authHeaders() })
-  }
 }
 
 function digitsOf(address: string): string {

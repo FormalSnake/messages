@@ -2,6 +2,24 @@ import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind }
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline'
 
+/**
+ * A definite answer from the server (a 4xx or 5xx envelope). Anything else
+ * that a request throws, a dropped socket or a timeout, is worth retrying.
+ */
+export class TransportError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'TransportError'
+  }
+}
+
+export function isRetryable(error: unknown): boolean {
+  return !(error instanceof TransportError)
+}
+
 export type TransportEvent =
   | { type: 'connection'; status: ConnectionStatus; error?: string }
   | { type: 'server'; info: ServerInfo }
@@ -9,6 +27,8 @@ export type TransportEvent =
   | { type: 'message'; message: Message }
   | { type: 'chat'; chat: Chat }
   | { type: 'chat-removed'; chatGuid: string }
+  /** The address book, once the transport has fetched it. */
+  | { type: 'contacts'; contacts: Contact[] }
   | { type: 'typing'; chatGuid: string; typing: boolean }
   | { type: 'read'; chatGuid: string; read: boolean }
   /** A ringing or ended FaceTime call on the Mac. `canAnswer` is false on the legacy event path, which only names the caller. */
@@ -34,9 +54,12 @@ export interface SendAttachmentOptions {
 
 export interface Transport {
   readonly kind: 'bluebubbles' | 'demo'
+  /** Resolves once the server answered and the event stream is open. Rejects on the first failure; the store retries. */
   connect(): Promise<ServerInfo>
   disconnect(): void
   subscribe(listener: (event: TransportEvent) => void): () => void
+  /** Last known address book, so names resolve before the server's own list arrives. */
+  seedContacts(contacts: Contact[]): void
 
   listChats(options?: { limit?: number; offset?: number }): Promise<Page<Chat>>
   getChat(chatGuid: string): Promise<Chat>

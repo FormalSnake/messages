@@ -636,6 +636,7 @@ export function toChat(raw: RawChat, options: MapOptions = {}): Chat {
   return {
     guid: raw.guid,
     identifier: raw.chatIdentifier,
+    groupId: raw.groupId || undefined,
     service,
     isGroup: raw.style === 43,
     displayName: wellFormed(raw.displayName) || undefined,

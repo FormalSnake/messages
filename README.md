@@ -109,10 +109,28 @@ reboot, `scripts/findmy-keys-mac.sh` runs the extractor, installs the keys into
 agent's address and token to the client config:
 
 ```json
-{ "findMy": { "url": "http://your-mac:1236", "token": "…from ~/.config/messages/agent.json" } }
+{ "agent": { "url": "http://your-mac:1236", "token": "…from ~/.config/messages/agent.json" } }
 ```
 
 Keys survive reboots, so you can put the boot argument back afterwards.
+
+The same agent syncs pins and muted chats between every client pointed at
+it, and shows the conversations you pinned in Messages.app on the Mac as
+pinned here too. Unpinning one of those in the client sticks until you pin
+it again on the Mac.
+
+## Colours
+
+The app ships Apple's dark palette. Drop a flat JSON of palette tokens at
+`~/.config/messages/theme.json` to override any of them; the file is polled
+every second, so a wallpaper-driven generator such as matugen can rewrite
+it and the window recolours in place. The token names are the keys of `C`
+in `apps/desktop/src/ui/theme.ts`; give `accent`, `danger`, `text` and the
+surfaces and the rest is derived.
+
+```json
+{ "canvas": "#1c1917", "sidebar": "#232020", "text": "#b4bdc3", "accent": "#6099c0" }
+```
 
 ## Install on Linux
 
