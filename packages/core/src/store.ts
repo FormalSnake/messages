@@ -1,5 +1,6 @@
 import { MacAgentClient, isPinned, type AgentConfig, type ChatPrefs, type SharedPrefs } from './agent'
 import { normalizeAddress, type FriendLocation } from './findmy'
+import { mergeGifFavorites, type Gif, type GifFavorite } from './gifs'
 import { openExternal } from './open'
 import { imageSize } from './image'
 import { snapshotForCache, type StateCache } from './cache'
@@ -61,11 +62,15 @@ export interface AppState extends Grouping {
   findMy: 'off' | 'unavailable' | 'ok'
   /** Guid of the conversation currently paging its history for an export, so the UI can say so. */
   exportingChat: string | null
+  /** Favorited GIFs, keyed by gif id, synced through the Mac agent same as chat prefs. */
+  gifFavorites: Record<string, GifFavorite>
 }
 
 export interface StoreOptions {
   prefs?: Record<string, ChatPrefs>
   onPrefsChange?: (prefs: Record<string, ChatPrefs>) => void
+  gifFavorites?: Record<string, GifFavorite>
+  onGifFavoritesChange?: (favorites: Record<string, GifFavorite>) => void
   onIncoming?: (chat: Chat, message: Message, target?: Message) => void
   pageSize?: number
   reconcileEveryMs?: number
@@ -197,6 +202,7 @@ export class MessagesStore {
       locationsUpdatedAt: 0,
       findMy: 'off',
       exportingChat: null,
+      gifFavorites: options.gifFavorites ?? {},
       primaryOf: {},
       merged: {},
     }
@@ -956,6 +962,16 @@ export class MessagesStore {
     void this.syncPrefs()
   }
 
+  /** A removal keeps a tombstone (`removed: true`) with a fresh `updatedAt`, so it wins over an older favorite synced from another client. */
+  toggleGifFavorite(gif: Gif): void {
+    const wasFavorite = Boolean(this.state.gifFavorites[gif.id] && !this.state.gifFavorites[gif.id]?.removed)
+    const entry: GifFavorite = wasFavorite ? { gif, updatedAt: Date.now(), removed: true } : { gif, updatedAt: Date.now() }
+    const gifFavorites = { ...this.state.gifFavorites, [gif.id]: entry }
+    this.set({ gifFavorites })
+    this.options.onGifFavoritesChange?.(gifFavorites)
+    void this.syncPrefs()
+  }
+
   /**
    * Pins and mutes travel through the Mac agent: this client's entries go up,
    * the merged set and the pins made in Messages.app on the Mac come back.
@@ -967,7 +983,7 @@ export class MessagesStore {
       if (entry.updatedAt) mine[guid] = { pinned: entry.pinned, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
     }
     try {
-      this.applySharedPrefs(await this.agent.syncPrefs(mine))
+      this.applySharedPrefs(await this.agent.syncPrefs(mine, this.state.gifFavorites))
     } catch (error) {
       console.error(`prefs: ${String(error)}`)
     }
@@ -1002,9 +1018,16 @@ export class MessagesStore {
     const changed = JSON.stringify(next) !== JSON.stringify(this.prefs)
     this.prefs = next
     if (changed) this.options.onPrefsChange?.(this.prefs)
+
+    // An agent that predates this feature answers with no `gifs` field at all.
+    const gifFavorites = mergeGifFavorites(this.state.gifFavorites, shared.gifs ?? {})
+    const gifsChanged = JSON.stringify(gifFavorites) !== JSON.stringify(this.state.gifFavorites)
+    if (gifsChanged) this.options.onGifFavoritesChange?.(gifFavorites)
+
     const patch: Partial<AppState> = {}
     if (changed) patch.chats = sortChats(this.state.chats.map((chat) => this.withPrefs(chat)))
     if (drafts !== this.state.drafts) patch.drafts = drafts
+    if (gifsChanged) patch.gifFavorites = gifFavorites
     if (Object.keys(patch).length > 0) this.set(patch)
   }
 

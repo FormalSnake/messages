@@ -5,6 +5,7 @@
  */
 
 import type { DeviceLocation, FriendLocation } from './findmy'
+import type { GifFavorite } from './gifs'
 
 export interface AgentConfig {
   url: string
@@ -35,6 +36,8 @@ export interface ChatPrefs {
 
 export interface SharedPrefs {
   chats: Record<string, ChatPrefs>
+  /** GIF favorites, keyed by gif id. */
+  gifs: Record<string, GifFavorite>
   /** Pinned in Messages.app: an address for a one-to-one chat, a chat guid for a group. */
   macPinned: string[]
   macPinnedAt: number | null
@@ -85,11 +88,11 @@ export class MacAgentClient {
   }
 
   /** Pushes this client's entries and gets back the merged set plus the Mac's own pins. */
-  syncPrefs(chats: Record<string, ChatPrefs>): Promise<SharedPrefs> {
+  syncPrefs(chats: Record<string, ChatPrefs>, gifs: Record<string, GifFavorite> = {}): Promise<SharedPrefs> {
     return fetchJson(this.endpoint('/prefs'), {
       method: 'PUT',
       headers: { ...this.authHeaders(), 'content-type': 'application/json' },
-      body: JSON.stringify({ chats }),
+      body: JSON.stringify({ chats, gifs }),
     })
   }
 }

@@ -52,9 +52,10 @@ agent (`scripts/install-mac-agent.sh`, label `es.canarycoders.messages.agent`,
 port 1236, token in `~/.config/messages/agent.json`). It decrypts the Find My
 caches with keys from `~/.config/messages/findmy/` and serves
 `/findmy/friends` and `/findmy/devices`; `/health` says which keys exist. It
-also keeps `~/.config/messages/prefs.json`, the pinned and muted state shared
-between clients (`PUT /prefs`, newest entry per chat wins), and reports the
-chats pinned in Messages.app itself, read from
+also keeps `~/.config/messages/prefs.json`, the pinned and muted state and GIF
+favorites shared between clients (`PUT /prefs`, newest entry per chat or gif id
+wins, an unfavorite kept as a tombstone), and reports the chats pinned in
+Messages.app itself, read from
 `~/Library/Preferences/com.apple.messages.pinning.plist`. The client talks to
 it through `MacAgentClient` in `packages/core/src/agent.ts` when
 `config.agent` is set; `isPinned` in the same file decides between a Mac pin

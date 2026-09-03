@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { downloadGif, downloadGifPreview, KlipyClient } from './gifs'
+import { downloadGif, downloadGifPreview, favoriteGifs, KlipyClient, mergeGifFavorites, type Gif, type GifFavorite } from './gifs'
+
+function testGif(id: string): Gif {
+  return { id, previewUrl: `https://static.klipy.com/${id}/sm.gif`, gifUrl: `https://static.klipy.com/${id}/hd.gif`, width: 200, height: 200 }
+}
 
 function klipyItem(id: number, overrides: Partial<{ hd: string; sm: string }> = {}) {
   const file = (url: string) => ({ gif: { url, width: 200, height: 200, size: 1024 } })
@@ -123,5 +127,49 @@ describe('downloadGif / downloadGifPreview', () => {
   it('throws when the download response is not ok', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
     await expect(downloadGif(gif, dir)).rejects.toThrow('500')
+  })
+})
+
+describe('mergeGifFavorites', () => {
+  it('lets a newer updatedAt win', () => {
+    const current: Record<string, GifFavorite> = { a: { gif: testGif('a'), updatedAt: 100 } }
+    const merged = mergeGifFavorites(current, { a: { gif: testGif('a'), updatedAt: 200 } })
+    expect(merged.a).toEqual({ gif: testGif('a'), updatedAt: 200 })
+  })
+
+  it('keeps the current entry on an equal updatedAt', () => {
+    const current: Record<string, GifFavorite> = { a: { gif: testGif('a'), updatedAt: 100 } }
+    const merged = mergeGifFavorites(current, { a: { gif: testGif('a'), removed: true, updatedAt: 100 } })
+    expect(merged.a).toEqual({ gif: testGif('a'), updatedAt: 100 })
+  })
+
+  it('lets a tombstone beat an older favorite', () => {
+    const current: Record<string, GifFavorite> = { a: { gif: testGif('a'), updatedAt: 100 } }
+    const merged = mergeGifFavorites(current, { a: { gif: testGif('a'), removed: true, updatedAt: 200 } })
+    expect(merged.a).toEqual({ gif: testGif('a'), removed: true, updatedAt: 200 })
+  })
+
+  it('merges an id absent from current in from incoming', () => {
+    const merged = mergeGifFavorites({}, { b: { gif: testGif('b'), updatedAt: 5 } })
+    expect(merged.b).toEqual({ gif: testGif('b'), updatedAt: 5 })
+  })
+})
+
+describe('favoriteGifs', () => {
+  it('returns the live favorites newest first', () => {
+    const favorites: Record<string, GifFavorite> = {
+      a: { gif: testGif('a'), updatedAt: 100 },
+      b: { gif: testGif('b'), updatedAt: 300 },
+      c: { gif: testGif('c'), updatedAt: 200 },
+    }
+    expect(favoriteGifs(favorites).map((item) => item.id)).toEqual(['b', 'c', 'a'])
+  })
+
+  it('excludes a removed tombstone', () => {
+    const favorites: Record<string, GifFavorite> = {
+      a: { gif: testGif('a'), updatedAt: 100 },
+      b: { gif: testGif('b'), removed: true, updatedAt: 200 },
+    }
+    expect(favoriteGifs(favorites).map((item) => item.id)).toEqual(['a'])
   })
 })
