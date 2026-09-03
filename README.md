@@ -175,6 +175,10 @@ A key in Testing mode is capped at 100 requests/hour; request Production
 access in the same panel once you're done testing. The button only appears
 once `klipy` is set.
 
+The heart on each tile favorites a GIF; a Favorites row appears above
+trending GIFs when the search box is empty, works offline once its preview is
+cached, and syncs across clients through the Mac agent alongside pinned chats.
+
 ## Assistant
 
 Three buttons run a message through your own [CanaryLLM](https://canaryllm.canarycoders.es)

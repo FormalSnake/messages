@@ -27,6 +27,31 @@ export interface GifPage {
   hasMore: boolean
 }
 
+/** A favorited GIF, keyed by `gif.id`. An unfavorite keeps the entry as a `removed` tombstone so it can win over a stale favorite synced from another client. */
+export interface GifFavorite {
+  gif: Gif
+  updatedAt: number
+  removed?: boolean
+}
+
+/** Per id, the entry with the newer `updatedAt` wins; a tie keeps `current`'s entry. A tombstone needs no special case: it wins the same way any newer entry does. */
+export function mergeGifFavorites(current: Record<string, GifFavorite>, incoming: Record<string, GifFavorite>): Record<string, GifFavorite> {
+  const merged = { ...current }
+  for (const [id, entry] of Object.entries(incoming)) {
+    const existing = merged[id]
+    if (!existing || entry.updatedAt > existing.updatedAt) merged[id] = entry
+  }
+  return merged
+}
+
+/** The live favorites, newest first, for the picker's Favorites row. */
+export function favoriteGifs(favorites: Record<string, GifFavorite>): Gif[] {
+  return Object.values(favorites)
+    .filter((entry) => !entry.removed)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((entry) => entry.gif)
+}
+
 interface KlipyFile {
   url: string
   width: number

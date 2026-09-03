@@ -70,9 +70,11 @@ function useStore(config: Config, override: Transport | undefined, saveConfig: M
     if (!transport) return null
     return new MessagesStore(transport, {
       prefs: current.chats,
+      gifFavorites: current.gifFavorites,
       agent: current.agent,
       cache: current.demo ? undefined : new StateCache(cacheDir),
       onPrefsChange: (chats) => void latest.current.saveConfig({ chats }),
+      onGifFavoritesChange: (gifFavorites) => void latest.current.saveConfig({ gifFavorites }),
       onIncoming: (chat, message, target) => {
         if (!latest.current.config.notifications) return
         void notifyIncoming(chat, message, { target, icon: NOTIFICATION_ICON }).then((action) => {
