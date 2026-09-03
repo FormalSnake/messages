@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useGpuix, type PublicInstance } from '@gpuix/react'
+import { useGpuix, Tooltip, TooltipContent, TooltipTrigger, type PublicInstance } from '@gpuix/react'
 import { TAPBACK_GLYPH, conversationMessages, type TapbackKind } from '@messages/core'
 import { useAppState } from './use-app-state'
 import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
-import { overlayShadow } from './primitives'
-import { useShell, type MenuItem, type MenuRequest } from './context'
+import { overlayShadow, tooltipStyle } from './primitives'
+import { shortcut, useShell, type MenuItem, type MenuRequest } from './context'
 
-const TAPBACK_ORDER: Array<Exclude<TapbackKind, 'emoji'>> = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question']
+/** Also the Ctrl+1..6 (Cmd on macOS) keyboard tapback order in app.tsx. */
+export const TAPBACK_ORDER: Array<Exclude<TapbackKind, 'emoji'>> = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question']
+
+function tapbackLabel(kind: Exclude<TapbackKind, 'emoji'>): string {
+  return kind.charAt(0).toUpperCase() + kind.slice(1)
+}
 
 /** The corner of the menu that lands on the click point. */
 function anchorFor(request: MenuRequest): 'topLeft' | 'topCenter' | 'bottomLeft' | 'bottomCenter' {
@@ -149,32 +154,38 @@ function TapbackRow({ chatGuid, messageGuid, bare }: { chatGuid: string; message
         borderColor: C.separator,
       }}
     >
-      {TAPBACK_ORDER.map((kind) => {
+      {TAPBACK_ORDER.map((kind, index) => {
         const selected = mine?.kind === kind
         return (
-          <div
-            key={kind}
-            testId={`tapback-${kind}`}
-            onClick={() => {
-              shell.closeMenu()
-              void shell.store.react(chatGuid, messageGuid, kind)
-            }}
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: 15,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              cursor: 'pointer',
-              backgroundColor: selected ? C.accent : C.overlay,
-              hover: { backgroundColor: selected ? C.accent : C.hoverWash },
-              active: { backgroundColor: selected ? C.accent : C.pressWash, opacity: 0.75 },
-            }}
-          >
-            <text style={{ fontSize: 16, lineHeight: 20, color: C.text }}>{TAPBACK_GLYPH[kind]}</text>
-          </div>
+          <Tooltip key={kind} delayDuration={600}>
+            <TooltipTrigger asChild>
+              <div
+                testId={`tapback-${kind}`}
+                onClick={() => {
+                  shell.closeMenu()
+                  void shell.store.react(chatGuid, messageGuid, kind)
+                }}
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: 15,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  cursor: 'pointer',
+                  backgroundColor: selected ? C.accent : C.overlay,
+                  hover: { backgroundColor: selected ? C.accent : C.hoverWash },
+                  active: { backgroundColor: selected ? C.accent : C.pressWash, opacity: 0.75 },
+                }}
+              >
+                <text style={{ fontSize: 16, lineHeight: 20, color: C.text }}>{TAPBACK_GLYPH[kind]}</text>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6} style={tooltipStyle()}>
+              <text style={{ ...TYPE.caption, color: C.text }}>{`${tapbackLabel(kind)}  ${shortcut(String(index + 1))}`}</text>
+            </TooltipContent>
+          </Tooltip>
         )
       })}
     </div>

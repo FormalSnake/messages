@@ -67,6 +67,19 @@ picker.
 The app asks the server what it can do and hides the rest, so a Mac with SIP
 on still gives you a usable client.
 
+### Keyboard
+
+- `Ctrl+N`: new message
+- `Ctrl+F`: focus search
+- `Ctrl+K`: jump to a conversation
+- `Ctrl+I`: toggle conversation details
+- `Ctrl+[` and `Ctrl+]`: step to the previous or next conversation
+- `Ctrl+1` to `Ctrl+6`: tapback the other side's last message (love, like, dislike, laugh, emphasize, question)
+- `j` and `k`: step conversations too, while the search field and composer are not focused
+- `Shift+Ctrl+U`: mark the conversation unread
+
+Use `Cmd` in place of `Ctrl` on macOS.
+
 ## What does not work
 
 FaceTime. BlueBubbles can answer an incoming FaceTime call on the Mac and turn
