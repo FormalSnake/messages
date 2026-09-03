@@ -44,6 +44,7 @@ export interface Shell {
   closeMenu: () => void
   openSettings: () => void
   startNewChat: () => void
+  openSwitcher: () => void
   toggleInfo: () => void
   /** Menus that mean "show me the details" must not close a panel that is already open. */
   setInfo: (open: boolean) => void
