@@ -1,4 +1,4 @@
-import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from './model'
+import type { Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline'
 
@@ -76,6 +76,11 @@ export interface Transport {
   createChat(addresses: string[], firstMessage: string, service?: Service): Promise<Chat>
   markRead(chatGuid: string): Promise<void>
   deleteChat(chatGuid: string): Promise<void>
+
+  /** The server holds the message and sends it once `sendAt` passes; the client does no waiting of its own. */
+  scheduleText(chatGuid: string, text: string, sendAt: number): Promise<ScheduledMessage>
+  listScheduled(): Promise<ScheduledMessage[]>
+  cancelScheduled(id: string): Promise<void>
 
   // Everything below needs the private API (SIP disabled, helper connected).
   react(chatGuid: string, messageGuid: string, kind: TapbackKind, options?: { emoji?: string; remove?: boolean; partIndex?: number }): Promise<void>

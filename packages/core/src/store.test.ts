@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isPinned } from './agent'
-import type { Chat, Contact, Message, ServerInfo } from './model'
+import type { Chat, Contact, Message, ScheduledMessage, ServerInfo } from './model'
 import { MessagesStore } from './store'
 import { TransportError, type Page, type Transport, type TransportEvent } from './transport'
 
@@ -121,6 +121,13 @@ class FakeTransport implements Transport {
     throw new Error('not in this test')
   }
   async leaveFaceTime(): Promise<void> {}
+  scheduleText(): Promise<ScheduledMessage> {
+    throw new Error('not in this test')
+  }
+  async listScheduled(): Promise<ScheduledMessage[]> {
+    return []
+  }
+  async cancelScheduled(): Promise<void> {}
 }
 
 async function settle(): Promise<void> {

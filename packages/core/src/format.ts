@@ -63,6 +63,71 @@ export function relativeTime(ms: number, now = Date.now()): string {
   return `${shortDate(ms, now)} at ${hhmm(ms)}`
 }
 
+/** "Sends at" line under a scheduled message: bare time today, "Tomorrow at 9:00 AM", else a dated one. */
+export function formatScheduledFor(ms: number, now = Date.now()): string {
+  const today = startOfDay(now)
+  const day = startOfDay(ms)
+  const time = formatTime(ms)
+  if (day === today) return time
+  if (day === today + DAY) return `Tomorrow at ${time}`
+  return `${shortDate(ms, now)} at ${time}`
+}
+
+export type ScheduleParseResult = { sendAt: number } | { error: string }
+
+const TIME_ONLY = /^(\d{1,2}):(\d{2})$/
+const TOMORROW = /^tomorrow\s+(\d{1,2}):(\d{2})$/i
+const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})$/
+
+function validClock(hour: number, minute: number): boolean {
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+}
+
+const BAD_TIME = { error: 'Use a 24-hour time between 00:00 and 23:59' }
+
+/**
+ * Parses the composer's "Send at…" input: a bare `HH:MM` (today), `tomorrow
+ * HH:MM`, or `YYYY-MM-DD HH:MM`. Rejects anything unparsable or already past.
+ */
+export function parseScheduleTime(input: string, now: number = Date.now()): ScheduleParseResult {
+  const trimmed = input.trim()
+  if (!trimmed) return { error: 'Enter a time' }
+
+  let date: Date
+  const dateTime = DATE_TIME.exec(trimmed)
+  const tomorrow = TOMORROW.exec(trimmed)
+  const timeOnly = TIME_ONLY.exec(trimmed)
+
+  if (dateTime) {
+    const year = Number(dateTime[1])
+    const month = Number(dateTime[2])
+    const day = Number(dateTime[3])
+    const hour = Number(dateTime[4])
+    const minute = Number(dateTime[5])
+    if (!validClock(hour, minute)) return BAD_TIME
+    date = new Date(year, month - 1, day, hour, minute, 0, 0)
+    if (date.getMonth() !== month - 1 || date.getDate() !== day) return { error: 'That date does not exist' }
+  } else if (tomorrow) {
+    const hour = Number(tomorrow[1])
+    const minute = Number(tomorrow[2])
+    if (!validClock(hour, minute)) return BAD_TIME
+    date = new Date(now)
+    date.setDate(date.getDate() + 1)
+    date.setHours(hour, minute, 0, 0)
+  } else if (timeOnly) {
+    const hour = Number(timeOnly[1])
+    const minute = Number(timeOnly[2])
+    if (!validClock(hour, minute)) return BAD_TIME
+    date = new Date(now)
+    date.setHours(hour, minute, 0, 0)
+  } else {
+    return { error: 'Use HH:MM, "tomorrow HH:MM" or YYYY-MM-DD HH:MM' }
+  }
+
+  if (date.getTime() <= now) return { error: 'That time has already passed' }
+  return { sendAt: date.getTime() }
+}
+
 export function formatAddress(address: string): string {
   if (address.includes('@')) return address
   const digits = address.replace(/[^\d+]/g, '')

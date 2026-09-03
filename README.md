@@ -63,6 +63,7 @@ picker.
 | Mark as unread, pin, mute | pin and mute | yes |
 | Desktop notifications | yes | yes |
 | Search across all messages | yes | yes |
+| Scheduled sends | yes | yes |
 
 The app asks the server what it can do and hides the rest, so a Mac with SIP
 on still gives you a usable client.
@@ -78,6 +79,11 @@ on still gives you a usable client.
 - `Shift+Ctrl+U`: mark the conversation unread
 
 Use `Cmd` in place of `Ctrl` on macOS.
+
+Right-click the send button to schedule a message for later; the BlueBubbles
+server holds it and sends it at the scheduled time, so it still goes out once
+the client is closed. Pending sends for the open conversation show as rows
+above the composer, each with a cancel button.
 
 ## What does not work
 

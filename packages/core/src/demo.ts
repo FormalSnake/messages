@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import type { Attachment, Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from './model'
+import type { Attachment, Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
 import type { Page, SendAttachmentOptions, SendTextOptions, Transport, TransportEvent } from './transport'
 
 const MIN = 60_000
@@ -290,6 +290,9 @@ export class DemoTransport implements Transport {
   private messages = new Map<string, Message[]>()
   private timers: Array<ReturnType<typeof setTimeout>> = []
   private replyIndex = new Map<string, number>()
+  private scheduled = new Map<string, ScheduledMessage>()
+  private scheduledTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private scheduledSeq = 0
 
   constructor() {
     // Fixtures reference guids by number (replyTo), so every instance numbers from one.
@@ -502,6 +505,32 @@ export class DemoTransport implements Transport {
     this.chats.delete(chatGuid)
     this.messages.delete(chatGuid)
     this.emit({ type: 'chat-removed', chatGuid })
+  }
+
+  async scheduleText(chatGuid: string, text: string, sendAt: number): Promise<ScheduledMessage> {
+    this.scheduledSeq += 1
+    const id = `demo-scheduled-${this.scheduledSeq}`
+    const message: ScheduledMessage = { id, chatGuid, text, sendAt }
+    this.scheduled.set(id, message)
+    const timer = setTimeout(() => {
+      this.scheduled.delete(id)
+      this.scheduledTimers.delete(id)
+      void this.sendText(chatGuid, text)
+    }, Math.max(0, sendAt - Date.now()))
+    this.scheduledTimers.set(id, timer)
+    this.timers.push(timer)
+    return message
+  }
+
+  async listScheduled(): Promise<ScheduledMessage[]> {
+    return [...this.scheduled.values()].sort((a, b) => a.sendAt - b.sendAt)
+  }
+
+  async cancelScheduled(id: string): Promise<void> {
+    const timer = this.scheduledTimers.get(id)
+    if (timer) clearTimeout(timer)
+    this.scheduledTimers.delete(id)
+    this.scheduled.delete(id)
   }
 
   async react(chatGuid: string, messageGuid: string, kind: TapbackKind, options: { emoji?: string; remove?: boolean } = {}): Promise<void> {
