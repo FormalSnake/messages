@@ -643,6 +643,12 @@ export function Thread({ chat }: { chat: Chat }) {
     [chat.guid, scrollTo, shell.store],
   )
 
+  // A search result asked to open this conversation at a specific message.
+  useEffect(() => {
+    const guid = shell.consumeJump(chat.guid)
+    if (guid) jumpTo(guid)
+  }, [chat.guid, shell, jumpTo])
+
   if (messages.length === 0 && !conversationLoading(state, chat.guid)) {
     return (
       <div

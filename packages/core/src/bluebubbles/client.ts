@@ -7,6 +7,7 @@ import type { Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Serv
 import {
   TransportError,
   type Page,
+  type SearchFilters,
   type SendAttachmentOptions,
   type SendTextOptions,
   type Transport,
@@ -208,22 +209,20 @@ export class BlueBubblesTransport implements Transport {
     return { items, hasMore: raw.length === options.limit }
   }
 
-  async searchMessages(
-    query: string,
-    options: { chatGuid?: string; limit?: number; after?: number } = {},
-  ): Promise<Message[]> {
+  async searchMessages(query: string, options: SearchFilters = {}): Promise<Message[]> {
     // Empty query + after is the store's reconciliation sweep: list everything
     // created since that time, oldest first, with no text filter at all.
     const sweep = query === '' && options.after != null
+    const where = buildSearchWhere(options)
+    if (query) where.push({ statement: 'message.text LIKE :text COLLATE NOCASE', args: { text: `%${query}%` } })
     const json: Record<string, unknown> = {
       with: ['chats', 'attachments', 'payloadData', 'attributedBody'],
       sort: sweep ? 'ASC' : 'DESC',
       limit: options.limit ?? 50,
       chatGuid: options.chatGuid,
       after: options.after,
-    }
-    if (query) {
-      json.where = [{ statement: 'message.text LIKE :text COLLATE NOCASE', args: { text: `%${query}%` } }]
+      before: options.before,
+      where: where.length > 0 ? where : undefined,
     }
 
     const raw = await this.request<RawMessage[]>('POST', '/message/query', { json })
@@ -727,4 +726,43 @@ export class BlueBubblesTransport implements Transport {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+export interface WhereClause {
+  statement: string
+  args?: Record<string, unknown>
+}
+
+/**
+ * Translates the query language's resolved filters (search.ts) into
+ * `POST /message/query` where clauses. Column and join-alias names come from
+ * the server's TypeORM setup: entity columns in
+ * packages/server/src/server/databases/imessage/entity/{Message,Attachment}.ts
+ * and the join aliases (message, handle, chat, attachment) built by
+ * IMessageRepository.getMessages, both in
+ * https://github.com/BlueBubblesApp/bluebubbles-server/blob/master/packages/server/src/server/databases/imessage/
+ * `handle` and `attachment` are always joined for this route regardless of
+ * `with`; `chat` is joined because searchMessages always asks for "chats".
+ * Date filters (`before`/`after`) are not here: chat.db stores `message.date`
+ * as a Cocoa 2001-epoch integer that the server only converts for its own
+ * top-level `after`/`before` request fields (applyMessageDateQuery), so a raw
+ * where clause on that column would compare against the wrong epoch.
+ */
+export function buildSearchWhere(options: SearchFilters): WhereClause[] {
+  const where: WhereClause[] = []
+  if (options.fromMe) where.push({ statement: 'message.is_from_me = :fromMe', args: { fromMe: 1 } })
+  if (options.senders && options.senders.length > 0) where.push({ statement: 'handle.id IN (:...senders)', args: { senders: options.senders } })
+  if (options.attachments === 'image') where.push({ statement: "attachment.mime_type LIKE 'image/%'" })
+  else if (options.attachments === 'video') where.push({ statement: "attachment.mime_type LIKE 'video/%'" })
+  else if (options.attachments === 'file')
+    where.push({ statement: "attachment.mime_type IS NOT NULL AND attachment.mime_type NOT LIKE 'image/%' AND attachment.mime_type NOT LIKE 'video/%'" })
+  if (options.links)
+    where.push({
+      statement: '(message.balloon_bundle_id = :linkBundle OR message.text LIKE :linkText)',
+      args: { linkBundle: 'com.apple.messages.URLBalloonProvider', linkText: '%http%' },
+    })
+  if (options.chatGuids) {
+    where.push(options.chatGuids.length > 0 ? { statement: 'chat.guid IN (:...chatGuids)', args: { chatGuids: options.chatGuids } } : { statement: '1 = 0' })
+  }
+  return where
 }
