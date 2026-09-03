@@ -112,9 +112,11 @@ const MONOGRAM_MIN = 18
  * `overflow: 'hidden'` too.
  */
 function PhotoAvatar({ src, size }: { src: string; size: number }) {
+  // The 1px ring is drawn inside the box, so the bitmap has to sit inside the ring or its far edges get cut.
+  const inner = size - 2
   return (
     <div style={{ ...INERT, width: size, height: size, borderRadius: size / 2, flexShrink: 0, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a' }}>
-      <img src={src} objectFit="cover" style={{ width: size, height: size, borderRadius: size / 2 }} />
+      <img src={src} objectFit="cover" style={{ width: inner, height: inner, borderRadius: inner / 2 }} />
     </div>
   )
 }
