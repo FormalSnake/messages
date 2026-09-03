@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
-import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from '../model'
+import type { Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from '../model'
 import type {
   Page,
   SendAttachmentOptions,
@@ -58,6 +58,39 @@ interface RawFaceTimeStatus {
   address: string
   handle?: RawHandle | null
   is_outgoing: boolean
+}
+
+/**
+ * packages/server/src/server/api/http/api/v1/routers/scheduledMessageRouter.ts and
+ * validators/scheduledMessageValidator.ts, both registered under the "message" prefix
+ * in httpRoutes.ts: POST/GET /message/schedule, GET/PUT/DELETE /message/schedule/:id.
+ * https://github.com/BlueBubblesApp/bluebubbles-server/blob/master/packages/server/src/server/api/http/api/v1/routers/scheduledMessageRouter.ts
+ * https://github.com/BlueBubblesApp/bluebubbles-server/blob/master/packages/server/src/server/api/http/api/v1/validators/scheduledMessageValidator.ts
+ * The validator requires payload.chatGuid, payload.message and payload.method, the same
+ * three fields /message/text takes. scheduledFor and created come back as ISO strings,
+ * not epoch numbers: the entity stores them as integers but exposes JS Date objects
+ * (EpochDateTransformer), which Koa's JSON body serialises through Date.toJSON().
+ * https://github.com/BlueBubblesApp/bluebubbles-server/blob/master/packages/server/src/server/databases/server/entity/ScheduledMessage.ts
+ */
+interface RawScheduledMessage {
+  id: number
+  type: string
+  payload: { chatGuid: string; message: string; method: string }
+  scheduledFor: string | number
+  schedule: { type: string; intervalType?: string; interval?: number }
+  status: string
+  error?: string | null
+  sentAt?: string | number | null
+  created?: string | number
+}
+
+function toScheduledMessage(raw: RawScheduledMessage): ScheduledMessage {
+  return {
+    id: String(raw.id),
+    chatGuid: raw.payload.chatGuid,
+    text: raw.payload.message,
+    sendAt: new Date(raw.scheduledFor).getTime(),
+  }
 }
 
 const MESSAGE_EVENTS = ['new-message', 'updated-message', 'message-send-error']
@@ -274,6 +307,27 @@ export class BlueBubblesTransport implements Transport {
 
   async deleteChat(chatGuid: string): Promise<void> {
     await this.request('DELETE', `/chat/${encodeURIComponent(chatGuid)}`)
+  }
+
+  async scheduleText(chatGuid: string, text: string, sendAt: number): Promise<ScheduledMessage> {
+    const raw = await this.request<RawScheduledMessage>('POST', '/message/schedule', {
+      json: {
+        type: 'send-message',
+        payload: { chatGuid, message: text, method: this.sendMethod() },
+        scheduledFor: sendAt,
+        schedule: { type: 'once' },
+      },
+    })
+    return toScheduledMessage(raw)
+  }
+
+  async listScheduled(): Promise<ScheduledMessage[]> {
+    const raw = await this.request<RawScheduledMessage[]>('GET', '/message/schedule')
+    return raw.filter(item => item.type === 'send-message').map(toScheduledMessage)
+  }
+
+  async cancelScheduled(id: string): Promise<void> {
+    await this.request('DELETE', `/message/schedule/${encodeURIComponent(id)}`)
   }
 
   async react(

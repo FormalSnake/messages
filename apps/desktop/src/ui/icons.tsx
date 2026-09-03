@@ -42,6 +42,7 @@ import download from 'lucide-static/icons/download.svg' with { type: 'text' }
 import messageSquare from 'lucide-static/icons/message-square.svg' with { type: 'text' }
 import userMinus from 'lucide-static/icons/user-minus.svg' with { type: 'text' }
 import smilePlus from 'lucide-static/icons/smile-plus.svg' with { type: 'text' }
+import clock from 'lucide-static/icons/clock.svg' with { type: 'text' }
 import { C } from './theme'
 
 /**
@@ -99,6 +100,7 @@ const SOURCES = {
   download,
   conversation: messageSquare,
   removePerson: userMinus,
+  schedule: clock,
 } as const
 
 export type IconName = keyof typeof SOURCES
