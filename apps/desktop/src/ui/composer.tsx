@@ -7,6 +7,7 @@ import { IconButton, TextField, overlayShadow } from './primitives'
 import { primaryModifier, useShell } from './context'
 import { useAppState } from './use-app-state'
 import { effectName } from './thread'
+import { GifPicker } from './gif-picker'
 
 const EFFECTS = [
   'com.apple.MobileSMS.expressivesend.impact',
@@ -73,6 +74,7 @@ export function Composer({ chat }: { chat: Chat }) {
   const [effect, setEffect] = useState('none')
   const [attachOpen, setAttachOpen] = useState(false)
   const [attachPath, setAttachPath] = useState('')
+  const [gifAnchor, setGifAnchor] = useState<{ x: number; y: number } | null>(null)
   const textareaRef = useRef<PublicInstance | null>(null)
   const ready = draft.trim().length > 0
   const isSms = chat.service !== 'iMessage'
@@ -138,6 +140,26 @@ export function Composer({ chat }: { chat: Chat }) {
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x1 }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, paddingBottom: BUTTON_LIFT, flexShrink: 0 }}>
           <IconButton icon="plus" label="Attach a file" testId="attach" hit={BUTTON_HIT} size={17} active={attachOpen} onClick={() => void attach()} />
+          {shell.gifs ? (
+            <div
+              testId="gif"
+              onClick={(event: { x?: number; y?: number }) => setGifAnchor({ x: event.x ?? 0, y: (event.y ?? 0) - S.x2 })}
+              style={{
+                width: BUTTON_HIT,
+                height: BUTTON_HIT,
+                borderRadius: RADIUS.control,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                backgroundColor: gifAnchor ? C.selectedSoft : undefined,
+                hover: { backgroundColor: gifAnchor ? C.selectedSoft : C.hoverWash },
+                active: { backgroundColor: C.pressWash },
+              }}
+            >
+              <Icon name="gif" size={17} color={gifAnchor ? C.accent : C.secondary} />
+            </div>
+          ) : null}
           {state.capabilities.effects && !isSms ? (
             <Select value={effect} onValueChange={setEffect}>
               <div style={{ position: 'relative' }}>
@@ -268,6 +290,8 @@ export function Composer({ chat }: { chat: Chat }) {
           </div>
         </div>
       </div>
+
+      {gifAnchor ? <GifPicker anchor={gifAnchor} chatGuid={chat.guid} onClose={() => setGifAnchor(null)} /> : null}
     </div>
   )
 }

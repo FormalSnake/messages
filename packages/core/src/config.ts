@@ -12,6 +12,10 @@ export interface FindMyConfig {
   token: string
 }
 
+export interface KlipyConfig {
+  apiKey: string
+}
+
 export interface Config {
   server: ServerConfig | null
   /** Font family override. Defaults per platform in the theme. */
@@ -23,6 +27,8 @@ export interface Config {
   chats: Record<string, { pinned?: boolean; muted?: boolean }>
   /** Address of the `@messages/mac-agent` on the Mac, for Find My locations. */
   findMy?: FindMyConfig
+  /** Klipy GIF API key (see `gifs.ts`). The composer's GIF button only shows up when this is set. */
+  klipy?: KlipyConfig
 }
 
 const home = homedir()
@@ -62,6 +68,8 @@ export async function loadConfig(): Promise<Config> {
   const findMyUrl = process.env.MESSAGES_FINDMY_URL
   const findMyToken = process.env.MESSAGES_FINDMY_TOKEN
   if (findMyUrl && findMyToken) config.findMy = { url: findMyUrl, token: findMyToken }
+  const klipyKey = process.env.MESSAGES_KLIPY_KEY
+  if (klipyKey) config.klipy = { apiKey: klipyKey }
   return config
 }
 
