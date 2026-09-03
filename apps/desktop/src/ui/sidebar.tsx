@@ -62,10 +62,16 @@ export function chatMenu(chat: Chat, shell: ReturnType<typeof useShell>, options
   items.push(
     { label: chat.pinned ? 'Unpin' : 'Pin', icon: chat.pinned ? 'pinOff' : 'pin', onSelect: () => store.togglePin(chat.guid) },
     { label: chat.muted ? 'Show alerts' : 'Hide alerts', icon: chat.muted ? 'unmute' : 'mute', onSelect: () => store.toggleMute(chat.guid) },
+    {
+      label: chat.readReceipts === false ? 'Send read receipts' : 'Read without receipts',
+      icon: chat.readReceipts === false ? 'eye' : 'eyeOff',
+      onSelect: () => store.toggleReadReceipts(chat.guid),
+    },
     chat.unread
       ? { label: 'Mark as read', icon: 'markRead', onSelect: () => void store.markRead(chat.guid) }
       : { label: 'Mark as unread', icon: 'markUnread', shortcut: shortcut('U', { shift: true }), onSelect: () => void store.markUnread(chat.guid) },
     { label: 'Show details', icon: 'info', shortcut: shortcut('I'), onSelect: () => void store.selectChat(chat.guid).then(() => shell.setInfo(true)) },
+    { label: 'Export conversation…', icon: 'download', onSelect: () => void store.exportConversation(chat.guid) },
     { kind: 'separator' },
     { label: 'Delete conversation', icon: 'trash', danger: true, onSelect: () => confirmDelete(chat, shell) },
   )

@@ -61,6 +61,9 @@ picker.
 | Message effects (slam, confetti, and friends) | no | yes |
 | Rename groups, add and remove people, leave | no | yes |
 | Mark as unread, pin, mute | pin and mute | yes |
+| Read without receipts, per chat | yes | yes |
+| Draft sync between clients | yes | yes |
+| Export a conversation to Markdown | yes | yes |
 | Desktop notifications | yes | yes |
 | Search across all messages | yes | yes |
 
