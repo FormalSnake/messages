@@ -183,6 +183,20 @@ describe('sending', () => {
     store.stop()
   })
 
+  it('folds the socket echo of a send into the optimistic row when the echo has no temp guid', async () => {
+    const { transport, store } = await online()
+    transport.sendFailures = ['network']
+    await store.send('a', 'photo caption')
+    await settle()
+    const echo = message('a', 'photo caption', Date.now(), true)
+    transport.emit({ type: 'message', message: echo })
+    expect(store.state.messages.a?.map((item) => item.guid)).toEqual([echo.guid])
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(transport.sendCalls).toEqual(['photo caption'])
+    expect(store.pendingSends).toBe(0)
+    store.stop()
+  })
+
   it('retries a send the network dropped and fails one the server refused', async () => {
     const { transport, store } = await online()
     transport.sendFailures = ['network']
