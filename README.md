@@ -167,6 +167,30 @@ A key in Testing mode is capped at 100 requests/hour; request Production
 access in the same panel once you're done testing. The button only appears
 once `klipy` is set.
 
+## Assistant
+
+Three buttons run a message through your own [CanaryLLM](https://canaryllm.canarycoders.es)
+gateway, when it is configured:
+
+```json
+{ "canaryllm": { "apiKey": "…", "model": "gemini/gemini-2.5-flash-lite", "language": "Spanish" } }
+```
+
+`apiKey` is required (or set `MESSAGES_CANARYLLM_KEY`); `model` and `language`
+are optional and default to a cheap Gemini flash-lite model and the system
+locale's language.
+
+- **Catch me up**, the sparkle in the conversation header, summarizes the
+  messages since your last one in the thread (or the last 50).
+- **Translate**, in a bubble's right-click menu, translates it to `language`
+  and shows the result under the bubble; a second click hides it.
+- **Transcribe**, under an audio message, shows its transcript.
+
+Every button is a click, never automatic: nothing runs on a timer or on an
+incoming message, and no attachment bytes ever leave the machine, only text,
+sender name and time. Nothing is sent to anyone; the gateway only reads what
+you ask it to.
+
 ## Install on Linux
 
 You need [Bun](https://bun.sh) and a GPU with Vulkan. On NixOS you also need

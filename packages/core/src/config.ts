@@ -12,6 +12,14 @@ export interface KlipyConfig {
   apiKey: string
 }
 
+export interface CanaryLLMConfig {
+  apiKey: string
+  /** Gateway model id, `provider/model` format. Defaults to a cheap Gemini flash-lite model. */
+  model?: string
+  /** Target language for translation. Defaults to the system locale's language, then English. */
+  language?: string
+}
+
 export interface Config {
   server: ServerConfig | null
   /** Font family override. Defaults per platform in the theme. */
@@ -25,6 +33,8 @@ export interface Config {
   agent?: AgentConfig
   /** Klipy GIF API key (see `gifs.ts`). The composer's GIF button only shows up when this is set. */
   klipy?: KlipyConfig
+  /** CanaryLLM gateway for the summarize, translate and transcribe buttons. Unset hides all three. */
+  canaryllm?: CanaryLLMConfig
 }
 
 const home = homedir()
@@ -66,6 +76,8 @@ export async function loadConfig(): Promise<Config> {
   if (agentUrl && agentToken) config.agent = { url: agentUrl, token: agentToken }
   const klipyKey = process.env.MESSAGES_KLIPY_KEY
   if (klipyKey) config.klipy = { apiKey: klipyKey }
+  const canaryllmKey = process.env.MESSAGES_CANARYLLM_KEY
+  if (canaryllmKey) config.canaryllm = { ...config.canaryllm, apiKey: canaryllmKey }
   return config
 }
 

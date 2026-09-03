@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { KlipyClient, MessagesStore } from '@messages/core'
+import type { CanaryLLMClient, KlipyClient, MessagesStore } from '@messages/core'
 import type { IconName } from './icons'
 import type { ConfirmRequest } from './confirm'
 
@@ -56,6 +56,10 @@ export interface Shell {
   closeLightbox: () => void
   /** Asks before something that cannot be undone. */
   confirm: (request: ConfirmRequest) => void
+  /** Set only when `config.canaryllm` has an API key. Every button that uses it hides itself otherwise. */
+  assistant: CanaryLLMClient | null
+  /** Target language for the translate menu item: `config.canaryllm.language`, else the system locale's language, else English. */
+  assistantLanguage: string
 }
 
 export const ShellContext = createContext<Shell | null>(null)

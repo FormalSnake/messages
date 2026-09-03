@@ -406,9 +406,16 @@ function VideoAttachment({ attachment, message, fromMe, maxWidth }: { attachment
   )
 }
 
+interface Transcript {
+  loading: boolean
+  text?: string
+  error?: string
+}
+
 function AudioAttachment({ attachment, message, fromMe }: { attachment: Attachment; message: Message; fromMe: boolean }) {
   const shell = useShell()
   const [playing, setPlaying] = useState(false)
+  const [transcript, setTranscript] = useState<Transcript | null>(null)
   // playAudio spawns a player; nothing calls back when it exits, so watch it.
   useEffect(() => {
     if (!playing) return
@@ -426,16 +433,44 @@ function AudioAttachment({ attachment, message, fromMe }: { attachment: Attachme
     const local = attachment.localPath ?? (await shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => undefined))
     if (local && playAudio(local)) setPlaying(true)
   }
+  const transcribe = async () => {
+    const assistant = shell.assistant
+    if (!assistant || transcript?.loading) return
+    const local = attachment.localPath ?? (await shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => undefined))
+    if (!local || local.startsWith('data:')) {
+      setTranscript({ loading: false, error: 'Could not load the audio file.' })
+      return
+    }
+    setTranscript({ loading: true })
+    try {
+      const text = await assistant.transcribe(local)
+      setTranscript({ loading: false, text })
+    } catch (error) {
+      setTranscript({ loading: false, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
   const onFill = fromMe ? C.onAccent : C.text
   return (
-    <div
-      onClick={() => void toggle()}
-      style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, height: 40, paddingLeft: 4, paddingRight: 14, borderRadius: RADIUS.pill, backgroundColor: fromMe ? C.imessage : C.received, cursor: 'pointer', hover: { opacity: 0.9 } }}
-    >
-      <div style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: fromMe ? '#ffffff29' : C.ghost, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <svg source={playing ? STOP_GLYPH : PLAY_GLYPH} style={{ width: 13, height: 13, color: onFill, marginLeft: playing ? 0 : 2 }} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: fromMe ? 'flex-end' : 'flex-start', maxWidth: 260 }}>
+      <div
+        onClick={() => void toggle()}
+        style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, height: 40, paddingLeft: 4, paddingRight: 14, borderRadius: RADIUS.pill, backgroundColor: fromMe ? C.imessage : C.received, cursor: 'pointer', hover: { opacity: 0.9 } }}
+      >
+        <div style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: fromMe ? '#ffffff29' : C.ghost, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <svg source={playing ? STOP_GLYPH : PLAY_GLYPH} style={{ width: 13, height: 13, color: onFill, marginLeft: playing ? 0 : 2 }} />
+        </div>
+        <text style={{ ...TYPE.body, fontWeight: 600, color: onFill }}>{attachment.durationMs ? formatDuration(attachment.durationMs) : 'Audio message'}</text>
       </div>
-      <text style={{ ...TYPE.body, fontWeight: 600, color: onFill }}>{attachment.durationMs ? formatDuration(attachment.durationMs) : 'Audio message'}</text>
+      {shell.assistant && !transcript?.text ? (
+        <div testId="transcribe" onClick={() => void transcribe()} style={{ cursor: transcript?.loading ? 'default' : 'pointer', hover: transcript?.loading ? undefined : { opacity: 0.8 } }}>
+          <text style={{ ...TYPE.caption, color: transcript?.error ? C.danger : C.accent }}>{transcript?.loading ? 'Transcribing…' : (transcript?.error ?? 'Transcribe')}</text>
+        </div>
+      ) : null}
+      {transcript?.text ? (
+        <text testId="transcript" style={{ ...TYPE.caption, color: fromMe ? C.onAccentSoft : C.secondary }}>
+          {transcript.text}
+        </text>
+      ) : null}
     </div>
   )
 }
