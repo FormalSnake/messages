@@ -100,9 +100,11 @@ export function ConnectScreen({
           <Button kind="primary" testId="connect-button" onClick={submit} disabled={!valid || connecting}>
             {connecting ? 'Connecting…' : 'Connect'}
           </Button>
-          <Button testId="demo-button" onClick={onDemo}>
-            Use demo data
-          </Button>
+          {initialUrl ? null : (
+            <Button testId="demo-button" onClick={onDemo}>
+              Use demo data
+            </Button>
+          )}
         </div>
 
         <Divider />
