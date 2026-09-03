@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGpuix, Tooltip, TooltipContent, TooltipTrigger, type PublicInstance } from '@gpuix/react'
 import { TAPBACK_GLYPH, conversationMessages, type TapbackKind } from '@messages/core'
 import { useAppState } from './use-app-state'
-import { C, RADIUS, S, TYPE } from './theme'
+import { C, FONT_EMOJI, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { overlayShadow, tooltipStyle } from './primitives'
 import { shortcut, useShell, type MenuItem, type MenuRequest } from './context'
@@ -179,7 +179,7 @@ function TapbackRow({ chatGuid, messageGuid, bare }: { chatGuid: string; message
                   active: { backgroundColor: selected ? C.accent : C.pressWash, opacity: 0.75 },
                 }}
               >
-                <text style={{ fontSize: 16, lineHeight: 20, color: C.text }}>{TAPBACK_GLYPH[kind]}</text>
+                <text style={{ fontFamily: FONT_EMOJI, fontSize: 16, lineHeight: 20, color: C.text }}>{TAPBACK_GLYPH[kind]}</text>
               </div>
             </TooltipTrigger>
             <TooltipContent side="bottom" sideOffset={6} style={tooltipStyle()}>

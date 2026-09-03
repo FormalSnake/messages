@@ -19,7 +19,7 @@ import { formatSeparator, formatTime, needsSeparator } from '@messages/core'
 import { useAppState } from './use-app-state'
 import { copyText } from '@messages/core'
 import { openExternal, splitLinks } from '@messages/core'
-import { BUBBLE_MAX_FRACTION, BUBBLE_MAX_WIDTH, C, RADIUS, S, THREAD_INSET, TYPE } from './theme'
+import { BUBBLE_MAX_FRACTION, BUBBLE_MAX_WIDTH, C, FONT_EMOJI, RADIUS, S, THREAD_INSET, TYPE } from './theme'
 import { BubbleContent } from './bubble'
 import { Icon } from './icons'
 import { Avatar } from './primitives'
@@ -183,7 +183,7 @@ function Tapbacks({ tapbacks, fromMe }: { tapbacks: Tapback[]; fromMe: boolean }
             userSelect: 'none',
           }}
         >
-          <text style={{ fontSize: 12, lineHeight: 16, color: C.text }}>{item.glyph}</text>
+          <text style={{ fontFamily: FONT_EMOJI, fontSize: 12, lineHeight: 16, color: C.text }}>{item.glyph}</text>
           {item.count > 1 ? <text style={{ ...TYPE.micro, fontWeight: 600, color: C.onAccent }}>{String(item.count)}</text> : null}
         </div>
       ))}

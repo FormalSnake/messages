@@ -85,6 +85,15 @@ const darwin = typeof process !== 'undefined' && process.platform === 'darwin'
 export const FONT_SANS = process.env.MESSAGES_FONT ?? (darwin ? 'SF Pro Text' : 'Noto Sans')
 
 /**
+ * Named on the nodes that hold nothing but emoji. cosmic-text, the Linux text
+ * stack under GPUI, has no notion of emoji presentation: it gives a codepoint
+ * to the first family in its own hardcoded fallback list that has a glyph for
+ * it, and for the tapbacks (‼️ especially) that is a monochrome text face.
+ * Asking for the emoji family by name is the only way past it.
+ */
+export const FONT_EMOJI = 'Apple Color Emoji'
+
+/**
  * One scale, every gap and inset is a step on it. `S.x1` is 4px.
  * Nothing in the UI should use a spacing number that is not from here.
  */

@@ -5,7 +5,7 @@ import { attachmentsDir, formatBytes } from '@messages/core'
 import { isAudioPlaying, openExternal, playAudio, splitLinks, stopAudio } from '@messages/core'
 import playSource from 'lucide-static/icons/play.svg' with { type: 'text' }
 import stopSource from 'lucide-static/icons/square.svg' with { type: 'text' }
-import { BUBBLE_MAX_WIDTH, C, RADIUS, S, TYPE } from './theme'
+import { BUBBLE_MAX_WIDTH, C, FONT_EMOJI, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { useShell } from './context'
 
@@ -556,7 +556,7 @@ export function BubbleContent({ message, chat, fromMe, textColor, handlers }: { 
   if (emojiOnly) {
     return (
       <div style={column} onClick={handlers?.onClick} onAuxClick={handlers?.onMenu}>
-        <text style={{ fontSize: 40, lineHeight: 48, color: C.text }}>{message.text.trim()}</text>
+        <text style={{ fontFamily: FONT_EMOJI, fontSize: 40, lineHeight: 48, color: C.text }}>{message.text.trim()}</text>
       </div>
     )
   }
