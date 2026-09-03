@@ -65,9 +65,19 @@ export function chatMenu(chat: Chat, shell: ReturnType<typeof useShell>, options
       : { label: 'Mark as unread', icon: 'markUnread', shortcut: shortcut('U', { shift: true }), onSelect: () => void store.markUnread(chat.guid) },
     { label: 'Show details', icon: 'info', shortcut: shortcut('I'), onSelect: () => void store.selectChat(chat.guid).then(() => shell.setInfo(true)) },
     { kind: 'separator' },
-    { label: 'Delete conversation', icon: 'trash', danger: true, onSelect: () => void store.deleteChat(chat.guid) },
+    { label: 'Delete conversation', icon: 'trash', danger: true, onSelect: () => confirmDelete(chat, shell) },
   )
   return items
+}
+
+export function confirmDelete(chat: Chat, shell: ReturnType<typeof useShell>): void {
+  shell.confirm({
+    title: `Delete “${chatTitle(chat)}”?`,
+    body: 'The conversation is removed on your Mac and on every device that syncs with it.',
+    action: 'Delete',
+    danger: true,
+    onConfirm: () => void shell.store.deleteChat(chat.guid),
+  })
 }
 
 const ChatRow = memo(function ChatRow({ chat, selected, cursored, onSelect, onArrow, register }: RowProps) {
@@ -107,9 +117,9 @@ const ChatRow = memo(function ChatRow({ chat, selected, cursored, onSelect, onAr
       }}
     >
       <div style={{ width: DOT_COLUMN, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        {chat.unread && !selected ? <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.unread }} /> : null}
+        {chat.unread && !selected ? <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.unread, pointerEvents: 'none' }} /> : null}
       </div>
-      <Avatar chat={chat} size={AVATAR_ROW} surface={selected ? C.selected : C.sidebar} />
+      <Avatar chat={chat} size={AVATAR_ROW} />
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, gap: 1 }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1 }}>
           <text style={{ ...TYPE.body, fontWeight: 600, color: fg, flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
@@ -169,22 +179,23 @@ function PinnedChat({ chat, selected, cursored, onSelect, onArrow, register }: R
             borderColor: selected ? C.accent : C.transparent,
           }}
         >
-          <Avatar chat={chat} size={52} surface={C.sidebar} />
+          <Avatar chat={chat} size={52} />
         </div>
         {chat.unread ? (
-          <div style={{ position: 'absolute', top: 0, left: 0, width: 14, height: 14, borderRadius: 7, backgroundColor: C.unread, borderWidth: 2, borderColor: C.sidebar }} />
+          <div style={{ position: 'absolute', top: 0, left: 0, width: 14, height: 14, borderRadius: 7, backgroundColor: C.unread, borderWidth: 2, borderColor: C.sidebar, pointerEvents: 'none' }} />
         ) : null}
       </div>
       <text style={{ ...TYPE.micro, color: selected ? C.text : C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis', maxWidth: PINNED_CELL - S.x2, textAlign: 'center' }}>
-        {firstName(title)}
+        {chat.isGroup ? title : firstName(title)}
       </text>
     </div>
   )
 }
 
-function StatusLine({ status, host, error }: { status: ConnectionStatus; host: string; error?: string }) {
+function StatusLine({ status, host, pending }: { status: ConnectionStatus; host: string; pending: number }) {
   const color = status === 'online' ? C.online : status === 'connecting' ? C.warning : C.offline
-  const label = status === 'online' ? host : status === 'connecting' ? 'Connecting…' : (error ?? 'Offline')
+  const queued = pending > 0 ? ` · ${pending === 1 ? '1 message waiting' : `${pending} messages waiting`}` : ''
+  const label = status === 'online' ? host + queued : status === 'connecting' ? `Connecting…${queued}` : `Offline, retrying…${queued}`
   return (
     <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, minWidth: 0, flexGrow: 1 }}>
       <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: color, flexShrink: 0 }} />
@@ -440,7 +451,7 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
           borderColor: C.sidebarBorder,
         }}
       >
-        <StatusLine status={state.status} host={host} error={state.error} />
+        <StatusLine status={state.status} host={host} pending={shell.store.pendingSends} />
         <IconButton icon="settings" label={`Server settings (${shortcut(',')})`} testId="settings" onClick={shell.openSettings} />
       </div>
     </div>

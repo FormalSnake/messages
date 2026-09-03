@@ -5,7 +5,7 @@ import { Icon, type IconName } from './icons'
 import { LocationCard } from './location'
 import { Avatar, Button, Divider, IconButton, SectionLabel, TextField } from './primitives'
 import { shortcut, useShell, type MenuItem } from './context'
-import { chatMenu } from './sidebar'
+import { chatMenu, confirmDelete } from './sidebar'
 import { useAppState } from './use-app-state'
 
 export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: boolean }) {
@@ -69,7 +69,7 @@ export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: b
           active: { backgroundColor: C.pressWash },
         }}
       >
-        <Avatar chat={chat} size={30} surface={C.canvas} />
+        <Avatar chat={chat} size={30} />
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
           <text testId="thread-title" style={{ ...TYPE.title, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
             {title}
@@ -180,7 +180,7 @@ function Participant({ handle, chat, manage }: { handle: Handle; chat: Chat; man
         hover: { backgroundColor: C.raised },
       }}
     >
-      <Avatar handle={handle} size={28} surface={C.sidebar} />
+      <Avatar handle={handle} size={28} />
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
         <text style={{ ...TYPE.body, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{handleName(handle)}</text>
         {handle.name ? <text style={{ ...TYPE.micro, color: C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{formatAddress(handle.address)}</text> : null}
@@ -198,9 +198,15 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
   const state = useAppState(store)
   const [name, setName] = useState(chat.displayName ?? '')
   const [address, setAddress] = useState('')
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const [confirmLeave, setConfirmLeave] = useState(false)
   const manage = state.capabilities.groupManagement && chat.isGroup
+  const leave = () =>
+    shell.confirm({
+      title: `Leave “${chatTitle(chat)}”?`,
+      body: 'You stop getting its messages. Someone in the group can add you back.',
+      action: 'Leave',
+      danger: true,
+      onConfirm: () => void store.leaveGroup(chat.guid),
+    })
 
   // The details panel is the only Find My consumer, so it drives the store's poll.
   useEffect(() => {
@@ -233,7 +239,7 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2, paddingTop: S.x1, paddingBottom: S.x5, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
-        <Avatar chat={chat} size={72} surface={C.sidebar} />
+        <Avatar chat={chat} size={72} />
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
           <text style={{ ...TYPE.large, fontSize: 17, lineHeight: 22, color: C.text, textAlign: 'center' }}>{chatTitle(chat)}</text>
           <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>
@@ -300,21 +306,8 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, paddingBottom: S.x4, flexShrink: 0 }}>
-        {chat.isGroup && state.capabilities.groupManagement ? (
-          <Row
-            icon="leave"
-            label={confirmLeave ? 'Leave for good?' : 'Leave conversation'}
-            danger
-            onClick={confirmLeave ? () => void store.leaveGroup(chat.guid).then(() => setConfirmLeave(false)) : () => setConfirmLeave(true)}
-          />
-        ) : null}
-        <Row
-          icon="trash"
-          label={confirmDelete ? 'Delete for good?' : 'Delete conversation'}
-          danger
-          testId={confirmDelete ? 'confirm-delete' : 'delete-chat'}
-          onClick={confirmDelete ? () => void store.deleteChat(chat.guid) : () => setConfirmDelete(true)}
-        />
+        {chat.isGroup && state.capabilities.groupManagement ? <Row icon="leave" label="Leave conversation" danger onClick={leave} /> : null}
+        <Row icon="trash" label="Delete conversation" danger testId="delete-chat" onClick={() => confirmDelete(chat, shell)} />
       </div>
     </div>
   )

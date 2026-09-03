@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react'
 import type { MessagesStore } from '@messages/core'
 import type { IconName } from './icons'
+import type { ConfirmRequest } from './confirm'
 
 export type MenuItem =
   | {
@@ -50,6 +51,8 @@ export interface Shell {
   focusSearch: () => void
   openLightbox: (target: LightboxTarget) => void
   closeLightbox: () => void
+  /** Asks before something that cannot be undone. */
+  confirm: (request: ConfirmRequest) => void
 }
 
 export const ShellContext = createContext<Shell | null>(null)
