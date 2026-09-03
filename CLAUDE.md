@@ -164,3 +164,6 @@ server cannot do instead of failing on click.
   only the legacy `incoming-facetime` event fires and nothing can be answered.
   The FaceTime helper needs `enable_ft_private_api` and does not inject on
   macOS 26 (bluebubbles-server#776).
+- Scheduled sends (`POST /message/schedule`) are `Transport.scheduleText`,
+  `listScheduled` and `cancelScheduled`; the server holds and fires them, not
+  the client.
