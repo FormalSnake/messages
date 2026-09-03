@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
+import { squareThumbnail } from '../image'
 import type { Chat, Contact, Handle, Message, ServerInfo, Service, TapbackKind } from '../model'
 import {
   TransportError,
@@ -415,20 +416,30 @@ export class BlueBubblesTransport implements Transport {
     return this.avatarsReady
   }
 
+  // The photo as Contacts hands it over is kept as the change marker; what
+  // the window shows is the square cut of it (see squareThumbnail).
   private async saveContactAvatar(raw: RawContact): Promise<string | undefined> {
     if (!raw.avatar) return undefined
     const bytes = Buffer.from(raw.avatar, 'base64')
     const path = join(this.avatarsDir(), `contact-${raw.id}.jpg`)
+    const square = join(this.avatarsDir(), `contact-${raw.id}.png`)
     const existing = await stat(path).catch(() => undefined)
-    if (existing?.size === bytes.byteLength) return path
+    if (existing?.size === bytes.byteLength && (await Bun.file(square).exists())) return square
     await this.ensureAvatarsDir()
     await Bun.write(path, bytes)
-    return path
+    return this.writeSquare(bytes, square, path)
   }
 
-  private chatIconPath(chatGuid: string): string {
+  private async writeSquare(bytes: Uint8Array, square: string, fallback: string): Promise<string> {
+    const png = squareThumbnail(bytes)
+    if (!png) return fallback
+    await Bun.write(square, png)
+    return square
+  }
+
+  private chatIconPath(chatGuid: string, extension = 'jpg'): string {
     const hash = createHash('sha1').update(chatGuid).digest('hex')
-    return join(this.avatarsDir(), `chat-${hash}.jpg`)
+    return join(this.avatarsDir(), `chat-${hash}.${extension}`)
   }
 
   /**
@@ -439,9 +450,12 @@ export class BlueBubblesTransport implements Transport {
   private async fetchChatIcon(chatGuid: string): Promise<string | undefined> {
     if (this.iconMisses.has(chatGuid)) return undefined
     const path = this.chatIconPath(chatGuid)
+    const square = this.chatIconPath(chatGuid, 'png')
+    if (await Bun.file(square).exists()) return square
     if (await Bun.file(path).exists()) return path
 
     return this.withIconSlot(async () => {
+      if (await Bun.file(square).exists()) return square
       if (await Bun.file(path).exists()) return path
       try {
         const response = await fetch(this.buildUrl(`/chat/${encodeURIComponent(chatGuid)}/icon`), {
@@ -453,8 +467,9 @@ export class BlueBubblesTransport implements Transport {
         }
         if (!response.ok) return undefined
         await this.ensureAvatarsDir()
-        await Bun.write(path, await response.arrayBuffer())
-        return path
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        await Bun.write(path, bytes)
+        return this.writeSquare(bytes, square, path)
       } catch {
         return undefined
       }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { fitInside, imageSize, imageSizeFromBytes } from './image'
+import { encode as encodeJpeg } from 'jpeg-js'
+import { PNG } from 'pngjs'
+import { fitInside, imageSize, imageSizeFromBytes, squareCrop, squareThumbnail } from './image'
 
 function png(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(33)
@@ -40,4 +42,46 @@ describe('imageSize', () => {
 describe('fitInside', () => {
   it('scales tall images down to the height cap', () => expect(fitInside({ width: 600, height: 1300 }, 320, 420)).toEqual({ width: 194, height: 420 }))
   it('never scales up', () => expect(fitInside({ width: 100, height: 50 }, 320, 420)).toEqual({ width: 100, height: 50 }))
+})
+
+/** width x height RGBA, the left half red and the right half blue. */
+function pixels(width: number, height: number): { width: number; height: number; data: Uint8Array } {
+  const data = new Uint8Array(width * height * 4)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4
+      data[offset] = x < width / 2 ? 255 : 0
+      data[offset + 2] = x < width / 2 ? 0 : 255
+      data[offset + 3] = 255
+    }
+  }
+  return { width, height, data }
+}
+
+describe('squareCrop', () => {
+  it('keeps the centre of a wide image and shrinks it to the side', () => {
+    const out = squareCrop(pixels(400, 100), 50)
+    expect([out.width, out.height]).toEqual([50, 50])
+    // The centre column of a wide image straddles the red/blue seam.
+    expect(out.data[0]).toBe(255)
+    expect(out.data[(50 - 1) * 4 + 2]).toBe(255)
+  })
+  it('never scales up', () => expect(squareCrop(pixels(30, 40), 256).width).toBe(30))
+})
+
+describe('squareThumbnail', () => {
+  it('turns a portrait jpeg into a square png', () => {
+    const jpeg = encodeJpeg({ ...pixels(60, 120), data: Buffer.from(pixels(60, 120).data) }, 90).data
+    const out = squareThumbnail(jpeg, 32)
+    expect(out).not.toBeNull()
+    const png = PNG.sync.read(out!)
+    expect([png.width, png.height]).toEqual([32, 32])
+  })
+  it('reads png too', () => {
+    const png = new PNG({ width: 20, height: 10 })
+    png.data = Buffer.from(pixels(20, 10).data)
+    const out = squareThumbnail(PNG.sync.write(png), 256)
+    expect(out && PNG.sync.read(out).width).toBe(10)
+  })
+  it('leaves anything else alone', () => expect(squareThumbnail(new Uint8Array([1, 2, 3, 4]))).toBeNull())
 })

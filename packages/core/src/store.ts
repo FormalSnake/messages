@@ -76,6 +76,8 @@ const PAGE = 50
 /** The server is slow per message once attributedBody is requested, and one big request can hang it for minutes. */
 const SWEEP_PAGE = 10
 const TYPING_IDLE_MS = 3000
+/** Messages.app drops a typing bubble after about a minute if the other side never sends; so do we, in case the stop event is lost. */
+const TYPING_SHOWN_MAX_MS = 60_000
 const CONNECT_RETRY_MS = 2000
 const CONNECT_RETRY_MAX_MS = 30_000
 const SEND_ATTEMPTS = 4
@@ -124,6 +126,7 @@ export class MessagesStore {
   private pendingReactions = new Map<string, Reaction[]>()
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private typingSent = new Set<string>()
+  private typingShown = new Map<string, ReturnType<typeof setTimeout>>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
   private reconciling = false
   private agent: MacAgentClient | null
@@ -222,6 +225,7 @@ export class MessagesStore {
     if (this.locationsTimer) clearInterval(this.locationsTimer)
     this.locationsTimer = null
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
+    for (const timer of this.typingShown.values()) clearTimeout(timer)
     this.transport.disconnect()
     void this.options.cache?.flush()
   }
@@ -315,7 +319,7 @@ export class MessagesStore {
         this.set({ chats: this.state.chats.filter((chat) => chat.guid !== event.chatGuid) })
         return
       case 'typing':
-        this.set({ typing: { ...this.state.typing, [this.resolveChatGuid(event.chatGuid)]: event.typing } })
+        this.showTyping(this.resolveChatGuid(event.chatGuid), event.typing)
         return
       case 'read':
         this.patchChat(this.resolveChatGuid(event.chatGuid), { unread: !event.read })
@@ -531,7 +535,7 @@ export class MessagesStore {
         .then((fetched) => this.upsertChat(fetched))
         .catch(() => undefined)
     }
-    if (isNew && !message.fromMe) this.set({ typing: { ...this.state.typing, [chatGuid]: false } })
+    if (isNew && !message.fromMe) this.showTyping(chatGuid, false)
   }
 
   private foldPending(existing: Tapback[], pending: Reaction[]): Tapback[] {
@@ -559,6 +563,15 @@ export class MessagesStore {
     const existing = this.typingTimers.get(chatGuid)
     if (existing) clearTimeout(existing)
     this.typingTimers.set(chatGuid, setTimeout(() => void this.stopTyping(chatGuid), TYPING_IDLE_MS))
+  }
+
+  private showTyping(chatGuid: string, typing: boolean): void {
+    const timer = this.typingShown.get(chatGuid)
+    if (timer) clearTimeout(timer)
+    this.typingShown.delete(chatGuid)
+    if (typing) this.typingShown.set(chatGuid, setTimeout(() => this.showTyping(chatGuid, false), TYPING_SHOWN_MAX_MS))
+    if (Boolean(this.state.typing[chatGuid]) === typing) return
+    this.set({ typing: { ...this.state.typing, [chatGuid]: typing } })
   }
 
   private async stopTyping(chatGuid: string): Promise<void> {
