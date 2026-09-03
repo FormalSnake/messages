@@ -181,8 +181,10 @@ export function macosMajor(info: ServerInfo | null): number {
 export function capabilitiesFor(info: ServerInfo | null): Capabilities {
   const privateApi = Boolean(info?.privateApi && info.helperConnected)
   // On macOS 26 the BlueBubbles helper calls an IMChat edit selector that no
-  // longer exists, which crashes Messages.app and drops the helper for 30 s.
+  // longer exists, which crashes Messages.app and drops the helper for 30 s,
+  // and its FaceTime helper does not inject at all (bluebubbles-server#776).
   const editWorks = privateApi && macosMajor(info) < 26
+  const faceTimeWorks = privateApi && macosMajor(info) < 26
   return {
     reactions: privateApi,
     typing: privateApi,
@@ -193,7 +195,7 @@ export function capabilitiesFor(info: ServerInfo | null): Capabilities {
     effects: privateApi,
     groupManagement: privateApi,
     markUnread: privateApi,
-    facetime: privateApi,
+    facetime: faceTimeWorks,
     scheduledMessages: Boolean(info),
   }
 }

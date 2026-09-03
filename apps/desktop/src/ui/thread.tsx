@@ -1,6 +1,20 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useGpuix, type PublicInstance } from '@gpuix/react'
-import { deliveryState, handleName, tapbackGlyph, type Attachment, type Capabilities, type Chat, type Message, type Tapback } from '@messages/core'
+import {
+  conversationHasOlder,
+  conversationKey,
+  conversationLoading,
+  conversationMessages,
+  conversationTyping,
+  deliveryState,
+  handleName,
+  tapbackGlyph,
+  type Attachment,
+  type Capabilities,
+  type Chat,
+  type Message,
+  type Tapback,
+} from '@messages/core'
 import { formatSeparator, formatTime, needsSeparator } from '@messages/core'
 import { useAppState } from './use-app-state'
 import { copyText } from '@messages/core'
@@ -507,9 +521,10 @@ function Caption({ children, top = S.x4, bottom = S.x2 }: { children: string; to
 export function Thread({ chat }: { chat: Chat }) {
   const shell = useShell()
   const state = useAppState(shell.store)
-  const messages = state.messages[chat.guid] ?? []
-  const typing = Boolean(state.typing[chat.guid])
-  const loading = Boolean(state.loading[chat.guid]) && messages.length > 0
+  const messages = useMemo(() => conversationMessages(state, chat.guid), [state.messages, state.merged, state.primaryOf, chat.guid])
+  const typing = conversationTyping(state, chat.guid)
+  const loading = conversationLoading(state, chat.guid) && messages.length > 0
+  const listKey = conversationKey(state, chat.guid)
   const [threadFor, setThreadFor] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<string | null>(null)
   const { renderer } = useGpuix()
@@ -527,13 +542,13 @@ export function Thread({ chat }: { chat: Chat }) {
 
   useEffect(() => {
     requested.current = false
-  }, [chat.guid, messages.length])
+  }, [listKey, messages.length])
 
   useEffect(() => {
     setThreadFor(null)
     setHighlight(null)
     pendingJump.current = null
-  }, [chat.guid])
+  }, [listKey])
 
   const scrollTo = useCallback(
     (guid: string) => {
@@ -565,9 +580,9 @@ export function Thread({ chat }: { chat: Chat }) {
       void (async () => {
         for (let page = 0; page < 12; page += 1) {
           const store = shell.store
-          if (store.state.messages[chat.guid]?.some((message) => message.guid === guid)) return
-          if (store.state.hasOlder[chat.guid] === false) break
-          await store.loadOlder(chat.guid)
+          if (conversationMessages(store.state, chat.guid).some((message) => message.guid === guid)) return
+          if (!conversationHasOlder(store.state, chat.guid)) break
+          await store.loadEarlier(chat.guid)
         }
         if (pendingJump.current === guid) pendingJump.current = null
       })()
@@ -575,7 +590,7 @@ export function Thread({ chat }: { chat: Chat }) {
     [chat.guid, scrollTo, shell.store],
   )
 
-  if (messages.length === 0 && !state.loading[chat.guid]) {
+  if (messages.length === 0 && !conversationLoading(state, chat.guid)) {
     return (
       <div
         testId="thread"
@@ -636,7 +651,7 @@ export function Thread({ chat }: { chat: Chat }) {
   return (
     <div testId="thread" style={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <virtual-list
-        key={chat.guid}
+        key={listKey}
         ref={listRef}
         alignment="bottom"
         followTail
@@ -644,9 +659,9 @@ export function Thread({ chat }: { chat: Chat }) {
         overdraw={700}
         onVisibleRange={(event) => {
           if ((event.startIndex ?? 99) > 3 || requested.current) return
-          if (!state.hasOlder[chat.guid] || state.loading[chat.guid]) return
+          if (!conversationHasOlder(state, chat.guid) || conversationLoading(state, chat.guid)) return
           requested.current = true
-          void shell.store.loadOlder(chat.guid)
+          void shell.store.loadEarlier(chat.guid)
         }}
         style={{ flexGrow: 1, minHeight: 0, width: '100%', paddingBottom: S.x2 }}
       >

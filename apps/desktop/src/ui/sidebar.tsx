@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useGpuix, type PublicInstance } from '@gpuix/react'
-import { chatTitle, handleName, type Chat, type Message } from '@messages/core'
+import { chatTitle, conversationChats, conversationGuid, conversationTyping, conversationUnread, handleName, type Chat, type Message } from '@messages/core'
 import { formatListDate } from '@messages/core'
 import { useAppState } from './use-app-state'
 import type { ConnectionStatus } from '@messages/core'
@@ -18,6 +18,7 @@ interface RowProps {
   chat: Chat
   selected: boolean
   typing?: boolean
+  unread?: boolean
   /** The row the keyboard is on. gpuix has no focus event, so the list owns this. */
   cursored: boolean
   onSelect: (guid: string) => void
@@ -81,7 +82,7 @@ export function confirmDelete(chat: Chat, shell: ReturnType<typeof useShell>): v
   })
 }
 
-const ChatRow = memo(function ChatRow({ chat, selected, typing = false, cursored, onSelect, onArrow, register }: RowProps) {
+const ChatRow = memo(function ChatRow({ chat, selected, typing = false, unread = chat.unread, cursored, onSelect, onArrow, register }: RowProps) {
   const shell = useShell()
   const title = chatTitle(chat)
   const preview = typing ? 'Typing…' : previewText(chat.lastMessage, chat)
@@ -118,7 +119,7 @@ const ChatRow = memo(function ChatRow({ chat, selected, typing = false, cursored
       }}
     >
       <div style={{ width: DOT_COLUMN, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        {chat.unread && !selected ? <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.unread, pointerEvents: 'none' }} /> : null}
+        {unread && !selected ? <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.unread, pointerEvents: 'none' }} /> : null}
       </div>
       <Avatar chat={chat} size={AVATAR_ROW} />
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, gap: 1 }}>
@@ -135,7 +136,7 @@ const ChatRow = memo(function ChatRow({ chat, selected, typing = false, cursored
   )
 })
 
-function PinnedChat({ chat, selected, cursored, onSelect, onArrow, register }: RowProps) {
+function PinnedChat({ chat, selected, unread = chat.unread, cursored, onSelect, onArrow, register }: RowProps) {
   const shell = useShell()
   const title = chatTitle(chat)
   return (
@@ -182,7 +183,7 @@ function PinnedChat({ chat, selected, cursored, onSelect, onArrow, register }: R
         >
           <Avatar chat={chat} size={52} />
         </div>
-        {chat.unread ? (
+        {unread ? (
           <div style={{ position: 'absolute', top: 0, left: 0, width: 14, height: 14, borderRadius: 7, backgroundColor: C.unread, borderWidth: 2, borderColor: C.sidebar, pointerEvents: 'none' }} />
         ) : null}
       </div>
@@ -296,13 +297,14 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
     }
   }, [needle, shell.store])
 
+  const people = useMemo(() => conversationChats(state), [state.chats, state.primaryOf])
   const visible = useMemo(() => {
-    if (!needle) return state.chats
-    return state.chats.filter((chat) => {
+    if (!needle) return people
+    return people.filter((chat) => {
       const haystack = [chatTitle(chat), chat.identifier, ...chat.participants.map((p) => `${p.address} ${p.name ?? ''}`)].join(' ').toLowerCase()
       return haystack.includes(needle)
     })
-  }, [state.chats, needle])
+  }, [people, needle])
 
   const pinned = needle ? [] : visible.filter((chat) => chat.pinned)
   const rest = needle ? visible : visible.filter((chat) => !chat.pinned)
@@ -311,7 +313,7 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
     setCursor(guid)
     const instance = rows.current.get(guid)
     if (instance && renderer?.focusElement) renderer.focusElement(instance.id)
-    void shell.store.selectChat(guid)
+    void shell.store.selectChat(conversationGuid(state, guid))
   }
   const host = state.server ? (shell.store.transport.kind === 'demo' ? 'Demo data' : `macOS ${state.server.macosVersion ?? ''}`.trim()) : ''
   const chatByGuid = new Map(state.chats.map((chat) => [chat.guid, chat]))
@@ -399,6 +401,7 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
                   key={chat.guid}
                   chat={chat}
                   selected={chat.guid === state.selectedChat}
+                  unread={conversationUnread(state, chat.guid)}
                   cursored={chat.guid === cursor}
                   onSelect={select}
                   onArrow={onArrow}
@@ -414,7 +417,8 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
             key={chat.guid}
             chat={chat}
             selected={chat.guid === state.selectedChat}
-            typing={Boolean(state.typing[chat.guid])}
+            typing={conversationTyping(state, chat.guid)}
+            unread={conversationUnread(state, chat.guid)}
             cursored={chat.guid === cursor}
             onSelect={select}
             onArrow={onArrow}
@@ -425,7 +429,7 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
           <div style={{ display: 'flex', flexDirection: 'column', paddingTop: S.x3, flexShrink: 0 }}>
             <text style={{ ...TYPE.micro, fontWeight: 600, color: C.tertiary, paddingLeft: ROW_INSET, paddingBottom: S.x1 }}>Messages</text>
             {results.map((message) => {
-              const chat = chatByGuid.get(message.chatGuid)
+              const chat = chatByGuid.get(conversationGuid(state, message.chatGuid))
               return chat ? <SearchResult key={message.guid} message={message} chat={chat} onSelect={select} /> : null
             })}
           </div>

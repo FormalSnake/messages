@@ -12,6 +12,8 @@ import {
   type Transport,
   StateCache,
   cacheDir,
+  conversationChats,
+  conversationGuid,
 } from '@messages/core'
 import { C, FONT_SANS, RADIUS, S, SIDEBAR_WIDTH, SIDEBAR_WIDTH_COMPACT, INFO_WIDTH, TYPE } from './theme'
 import { Icon } from './icons'
@@ -71,7 +73,7 @@ function useStore(config: Config, override: Transport | undefined, saveConfig: M
         if (!latest.current.config.notifications) return
         void notifyIncoming(chat, message, { target, icon: NOTIFICATION_ICON }).then((action) => {
           if (action !== 'open') return
-          void latest.current.store?.selectChat(chat.guid)
+          void latest.current.store?.selectChat(chat.guid)  // the store folds a member into its conversation
           latest.current.activate()
         })
       },
@@ -230,9 +232,10 @@ function Workspace({
   )
 
   const stepChat = (delta: number) => {
-    if (state.chats.length === 0) return
-    const index = state.chats.findIndex((chat) => chat.guid === state.selectedChat)
-    const next = state.chats[(index + delta + state.chats.length) % state.chats.length]
+    const rows = conversationChats(state)
+    if (rows.length === 0) return
+    const index = rows.findIndex((chat) => chat.guid === state.selectedChat)
+    const next = rows[(index + delta + rows.length) % rows.length]
     if (next) {
       setNewChat(false)
       void store.selectChat(next.guid)

@@ -3,6 +3,7 @@ import { normalizeAddress, type FriendLocation } from './findmy'
 import { openExternal } from './open'
 import { imageSize } from './image'
 import { snapshotForCache, type StateCache } from './cache'
+import { conversationGuid, conversationMembers, groupChats, type Grouping } from './conversations'
 import {
   capabilitiesFor,
   handleName,
@@ -27,7 +28,7 @@ export interface FaceTimeCall {
   error?: string
 }
 
-export interface AppState {
+export interface AppState extends Grouping {
   status: ConnectionStatus
   /** Why the last connection attempt failed, while `status` is not `online`. */
   connectionError?: string
@@ -163,6 +164,8 @@ export class MessagesStore {
       locations: {},
       locationsUpdatedAt: 0,
       findMy: 'off',
+      primaryOf: {},
+      merged: {},
     }
   }
 
@@ -174,7 +177,14 @@ export class MessagesStore {
   getSnapshot = (): AppState => this.state
 
   private set(patch: Partial<AppState>): void {
-    this.state = { ...this.state, ...patch }
+    let next = { ...this.state, ...patch }
+    if ('chats' in patch || 'contacts' in patch) {
+      const grouping = groupChats(next.chats, next.contacts)
+      // The open thread follows its conversation when a newer member becomes the primary.
+      const selected = next.selectedChat ? conversationGuid(grouping, next.selectedChat) : null
+      next = { ...next, ...grouping, selectedChat: selected }
+    }
+    this.state = next
     for (const listener of this.listeners) listener()
     if (this.options.cache && ('chats' in patch || 'messages' in patch || 'contacts' in patch || 'selectedChat' in patch)) {
       this.options.cache.schedule(() => snapshotForCache(this.state))
@@ -400,6 +410,13 @@ export class MessagesStore {
 
   /** The chat behind an entry of the Mac's pin list: chat.db's group id for a group, an address for a one-to-one chat. */
   private chatForPin(identifier: string): Chat | undefined {
+    const found = this.chatMatching(identifier)
+    if (!found) return undefined
+    const primary = conversationGuid(this.state, found.guid)
+    return primary === found.guid ? found : this.state.chats.find((chat) => chat.guid === primary)
+  }
+
+  private chatMatching(identifier: string): Chat | undefined {
     const byId = this.state.chats.find((chat) => chat.groupId === identifier || chat.guid === identifier)
     if (byId) return byId
     if (identifier.includes(';')) {
@@ -427,15 +444,21 @@ export class MessagesStore {
     this.set({ chats: sortChats(this.state.chats.map((chat) => (chat.guid === chatGuid ? { ...chat, ...patch } : chat))) })
   }
 
-  async selectChat(chatGuid: string | null): Promise<void> {
+  async selectChat(guid: string | null): Promise<void> {
+    const chatGuid = guid ? conversationGuid(this.state, guid) : null
     const previous = this.state.selectedChat
     if (previous && previous !== chatGuid) void this.stopTyping(previous)
     this.set({ selectedChat: chatGuid })
     if (!chatGuid) return
     // A chat the socket or the sweep touched holds a few recent rows and no page boundary yet; page it before showing it.
-    if (this.state.hasOlder[chatGuid] === undefined) await this.loadOlder(chatGuid)
-    const chat = this.state.chats.find((item) => item.guid === chatGuid)
-    if (chat?.unread) void this.markRead(chatGuid)
+    await Promise.all(conversationMembers(this.state, chatGuid).map((member) => (this.state.hasOlder[member] === undefined ? this.loadOlder(member) : undefined)))
+    const unread = conversationMembers(this.state, chatGuid).some((member) => this.state.chats.find((item) => item.guid === member)?.unread)
+    if (unread) void this.markRead(chatGuid)
+  }
+
+  /** Pages every member of the conversation back by one page. */
+  async loadEarlier(guid: string): Promise<void> {
+    await Promise.all(conversationMembers(this.state, guid).map((member) => this.loadOlder(member)))
   }
 
   async loadOlder(chatGuid: string): Promise<void> {
@@ -473,8 +496,13 @@ export class MessagesStore {
     return true
   }
 
+  /** Looks through every member of the conversation, so a guid found in the merged thread resolves. */
   private findMessage(chatGuid: string, guid: string): Message | undefined {
-    return this.state.messages[chatGuid]?.find((message) => message.guid === guid)
+    for (const member of conversationMembers(this.state, chatGuid)) {
+      const found = this.state.messages[member]?.find((message) => message.guid === guid)
+      if (found) return found
+    }
+    return undefined
   }
 
   private applyReactionTo(chatGuid: string, target: Message, reaction: Message): void {
@@ -487,7 +515,8 @@ export class MessagesStore {
     this.replaceMessage(chatGuid, { ...target, tapbacks })
   }
 
-  private replaceMessage(chatGuid: string, message: Message): void {
+  private replaceMessage(_chatGuid: string, message: Message): void {
+    const chatGuid = message.chatGuid
     const list = this.state.messages[chatGuid] ?? []
     this.set({ messages: { ...this.state.messages, [chatGuid]: list.map((item) => (item.guid === message.guid ? message : item)) } })
   }
@@ -524,7 +553,7 @@ export class MessagesStore {
     const chat = this.state.chats.find((item) => item.guid === chatGuid)
     const newest = next[next.length - 1]
     if (chat && newest && newest.guid === message.guid) {
-      const selectedAndVisible = this.state.selectedChat === chatGuid
+      const selectedAndVisible = this.state.selectedChat === conversationGuid(this.state, chatGuid)
       const unread = isNew && !message.fromMe && !selectedAndVisible ? true : selectedAndVisible ? false : chat.unread
       this.patchChat(chatGuid, { lastMessage: message, lastActivity: Math.max(chat.lastActivity, message.date), unread })
       if (isNew && !message.fromMe && options.fromServer && !options.silent && !chat.muted) this.options.onIncoming?.(chat, message)
@@ -707,7 +736,7 @@ export class MessagesStore {
   async retry(chatGuid: string, messageGuid: string): Promise<void> {
     const failed = this.findMessage(chatGuid, messageGuid)
     if (!failed?.error) return
-    this.set({ messages: { ...this.state.messages, [chatGuid]: (this.state.messages[chatGuid] ?? []).filter((item) => item.guid !== messageGuid) } })
+    this.set({ messages: { ...this.state.messages, [failed.chatGuid]: (this.state.messages[failed.chatGuid] ?? []).filter((item) => item.guid !== messageGuid) } })
     const attachment = failed.attachments[0]
     if (attachment?.localPath) await this.sendAttachment(chatGuid, attachment.localPath)
     else await this.send(chatGuid, failed.text, { effect: failed.effect })
@@ -723,7 +752,7 @@ export class MessagesStore {
     if (!remove) tapbacks.push({ guid: optimisticGuid, kind, emoji, fromMe: true })
     this.replaceMessage(chatGuid, { ...target, tapbacks })
     try {
-      await this.transport.react(chatGuid, messageGuid, kind, { emoji, remove })
+      await this.transport.react(target.chatGuid, messageGuid, kind, { emoji, remove })
     } catch (error) {
       this.replaceMessage(chatGuid, target)
       this.set({ error: errorText(error) })
@@ -735,7 +764,7 @@ export class MessagesStore {
     if (!target) return
     this.replaceMessage(chatGuid, { ...target, text, dateEdited: Date.now() })
     try {
-      const updated = await this.transport.editMessage(chatGuid, messageGuid, text, { backwardsCompatText: `Edited to “${text}”` })
+      const updated = await this.transport.editMessage(target.chatGuid, messageGuid, text, { backwardsCompatText: `Edited to “${text}”` })
       this.applyMessage(updated)
     } catch (error) {
       this.replaceMessage(chatGuid, target)
@@ -748,7 +777,7 @@ export class MessagesStore {
     if (!target) return
     this.replaceMessage(chatGuid, { ...target, dateRetracted: Date.now() })
     try {
-      await this.transport.unsendMessage(chatGuid, messageGuid)
+      await this.transport.unsendMessage(target.chatGuid, messageGuid)
     } catch (error) {
       this.replaceMessage(chatGuid, target)
       this.set({ error: errorText(error) })
@@ -756,9 +785,11 @@ export class MessagesStore {
   }
 
   async markRead(chatGuid: string): Promise<void> {
-    this.patchChat(chatGuid, { unread: false })
-    if (!this.state.capabilities.readReceipts) return
-    await this.transport.markRead(chatGuid).catch(() => undefined)
+    for (const member of conversationMembers(this.state, chatGuid)) {
+      if (!this.state.chats.find((chat) => chat.guid === member)?.unread) continue
+      this.patchChat(member, { unread: false })
+      if (this.state.capabilities.readReceipts) await this.transport.markRead(member).catch(() => undefined)
+    }
   }
 
   async markUnread(chatGuid: string): Promise<void> {

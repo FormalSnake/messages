@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useGpuix, type PublicInstance } from '@gpuix/react'
-import { TAPBACK_GLYPH, type TapbackKind } from '@messages/core'
+import { TAPBACK_GLYPH, conversationMessages, type TapbackKind } from '@messages/core'
 import { useAppState } from './use-app-state'
 import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
@@ -131,7 +131,7 @@ export function ContextMenu({ request }: { request: MenuRequest }) {
 function TapbackRow({ chatGuid, messageGuid, bare }: { chatGuid: string; messageGuid: string; bare: boolean }) {
   const shell = useShell()
   const state = useAppState(shell.store)
-  const message = state.messages[chatGuid]?.find((item) => item.guid === messageGuid)
+  const message = conversationMessages(state, chatGuid).find((item) => item.guid === messageGuid)
   const mine = message?.tapbacks.find((item) => item.fromMe)
   return (
     <div

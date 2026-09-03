@@ -32,6 +32,14 @@ guid that the server echo replaces, and `store.reconcile()` re-reads the chat
 list, messages created since the last pass, and the open thread every 30s and
 after every reconnect. The UI never refetches on navigation.
 
+chat.db keeps one chat per address, so one person can be two rows. The store
+folds one-to-one chats that share a contact (or an address) into one
+conversation (`conversations.ts`): the most recently active chat is the
+primary the sidebar lists and sends go to, `state.primaryOf` and
+`state.merged` map the rest, and the `conversation*` helpers give the UI the
+merged thread, unread and typing state. Message actions use the message's own
+`chatGuid`; conversation state (drafts, replying, editing) keys on the primary.
+
 Sends go through an outbox in the store: one at a time, in order, queued
 while the connection is down and flushed on reconnect. A send the server
 refused (`TransportError`) fails at once; one the network dropped is retried
