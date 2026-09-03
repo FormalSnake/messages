@@ -55,17 +55,20 @@ export const configFile = path.join(configDir, 'config.json')
 
 const defaults: Config = { server: null, notifications: true, demo: false, chats: {} }
 
-export async function loadConfig(): Promise<Config> {
-  let stored: Partial<Config> = {}
+/** What is on disk, and nothing else. */
+async function readStoredConfig(): Promise<Partial<Config>> {
   const file = Bun.file(configFile)
-  if (await file.exists()) {
-    try {
-      stored = (await file.json()) as Partial<Config>
-    } catch (error) {
-      console.error(`config: cannot parse ${configFile}: ${String(error)}`)
-    }
+  if (!(await file.exists())) return {}
+  try {
+    return (await file.json()) as Partial<Config>
+  } catch (error) {
+    console.error(`config: cannot parse ${configFile}: ${String(error)}`)
+    return {}
   }
-  const config: Config = { ...defaults, ...stored }
+}
+
+export async function loadConfig(): Promise<Config> {
+  const config: Config = { ...defaults, ...(await readStoredConfig()) }
   const url = process.env.MESSAGES_SERVER_URL
   const password = process.env.MESSAGES_SERVER_PASSWORD
   if (url && password) config.server = { url, password }
@@ -81,9 +84,10 @@ export async function loadConfig(): Promise<Config> {
   return config
 }
 
+// Merges into the file as it is, not into the loaded config: the environment
+// overrides (a demo run, a server passed by variable) must never be written back.
 export async function saveConfig(patch: Partial<Config>): Promise<Config> {
-  const current = await loadConfig()
-  const next: Config = { ...current, ...patch }
+  const next: Config = { ...defaults, ...(await readStoredConfig()), ...patch }
   await mkdir(configDir, { recursive: true, mode: 0o700 })
   await Bun.write(configFile, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
   return next
