@@ -44,6 +44,7 @@ import userMinus from 'lucide-static/icons/user-minus.svg' with { type: 'text' }
 import smilePlus from 'lucide-static/icons/smile-plus.svg' with { type: 'text' }
 import eye from 'lucide-static/icons/eye.svg' with { type: 'text' }
 import eyeOff from 'lucide-static/icons/eye-off.svg' with { type: 'text' }
+import imagePlay from 'lucide-static/icons/image-play.svg' with { type: 'text' }
 import { C } from './theme'
 
 /**
@@ -94,6 +95,7 @@ const SOURCES = {
   effect: sparkles,
   tapback: smile,
   addTapback: smilePlus,
+  gif: imagePlay,
   leave: logOut,
   file,
   audio: mic,

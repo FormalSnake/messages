@@ -67,6 +67,9 @@ config, `matugen-templates/messages.json.tmpl`). The palette is mutated in
 place and the tree remounts, so never capture a `C.*` value in a module-level
 constant.
 
+The composer's GIF picker talks to the Klipy GIF API through `KlipyClient` in
+`packages/core/src/gifs.ts`, shown only when `config.klipy` (an `apiKey`) is set.
+
 Find My keys come from `manonstreet/findmy-key-extractor`, driven by
 `scripts/findmy-keys-mac.sh`. Two things bit us: the extractor needs Apple's
 `stat`/`id` (the script puts `/usr/bin` first because Nix coreutils shadow
