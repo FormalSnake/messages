@@ -52,6 +52,22 @@ export interface SendAttachmentOptions {
   tempGuid?: string
 }
 
+export interface SearchFilters {
+  chatGuid?: string
+  /** From an `in:` filter. An empty array (no chat matched) returns nothing, unlike an absent one. */
+  chatGuids?: string[]
+  limit?: number
+  /** Epoch ms lower bound. The store's reconcile sweep also uses this, with no `before`, to list everything created since the last pass. */
+  after?: number
+  /** Epoch ms upper bound, inclusive. */
+  before?: number
+  fromMe?: boolean
+  /** Addresses, already resolved from a `from:` filter's name or address. */
+  senders?: string[]
+  attachments?: 'image' | 'video' | 'file'
+  links?: boolean
+}
+
 export interface Transport {
   readonly kind: 'bluebubbles' | 'demo'
   /** Resolves once the server answered and the event stream is open. Rejects on the first failure; the store retries. */
@@ -65,7 +81,7 @@ export interface Transport {
   getChat(chatGuid: string): Promise<Chat>
   loadMessages(chatGuid: string, options: { limit: number; before?: number }): Promise<Page<Message>>
   /** Empty `query` with `after` lists everything created since that time; the store uses it to reconcile. */
-  searchMessages(query: string, options?: { chatGuid?: string; limit?: number; after?: number }): Promise<Message[]>
+  searchMessages(query: string, options?: SearchFilters): Promise<Message[]>
   listContacts(): Promise<Contact[]>
 
   sendText(chatGuid: string, text: string, options?: SendTextOptions): Promise<Message>

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isPinned } from './agent'
 import type { Chat, Contact, Message, ServerInfo } from './model'
 import { MessagesStore } from './store'
-import { TransportError, type Page, type Transport, type TransportEvent } from './transport'
+import { TransportError, type Page, type SearchFilters, type Transport, type TransportEvent } from './transport'
 
 const info: ServerInfo = { version: 'test', macosVersion: '15.0', privateApi: false, helperConnected: false }
 
@@ -67,7 +67,7 @@ class FakeTransport implements Transport {
     return { items, hasMore: items.length < all.length }
   }
 
-  async searchMessages(_query: string, options: { chatGuid?: string; limit?: number; after?: number } = {}): Promise<Message[]> {
+  async searchMessages(_query: string, options: SearchFilters = {}): Promise<Message[]> {
     const limit = options.limit ?? 50
     this.searchCalls.push(limit)
     return this.messages

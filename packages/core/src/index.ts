@@ -14,3 +14,4 @@ export { BlueBubblesTransport, BlueBubblesError, type BlueBubblesOptions } from 
 export * from './image'
 export * from './cache'
 export * from './conversations'
+export * from './search'

@@ -51,6 +51,10 @@ export interface Shell {
   focusSearch: () => void
   openLightbox: (target: LightboxTarget) => void
   closeLightbox: () => void
+  /** Opens a conversation and scrolls to one of its messages, loading older pages first if needed. Used by search results. */
+  jumpTo: (chatGuid: string, messageGuid: string) => void
+  /** thread.tsx calls this once it has the conversation open, to pick up (and clear) a jump meant for it. */
+  consumeJump: (chatGuid: string) => string | undefined
   /** Asks before something that cannot be undone. */
   confirm: (request: ConfirmRequest) => void
 }

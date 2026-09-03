@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { useGpuix, type PublicInstance } from '@gpuix/react'
-import { chatTitle, conversationChats, conversationGuid, conversationTyping, conversationUnread, handleName, type Chat, type Message } from '@messages/core'
+import { chatTitle, conversationChats, conversationGuid, conversationTyping, conversationUnread, handleName, parseSearchQuery, resolveSearchQuery, type Chat, type Message } from '@messages/core'
 import { formatListDate } from '@messages/core'
 import { useAppState } from './use-app-state'
 import type { ConnectionStatus } from '@messages/core'
@@ -206,13 +206,13 @@ function StatusLine({ status, host, pending }: { status: ConnectionStatus; host:
   )
 }
 
-function SearchResult({ message, chat, onSelect }: { message: Message; chat: Chat; onSelect: (guid: string) => void }) {
+function SearchResult({ message, chat, onOpen }: { message: Message; chat: Chat; onOpen: () => void }) {
   return (
     <div
       tabIndex={0}
-      onClick={() => onSelect(chat.guid)}
+      onClick={onOpen}
       onKeyDown={(event) => {
-        if (event.key === 'enter' || event.key === 'space') onSelect(chat.guid)
+        if (event.key === 'enter' || event.key === 'space') onOpen()
       }}
       style={{
         display: 'flex',
@@ -235,7 +235,22 @@ function SearchResult({ message, chat, onSelect }: { message: Message; chat: Cha
         </text>
         <text style={{ ...TYPE.micro, color: C.tertiary, whiteSpace: 'nowrap', flexShrink: 0 }}>{formatListDate(message.date)}</text>
       </div>
-      <text style={{ ...TYPE.preview, color: C.secondary, lineClamp: 2, textOverflow: 'ellipsis', width: '100%', minWidth: 0 }}>{message.fromMe ? `You: ${message.text}` : message.text}</text>
+      <text style={{ ...TYPE.preview, color: C.secondary, lineClamp: 2, textOverflow: 'ellipsis', width: '100%', minWidth: 0 }}>{previewText(message, chat)}</text>
+    </div>
+  )
+}
+
+const OPERATOR_TIPS = ['from:name or from:me', 'has:photo, has:video, has:file or has:link', 'before:2024-01-01, after:2024-01-01', 'in:chat name'] as const
+
+function SearchTips() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingLeft: ROW_INSET, paddingRight: ROW_INSET, paddingTop: S.x1, paddingBottom: S.x2, flexShrink: 0 }}>
+      <text style={{ ...TYPE.micro, fontWeight: 600, color: C.tertiary }}>Search tips</text>
+      {OPERATOR_TIPS.map((tip) => (
+        <text key={tip} style={{ ...TYPE.caption, color: C.secondary }}>
+          {tip}
+        </text>
+      ))}
     </div>
   )
 }
@@ -258,7 +273,11 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
   const [cursor, setCursor] = useState<string | null>(null)
   const rows = useRef(new Map<string, PublicInstance | null>())
   const order = useRef<string[]>([])
-  const needle = query.trim().toLowerCase()
+  const trimmed = query.trim()
+  const hasQuery = trimmed.length > 0
+  const parsed = useMemo(() => parseSearchQuery(trimmed), [trimmed])
+  const freeText = parsed.text.trim().toLowerCase()
+  const hasFilter = parsed.fromMe || parsed.senders.length > 0 || Boolean(parsed.attachments) || parsed.links || parsed.before !== undefined || parsed.after !== undefined || parsed.chatNames.length > 0
 
   const register = useCallback((guid: string, instance: PublicInstance | null) => {
     if (instance) rows.current.set(guid, instance)
@@ -278,14 +297,15 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
   )
 
   useEffect(() => {
-    if (needle.length < 2) {
+    if (freeText.length < 2 && !hasFilter) {
       setResults([])
       return
     }
     let cancelled = false
     const timer = setTimeout(() => {
+      const { text, filters } = resolveSearchQuery(parsed, { contacts: state.contacts, chats: state.chats })
       shell.store.transport
-        .searchMessages(needle, { limit: 20 })
+        .searchMessages(text, { ...filters, limit: 20 })
         .then((found) => {
           if (!cancelled) setResults(found)
         })
@@ -295,19 +315,19 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
       cancelled = true
       clearTimeout(timer)
     }
-  }, [needle, shell.store])
+  }, [parsed, freeText, hasFilter, state.contacts, state.chats, shell.store])
 
   const people = useMemo(() => conversationChats(state), [state.chats, state.primaryOf])
   const visible = useMemo(() => {
-    if (!needle) return people
+    if (!freeText) return people
     return people.filter((chat) => {
       const haystack = [chatTitle(chat), chat.identifier, ...chat.participants.map((p) => `${p.address} ${p.name ?? ''}`)].join(' ').toLowerCase()
-      return haystack.includes(needle)
+      return haystack.includes(freeText)
     })
-  }, [people, needle])
+  }, [people, freeText])
 
-  const pinned = needle ? [] : visible.filter((chat) => chat.pinned)
-  const rest = needle ? visible : visible.filter((chat) => !chat.pinned)
+  const pinned = hasQuery ? [] : visible.filter((chat) => chat.pinned)
+  const rest = hasQuery ? visible : visible.filter((chat) => !chat.pinned)
   order.current = [...pinned, ...rest].map((chat) => chat.guid)
   const select = (guid: string) => {
     setCursor(guid)
@@ -315,6 +335,8 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
     if (instance && renderer?.focusElement) renderer.focusElement(instance.id)
     void shell.store.selectChat(conversationGuid(state, guid))
   }
+  // Only for a plain-text query with nothing found: someone already using an operator knows the syntax.
+  const showTips = hasQuery && !hasFilter && visible.length === 0 && results.length === 0 && /^[a-zA-Z]/.test(trimmed)
   const host = state.server ? (shell.store.transport.kind === 'demo' ? 'Demo data' : `macOS ${state.server.macosVersion ?? ''}`.trim()) : ''
   const chatByGuid = new Map(state.chats.map((chat) => [chat.guid, chat]))
   const backdropMenu = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
@@ -392,6 +414,8 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
         <IconButton icon="compose" label="New message" testId="new-message" size={17} onClick={shell.startNewChat} />
       </div>
 
+      {showTips ? <SearchTips /> : null}
+
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0, overflowY: 'scroll', paddingLeft: S.x2, paddingRight: S.x2, paddingBottom: S.x2 }}>
         {pinned.length > 0 ? (
           <>
@@ -425,19 +449,19 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
             register={register}
           />
         ))}
-        {needle && results.length > 0 ? (
+        {hasQuery && results.length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', paddingTop: S.x3, flexShrink: 0 }}>
             <text style={{ ...TYPE.micro, fontWeight: 600, color: C.tertiary, paddingLeft: ROW_INSET, paddingBottom: S.x1 }}>Messages</text>
             {results.map((message) => {
               const chat = chatByGuid.get(conversationGuid(state, message.chatGuid))
-              return chat ? <SearchResult key={message.guid} message={message} chat={chat} onSelect={select} /> : null
+              return chat ? <SearchResult key={message.guid} message={message} chat={chat} onOpen={() => shell.jumpTo(message.chatGuid, message.guid)} /> : null
             })}
           </div>
         ) : null}
-        {needle && visible.length === 0 && results.length === 0 ? (
-          <EmptyNote title={`No results for “${query.trim()}”`} body="Try a name, number or a word from a message." />
+        {hasQuery && visible.length === 0 && results.length === 0 ? (
+          <EmptyNote title={`No results for “${trimmed}”`} body="Try a name, number or a word from a message." />
         ) : null}
-        {!needle && state.chats.length === 0 && state.status === 'online' ? (
+        {!hasQuery && state.chats.length === 0 && state.status === 'online' ? (
           <EmptyNote title="No conversations yet" body="Start one with the compose button." />
         ) : null}
         <div testId="sidebar-backdrop" onAuxClick={backdropMenu} style={{ flexGrow: 1, minHeight: S.x10 }} />
