@@ -638,11 +638,12 @@ export class BlueBubblesTransport implements Transport {
       body = JSON.stringify(init.json)
     }
 
+    // An upload is as slow as the file is big; everything else answers in seconds.
     const response = await fetch(this.buildUrl(path, init.query), {
       method,
       headers,
       body,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(init.form ? 5 * 60_000 : 30_000),
     })
     const envelope = (await response.json()) as Envelope<T>
     return this.unwrap(response, envelope)

@@ -109,6 +109,13 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** An optimistic row and a server row describe the same send when text and attachment names agree. */
+function sameSend(mine: Message, theirs: Message): boolean {
+  if (mine.text !== theirs.text) return false
+  const names = (message: Message) => message.attachments.map((item) => item.name).join('\n')
+  return names(mine) === names(theirs)
+}
+
 /** A send waiting its turn. Sends go out one at a time, in order, and wait for the connection to come back. */
 interface Outgoing {
   chatGuid: string
@@ -528,9 +535,15 @@ export class MessagesStore {
       return
     }
     const list = this.state.messages[chatGuid] ?? []
-    const existingIndex = list.findIndex(
+    let existingIndex = list.findIndex(
       (item) => item.guid === incoming.guid || (incoming.tempGuid && (item.guid === incoming.tempGuid || item.tempGuid === incoming.tempGuid)),
     )
+    // The socket echoes a send before its HTTP reply lands, and for an
+    // attachment the echo carries no temp guid, so match it to the optimistic
+    // row by content instead of letting it sit beside it.
+    if (existingIndex < 0 && options.fromServer && incoming.fromMe && !incoming.tempGuid) {
+      existingIndex = list.findIndex((item) => item.tempGuid && item.guid === item.tempGuid && !item.error && sameSend(item, incoming))
+    }
     let message = incoming
     let next: Message[]
     if (existingIndex >= 0) {
@@ -704,11 +717,20 @@ export class MessagesStore {
       while (this.outbox.length > 0 && !this.stopped) {
         if (this.state.status !== 'online') return
         const item = this.outbox[0]!
+        // A reply lost on the way back is not a lost send: once the socket echo has replaced the optimistic row, the send is done.
+        if (this.settled(item)) {
+          this.outbox.shift()
+          continue
+        }
         try {
           const sent = await item.run()
           this.outbox.shift()
           this.applyMessage({ ...sent, tempGuid: item.tempGuid })
         } catch (error) {
+          if (this.settled(item)) {
+            this.outbox.shift()
+            continue
+          }
           item.attempts += 1
           if (!isRetryable(error) || item.attempts >= SEND_ATTEMPTS) {
             this.outbox.shift()
@@ -721,6 +743,11 @@ export class MessagesStore {
     } finally {
       this.flushing = false
     }
+  }
+
+  private settled(item: Outgoing): boolean {
+    const row = (this.state.messages[item.chatGuid] ?? []).find((message) => message.tempGuid === item.tempGuid)
+    return Boolean(row && row.guid !== row.tempGuid)
   }
 
   /** The service the conversation is actually on: the latest message wins over the chat row, which macOS 26 no longer types. */

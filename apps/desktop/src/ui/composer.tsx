@@ -4,7 +4,7 @@ import { clipboardAttachments, conversationMessages, handleName, pickFiles, type
 import { C, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
 import { IconButton, TextField, overlayShadow } from './primitives'
-import { primaryModifier, useShell } from './context'
+import { primaryModifier, shortcut, useShell } from './context'
 import { useAppState } from './use-app-state'
 import { effectName } from './thread'
 import { GifPicker } from './gif-picker'
@@ -31,6 +31,29 @@ const EDIT_WINDOW = 15 * 60_000
 const FIELD_HEIGHT = 34
 const BUTTON_HIT = 28
 const BUTTON_LIFT = (FIELD_HEIGHT - BUTTON_HIT) / 2
+
+const IMAGE_FILE = /\.(jpe?g|png|gif|webp|heic|bmp)$/i
+
+/** A file waiting in the composer: a thumbnail for a picture, a chip for anything else, with a way to drop it. */
+function Staged({ path, onRemove }: { path: string; onRemove: () => void }) {
+  const name = path.split('/').pop() ?? path
+  const picture = IMAGE_FILE.test(name)
+  return (
+    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, borderRadius: RADIUS.control, backgroundColor: C.raised, paddingRight: 2 }}>
+      {picture ? (
+        <div style={{ width: 56, height: 56, borderRadius: RADIUS.control, overflow: 'hidden', pointerEvents: 'none' }}>
+          <img src={path} objectFit="contain" style={{ width: 56, height: 56, borderRadius: RADIUS.control }} />
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, height: 32, paddingLeft: S.x2, pointerEvents: 'none' }}>
+          <Icon name="file" size={14} color={C.secondary} />
+          <text style={{ ...TYPE.caption, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis', maxWidth: 160 }}>{name}</text>
+        </div>
+      )}
+      <IconButton icon="close" label={`Remove ${name}`} size={11} hit={20} onClick={onRemove} />
+    </div>
+  )
+}
 
 function Banner({ label, body, onClose, testId }: { label: string; body: string; onClose: () => void; testId: string }) {
   return (
@@ -75,8 +98,11 @@ export function Composer({ chat }: { chat: Chat }) {
   const [attachOpen, setAttachOpen] = useState(false)
   const [attachPath, setAttachPath] = useState('')
   const [gifAnchor, setGifAnchor] = useState<{ x: number; y: number } | null>(null)
+  // Files wait in the composer, like Messages and Discord, and leave with the next send.
+  const [pending, setPending] = useState<string[]>([])
+  const [note, setNote] = useState<string | null>(null)
   const textareaRef = useRef<PublicInstance | null>(null)
-  const ready = draft.trim().length > 0
+  const ready = draft.trim().length > 0 || pending.length > 0
   const isSms = chat.service !== 'iMessage'
   const sendColor = isSms ? C.sms : C.accent
 
@@ -84,28 +110,66 @@ export function Composer({ chat }: { chat: Chat }) {
     if (textareaRef.current && renderer?.focusElement) renderer.focusElement(textareaRef.current.id)
   }, [chat.guid, renderer, replyGuid, editGuid])
 
+  useEffect(() => {
+    setPending([])
+    setNote(null)
+  }, [chat.guid])
+
+  useEffect(() => {
+    if (!note) return
+    const timer = setTimeout(() => setNote(null), 2500)
+    return () => clearTimeout(timer)
+  }, [note])
+
+  const stage = (paths: string[]) => {
+    if (paths.length === 0) return
+    setPending((current) => [...current, ...paths.filter((path) => !current.includes(path))])
+  }
+
   const send = (text: string) => {
-    if (!text.trim()) return
-    void store.send(chat.guid, text, { effect: effect === 'none' ? undefined : effect })
+    const body = text.trim()
+    if (!body && pending.length === 0) return
+    for (const path of pending) void store.sendAttachment(chat.guid, path)
+    setPending([])
+    if (body) void store.send(chat.guid, text, { effect: effect === 'none' ? undefined : effect })
     setEffect('none')
   }
 
   const sendFile = () => {
     const path = attachPath.trim().replace(/^~(?=\/)/, process.env.HOME ?? '~')
     if (!path) return
-    void store.sendAttachment(chat.guid, path)
+    stage([path])
     setAttachPath('')
     setAttachOpen(false)
   }
 
-  const attach = async () => {
+  const chooseFiles = async () => {
     try {
-      const paths = await pickFiles({ title: 'Attach', multiple: true })
-      for (const path of paths) void store.sendAttachment(chat.guid, path)
-    } catch {
+      stage(await pickFiles({ title: 'Attach', multiple: true }))
+    } catch (error) {
       // No native picker on this system; fall back to the typed-path field.
-      setAttachOpen((open) => !open)
+      console.error(`picker: ${String(error)}`)
+      setAttachOpen(true)
     }
+  }
+
+  const pasteFiles = async () => {
+    const paths = await clipboardAttachments()
+    if (paths.length === 0) setNote('Nothing to attach on the clipboard')
+    stage(paths)
+  }
+
+  const attachMenu = (event: { x?: number; y?: number }) => {
+    shell.openMenu({
+      x: event.x ?? 0,
+      y: (event.y ?? 0) - S.x2,
+      placement: 'above',
+      items: [
+        { label: 'Choose files…', icon: 'file', onSelect: () => void chooseFiles() },
+        { label: 'Paste from clipboard', icon: 'copy', shortcut: shortcut('V', { shift: true }), onSelect: () => void pasteFiles() },
+        { label: 'Type a path…', icon: 'edit', onSelect: () => setAttachOpen(true) },
+      ],
+    })
   }
 
   const editLast = () => {
@@ -132,14 +196,39 @@ export function Composer({ chat }: { chat: Chat }) {
       {attachOpen ? (
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, marginBottom: S.x2 }}>
           <TextField testId="attach-path" value={attachPath} onChange={setAttachPath} onSubmit={sendFile} placeholder="Path to a file, for example ~/Pictures/photo.jpg" autoFocus />
-          <IconButton icon="send" label="Send file" onClick={sendFile} color={C.accent} strong disabled={attachPath.trim().length === 0} />
+          <IconButton icon="plus" label="Add file" onClick={sendFile} color={C.accent} strong disabled={attachPath.trim().length === 0} />
           <IconButton icon="close" label="Cancel" onClick={() => setAttachOpen(false)} />
         </div>
       ) : null}
+      {pending.length > 0 ? (
+        <div testId="staged" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: S.x2, marginBottom: S.x2 }}>
+          {pending.map((path) => (
+            <Staged key={path} path={path} onRemove={() => setPending((current) => current.filter((item) => item !== path))} />
+          ))}
+        </div>
+      ) : null}
+      {note ? <text style={{ ...TYPE.caption, color: C.secondary, paddingBottom: S.x1 }}>{note}</text> : null}
 
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x1 }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, paddingBottom: BUTTON_LIFT, flexShrink: 0 }}>
-          <IconButton icon="plus" label="Attach a file" testId="attach" hit={BUTTON_HIT} size={17} active={attachOpen} onClick={() => void attach()} />
+          <div
+            testId="attach"
+            onClick={attachMenu}
+            style={{
+              width: BUTTON_HIT,
+              height: BUTTON_HIT,
+              borderRadius: RADIUS.control,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              backgroundColor: attachOpen || pending.length > 0 ? C.selectedSoft : undefined,
+              hover: { backgroundColor: attachOpen || pending.length > 0 ? C.selectedSoft : C.hoverWash },
+              active: { backgroundColor: C.pressWash },
+            }}
+          >
+            <Icon name="plus" size={17} color={attachOpen || pending.length > 0 ? C.accent : C.secondary} />
+          </div>
           {shell.gifs ? (
             <div
               testId="gif"
@@ -250,7 +339,8 @@ export function Composer({ chat }: { chat: Chat }) {
             maxRows={8}
             autoFocus
             theme={{ caret: C.accent, textMuted: C.tertiary }}
-            style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, ...TYPE.bubble, color: C.text, backgroundColor: C.transparent, borderWidth: 0, paddingTop: 2, paddingBottom: 2 }}
+            // One line is exactly the send button's height, so the two centre on each other whatever the font's own line box is.
+            style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, ...TYPE.bubble, lineHeight: BUTTON_LIFT * 2 + 18, color: C.text, backgroundColor: C.transparent, borderWidth: 0, paddingTop: 0, paddingBottom: 0 }}
             onChange={(event) => store.setDraft(chat.guid, event.value ?? '')}
             onSubmit={(event) => send(event.value ?? draft)}
             onKeyDown={(event) => {
@@ -260,12 +350,8 @@ export function Composer({ chat }: { chat: Chat }) {
                 return
               }
               if (event.key === 'up' && draft.length === 0 && state.capabilities.edit) editLast()
-              if (event.key === 'v' && primaryModifier(event.modifiers)) {
-                // Files/images go to the chat as attachments; plain text keeps pasting into the field natively.
-                void clipboardAttachments().then((paths) => {
-                  for (const path of paths) void store.sendAttachment(chat.guid, path)
-                })
-              }
+              // The field swallows plain Ctrl+V for its own text paste, so files and images come in on Ctrl+Shift+V.
+              if (event.key === 'v' && primaryModifier(event.modifiers)) void pasteFiles()
             }}
           />
           <div

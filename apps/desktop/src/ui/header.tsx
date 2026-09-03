@@ -156,7 +156,8 @@ function participantMenu(handle: Handle, chat: Chat, shell: ReturnType<typeof us
   return items
 }
 
-function Participant({ handle, chat, manage }: { handle: Handle; chat: Chat; manage: boolean }) {
+/** One person. A merged conversation lists every address the person is reached on under the one name. */
+function Participant({ handle, chat, manage, addresses = [handle.address] }: { handle: Handle; chat: Chat; manage: boolean; addresses?: string[] }) {
   const shell = useShell()
   return (
     <div
@@ -173,7 +174,9 @@ function Participant({ handle, chat, manage }: { handle: Handle; chat: Chat; man
         flexDirection: 'row',
         alignItems: 'center',
         gap: S.x2,
-        height: 40,
+        minHeight: 40,
+        paddingTop: S.x1,
+        paddingBottom: S.x1,
         paddingLeft: S.x2,
         paddingRight: S.x1,
         borderRadius: RADIUS.control,
@@ -184,13 +187,27 @@ function Participant({ handle, chat, manage }: { handle: Handle; chat: Chat; man
       <Avatar handle={handle} size={28} />
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
         <text style={{ ...TYPE.body, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{handleName(handle)}</text>
-        {handle.name ? <text style={{ ...TYPE.micro, color: C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{formatAddress(handle.address)}</text> : null}
+        {handle.name
+          ? addresses.map((address) => (
+              <text key={address} style={{ ...TYPE.micro, color: C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                {formatAddress(address)}
+              </text>
+            ))
+          : null}
       </div>
       {manage && chat.participants.length > 2 ? (
         <IconButton icon="close" label={`Remove ${handleName(handle)}`} size={12} hit={24} onClick={() => void shell.store.transport.removeParticipant(chat.guid, handle.address)} />
       ) : null}
     </div>
   )
+}
+
+/** A group lists its participants; a one-to-one conversation is one person with every address it is reached on. */
+function people(chat: Chat, state: ReturnType<typeof useAppState>): Array<{ handle: Handle; addresses: string[] }> {
+  if (chat.isGroup) return chat.participants.map((handle) => ({ handle, addresses: [handle.address] }))
+  const handles = conversationHandles(state, chat.guid)
+  const first = handles[0]
+  return first ? [{ handle: first, addresses: handles.map((handle) => handle.address) }] : []
 }
 
 export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean }) {
@@ -261,11 +278,11 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
 
       <SectionLabel inset={S.x4}>{chat.isGroup ? 'People' : 'Contact'}</SectionLabel>
       <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, flexShrink: 0 }}>
-        {(chat.isGroup ? chat.participants : conversationHandles(state, chat.guid)).map((handle) => {
-          const location = matchFriend(Object.values(state.locations), [handle.address, ...contactAddresses(state.contacts, handle.address)])
+        {people(chat, state).map(({ handle, addresses }) => {
+          const location = matchFriend(Object.values(state.locations), [...addresses, ...contactAddresses(state.contacts, handle.address)])
           return (
             <Fragment key={handle.address}>
-              <Participant handle={handle} chat={chat} manage={manage} />
+              <Participant handle={handle} chat={chat} manage={manage} addresses={addresses} />
               {location ? (
                 <>
                   <SectionLabel inset={S.x2}>Location</SectionLabel>
