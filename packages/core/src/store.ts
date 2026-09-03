@@ -117,6 +117,19 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Structural equality for the small plain objects the store keeps, so a refresh that changes nothing changes no identity. */
+function same(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b)
+}
+
+/** The row's own copy of the last message is richer (a downloaded path, a temp guid), so it is compared by identity of the message, not by shape. */
+function sameChat(a: Chat | undefined, b: Chat): boolean {
+  if (!a) return false
+  const { lastMessage: aLast, ...aRest } = a
+  const { lastMessage: bLast, ...bRest } = b
+  return same(aRest, bRest) && aLast?.guid === bLast?.guid && aLast?.date === bLast?.date
+}
+
 /** An optimistic row and a server row describe the same send when text and attachment names agree. */
 function sameSend(mine: Message, theirs: Message): boolean {
   if (mine.text !== theirs.text) return false
@@ -425,10 +438,15 @@ export class MessagesStore {
     for (const chat of chats) {
       if (chat.lastMessage) this.stashReaction(chat.lastMessage)
     }
-    const known = new Map(chats.map((chat) => [chat.guid, chat]))
+    // A row the server sent unchanged keeps its object, so the open thread and
+    // the memoised rows see the same chat and nothing repaints for no reason.
+    const current = new Map(this.state.chats.map((chat) => [chat.guid, chat]))
+    const known = new Map(chats.map((chat) => [chat.guid, sameChat(current.get(chat.guid), chat) ? current.get(chat.guid)! : chat]))
     // Chats that arrived through the socket since the pass started stay.
     for (const chat of this.state.chats) if (!known.has(chat.guid)) known.set(chat.guid, chat)
-    this.set({ chats: sortChats([...known.values()]) })
+    const next = sortChats([...known.values()])
+    if (next.length === this.state.chats.length && next.every((chat, index) => chat === this.state.chats[index])) return
+    this.set({ chats: next })
   }
 
   /** Private API events may name a chat with its old `iMessage;-;` prefix while chat.db on macOS 26 says `any;-;`. Match on the identifier. */
@@ -472,7 +490,9 @@ export class MessagesStore {
   }
 
   private patchChat(chatGuid: string, patch: Partial<Chat>): void {
-    if (!this.state.chats.some((chat) => chat.guid === chatGuid)) return
+    const target = this.state.chats.find((chat) => chat.guid === chatGuid)
+    if (!target) return
+    if ((Object.keys(patch) as Array<keyof Chat>).every((key) => same(target[key], patch[key]))) return
     this.set({ chats: sortChats(this.state.chats.map((chat) => (chat.guid === chatGuid ? { ...chat, ...patch } : chat))) })
   }
 
@@ -574,6 +594,8 @@ export class MessagesStore {
     if (existingIndex >= 0) {
       const existing = list[existingIndex]!
       message = { ...existing, ...incoming, tapbacks: incoming.tapbacks.length ? incoming.tapbacks : existing.tapbacks, tempGuid: existing.tempGuid ?? incoming.tempGuid }
+      // A re-read that brings back what is already here must not touch state at all.
+      if (same(existing, message)) return
       next = list.slice()
       next.splice(existingIndex, 1)
       next = insertSorted(next, message)

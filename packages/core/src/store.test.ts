@@ -53,8 +53,13 @@ class FakeTransport implements Transport {
     return () => this.listeners.delete(listener)
   }
 
+  /** Like the real server, every row carries its newest message. */
   async listChats(): Promise<Page<Chat>> {
-    return { items: this.chats, hasMore: false }
+    const items = this.chats.map((chat) => {
+      const newest = this.messages.filter((item) => item.chatGuid === chat.guid).sort((a, b) => b.date - a.date)[0]
+      return newest ? { ...chat, lastMessage: newest } : chat
+    })
+    return { items, hasMore: false }
   }
 
   async getChat(chatGuid: string): Promise<Chat> {
@@ -248,6 +253,23 @@ describe('reading', () => {
     expect(store.state.messages.b).toHaveLength(51)
     expect(store.state.messages.b?.[50]?.text).toBe('just arrived')
     expect(store.state.hasOlder.b).toBe(true)
+    store.stop()
+  })
+
+  it('keeps chat and message identity when a reconcile brings back the same data', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    for (let index = 0; index < 5; index += 1) transport.messages.push(message('a', `row ${index}`, index + 1))
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    const chatsBefore = store.state.chats
+    const rowBefore = store.state.messages.a
+    // The server maps fresh objects every time; the store must not care.
+    transport.chats = transport.chats.map((item) => ({ ...item }))
+    transport.messages = transport.messages.map((item) => ({ ...item }))
+    await store.reconcile()
+    expect(store.state.chats).toBe(chatsBefore)
+    expect(store.state.messages.a).toBe(rowBefore)
     store.stop()
   })
 
