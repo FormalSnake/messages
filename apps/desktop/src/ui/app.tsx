@@ -9,6 +9,7 @@ import {
   notifyIncoming,
   openExternal,
   type Config,
+  type Message,
   type ServerConfig,
   type Transport,
   StateCache,
@@ -25,13 +26,14 @@ import { Sidebar } from './sidebar'
 import { Thread } from './thread'
 import { Composer } from './composer'
 import { ConversationHeader, InfoPanel } from './header'
-import { ContextMenu } from './menus'
+import { ContextMenu, TAPBACK_ORDER } from './menus'
 import { ConnectScreen } from './connect'
 import { NewChat } from './new-chat'
 import { FaceTimeBanner } from './facetime'
 import { Lightbox } from './lightbox'
 import { ConfirmDialog, type ConfirmRequest } from './confirm'
 import { watchTheme } from './live-theme'
+import { Switcher } from './switcher'
 
 export interface MessagesAppProps {
   config: Config
@@ -179,11 +181,13 @@ function Workspace({
   const [menu, setMenu] = useState<MenuRequest | null>(null)
   const [newChat, setNewChat] = useState(false)
   const [infoOpen, setInfoOpen] = useState(false)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<{ chatGuid: string; attachmentGuid: string } | null>(null)
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null)
   const searchRef = useRef<PublicInstance | null>(null)
   const gifs = useMemo(() => (config.klipy ? new KlipyClient(config.klipy) : null), [config.klipy?.apiKey])
+  const workspaceRef = useRef<PublicInstance | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
   const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
   const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
@@ -209,6 +213,10 @@ function Workspace({
         setMenu(null)
         setNewChat(true)
         setInfoOpen(false)
+      },
+      openSwitcher: () => {
+        setMenu(null)
+        setSwitcherOpen(true)
       },
       toggleInfo: () => {
         setMenu(null)
@@ -245,24 +253,47 @@ function Workspace({
     }
   }
 
+  /** The newest bubble from the other side, for a Ctrl+1..6 tapback. Skips group events and unsends, which never render as reactable bubbles. */
+  const lastIncomingReactable = (messages: Message[] | undefined): Message | undefined => {
+    if (!messages) return undefined
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message && !message.fromMe && !message.groupEvent && !message.dateRetracted) return message
+    }
+    return undefined
+  }
+
   const showConnect = settingsOpen || (state.status === 'offline' && state.chats.length === 0 && store.transport.kind !== 'demo')
 
   return (
     <ShellContext.Provider value={shell}>
       <div
+        ref={workspaceRef}
         tabIndex={-1}
         onKeyDown={(event) => {
           const primary = primaryModifier(event.modifiers)
           if (event.key === 'escape') {
             if (menu) setMenu(null)
             else if (confirm) setConfirm(null)
+            else if (switcherOpen) setSwitcherOpen(false)
             else if (newChat) setNewChat(false)
             else if (infoOpen) setInfoOpen(false)
             else if (settingsOpen) setSettingsOpen(false)
             return
           }
-          if (!primary) return
+          if (!primary) {
+            // gpuix delivers a keyDown only to the element that currently holds
+            // keyboard focus, so this workspace handler only fires with its own
+            // elementId when nothing more specific (the search field, the
+            // composer, a menu) has taken focus over it.
+            if (event.elementId === workspaceRef.current?.id) {
+              if (event.key === 'j') stepChat(1)
+              else if (event.key === 'k') stepChat(-1)
+            }
+            return
+          }
           if (event.key === 'n') shell.startNewChat()
+          else if (event.key === 'k') shell.openSwitcher()
           else if (event.key === 'f') shell.focusSearch()
           else if (event.key === 'i') shell.toggleInfo()
           else if (event.key === ',') setSettingsOpen(true)
@@ -270,6 +301,11 @@ function Workspace({
             if (state.selectedChat) void store.markUnread(state.selectedChat)
           } else if (event.key === ']' || (event.modifiers?.shift && event.key === 'down')) stepChat(1)
           else if (event.key === '[' || (event.modifiers?.shift && event.key === 'up')) stepChat(-1)
+          else if (typeof event.key === 'string' && event.key.length === 1 && event.key >= '1' && event.key <= '6' && state.capabilities.reactions && selected) {
+            const target = lastIncomingReactable(state.messages[selected.guid])
+            const kind = TAPBACK_ORDER[Number(event.key) - 1]
+            if (target && kind) void store.react(selected.guid, target.guid, kind)
+          }
         }}
         style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', position: 'relative', paddingBottom: ime.bottom }}
       >
@@ -293,6 +329,7 @@ function Workspace({
         {menu ? <ContextMenu request={menu} /> : null}
 
         {confirm ? <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} /> : null}
+        {switcherOpen ? <Switcher onClose={() => setSwitcherOpen(false)} /> : null}
 
         {lightbox ? <Lightbox target={lightbox} /> : null}
 
