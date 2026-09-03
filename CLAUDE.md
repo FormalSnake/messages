@@ -40,6 +40,11 @@ caches with keys from `~/.config/messages/findmy/` and serves
 client reads it through `FindMyClient` in `packages/core/src/findmy.ts` when
 `config.findMy` is set.
 
+`packages/core/src/assistant.ts` (`CanaryLLMClient`) backs the summarize,
+translate and transcribe buttons in the desktop UI; every call is triggered by
+a click, never a timer or an incoming message, sends at most the last 200
+messages with attachment bytes stripped, and only ever displays its result.
+
 Find My keys come from `manonstreet/findmy-key-extractor`, driven by
 `scripts/findmy-keys-mac.sh`. Two things bit us: the extractor needs Apple's
 `stat`/`id` (the script puts `/usr/bin` first because Nix coreutils shadow

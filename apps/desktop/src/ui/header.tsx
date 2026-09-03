@@ -1,12 +1,132 @@
-import { Fragment, useEffect, useState } from 'react'
-import { chatTitle, copyText, formatAddress, handleName, matchFriend, openExternal, type Chat, type Handle, contactAddresses } from '@messages/core'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import {
+  chatTitle,
+  copyText,
+  formatAddress,
+  handleName,
+  matchFriend,
+  openExternal,
+  type Chat,
+  type Handle,
+  type Message,
+  type SummarizeMessage,
+  contactAddresses,
+} from '@messages/core'
 import { C, INFO_WIDTH, RADIUS, S, TITLEBAR_HEIGHT, TYPE } from './theme'
 import { Icon, type IconName } from './icons'
 import { LocationCard } from './location'
-import { Avatar, Button, Divider, IconButton, SectionLabel, TextField } from './primitives'
+import { Avatar, Button, Divider, IconButton, SectionLabel, TextField, overlayShadow } from './primitives'
 import { shortcut, useShell, type MenuItem } from './context'
 import { chatMenu } from './sidebar'
 import { useAppState } from './use-app-state'
+
+/** Caps how far back "Catch me up" looks when I have not sent anything in this thread. */
+const CATCH_UP_FALLBACK = 50
+
+/** Everything since my last message in the thread, oldest first, or the last 50 if I never sent one. */
+function messagesToCatchUpOn(messages: Message[]): Message[] {
+  const visible = messages.filter((message) => !message.dateRetracted)
+  const lastMineIndex = visible.reduce((found, message, index) => (message.fromMe ? index : found), -1)
+  const since = lastMineIndex >= 0 ? visible.slice(lastMineIndex + 1) : []
+  return since.length > 0 ? since : visible.slice(-CATCH_UP_FALLBACK)
+}
+
+/** Only text, sender name and time leave the machine; attachment bytes never do. */
+function toSummarizeMessages(messages: Message[]): SummarizeMessage[] {
+  return messages.map((message) => ({
+    sender: message.fromMe ? 'Me' : message.sender ? handleName(message.sender) : 'Someone',
+    text: message.text.trim() || (message.attachments.length > 0 ? '[attachment]' : ''),
+    date: message.date,
+    fromMe: message.fromMe,
+  }))
+}
+
+interface CatchUpCard {
+  x: number
+  loading: boolean
+  error?: string
+  summary?: string
+}
+
+function CatchMeUp({ chat, messages }: { chat: Chat; messages: Message[] }) {
+  const shell = useShell()
+  const [card, setCard] = useState<CatchUpCard | null>(null)
+  const controllerRef = useRef<AbortController | null>(null)
+
+  // Switching threads makes any answer in flight stale; drop it rather than show it on the wrong chat.
+  useEffect(() => {
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    setCard(null)
+  }, [chat.guid])
+
+  const assistant = shell.assistant
+  if (!assistant) return null
+
+  const close = () => {
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    setCard(null)
+  }
+
+  const run = (x: number) => {
+    const controller = new AbortController()
+    controllerRef.current = controller
+    setCard({ x, loading: true })
+    assistant
+      .summarize(toSummarizeMessages(messagesToCatchUpOn(messages)), { signal: controller.signal })
+      .then((summary) => {
+        if (controllerRef.current !== controller) return
+        setCard({ x, loading: false, summary })
+      })
+      .catch((error: unknown) => {
+        if (controllerRef.current !== controller) return
+        setCard({ x, loading: false, error: error instanceof Error ? error.message : String(error) })
+      })
+  }
+
+  return (
+    <>
+      <IconButton icon="sparkles" label="Catch me up" testId="catch-me-up" size={17} disabled={card?.loading ?? false} onClick={(event) => (card ? close() : run(event.x ?? 0))} />
+      {card ? (
+        <anchored deferred occlude priority={3} position={{ x: card.x, y: TITLEBAR_HEIGHT }} anchor="topRight" fit="snap" snapMargin={S.x2}>
+          <div
+            testId="catch-up-card"
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              width: 300,
+              padding: S.x3,
+              gap: S.x2,
+              borderRadius: RADIUS.card,
+              backgroundColor: C.overlay,
+              borderWidth: 1,
+              borderColor: C.overlayBorder,
+              boxShadow: overlayShadow,
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2 }}>
+              <Icon name="sparkles" size={14} color={C.accent} />
+              <text style={{ ...TYPE.body, fontWeight: 600, color: C.text, flexGrow: 1 }}>Catch me up</text>
+              <IconButton icon="close" label="Close" size={12} hit={22} onClick={close} />
+            </div>
+            {card.loading ? (
+              <text style={{ ...TYPE.caption, color: C.secondary }}>Summarizing…</text>
+            ) : card.error ? (
+              <text testId="catch-up-error" style={{ ...TYPE.caption, color: C.danger }}>
+                {card.error}
+              </text>
+            ) : (
+              <text testId="catch-up-summary" style={{ ...TYPE.body, color: C.text }}>
+                {card.summary}
+              </text>
+            )}
+          </div>
+        </anchored>
+      ) : null}
+    </>
+  )
+}
 
 export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: boolean }) {
   const shell = useShell()
@@ -78,6 +198,7 @@ export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: b
         </div>
       </div>
       {state.capabilities.facetime && !chat.isGroup ? <IconButton icon="video" label="FaceTime" size={17} onClick={faceTime} /> : null}
+      <CatchMeUp chat={chat} messages={state.messages[chat.guid] ?? []} />
       <IconButton
         icon="info"
         label={`${infoOpen ? 'Hide details' : 'Show details'} (${shortcut('I')})`}

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Tooltip, TooltipContent, TooltipTrigger, type StyleDesc } from '@gpuix/react'
+import { Tooltip, TooltipContent, TooltipTrigger, type EventPayload, type StyleDesc } from '@gpuix/react'
 import { chatTitle, handleName, type Chat, type Handle } from '@messages/core'
 import { initials } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
@@ -33,7 +33,8 @@ export function IconButton({
 }: {
   icon: IconName
   label: string
-  onClick?: () => void
+  /** Carries the click's window coordinates, for a caller that anchors a card off the button. */
+  onClick?: (event: EventPayload) => void
   onAuxClick?: (event: { x?: number; y?: number; isRightClick?: boolean }) => void
   size?: number
   color?: string
@@ -51,7 +52,7 @@ export function IconButton({
       onClick={disabled ? undefined : onClick}
       onAuxClick={onAuxClick}
       onKeyDown={(event) => {
-        if (!disabled && (event.key === 'enter' || event.key === 'space')) onClick?.()
+        if (!disabled && (event.key === 'enter' || event.key === 'space')) onClick?.(event)
       }}
       style={{
         width: hit,

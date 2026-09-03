@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { MessagesStore } from '@messages/core'
+import type { CanaryLLMClient, MessagesStore } from '@messages/core'
 import type { IconName } from './icons'
 
 export type MenuItem =
@@ -50,6 +50,10 @@ export interface Shell {
   focusSearch: () => void
   openLightbox: (target: LightboxTarget) => void
   closeLightbox: () => void
+  /** Set only when `config.canaryllm` has an API key. Every button that uses it hides itself otherwise. */
+  assistant: CanaryLLMClient | null
+  /** Target language for the translate menu item: `config.canaryllm.language`, else the system locale's language, else English. */
+  assistantLanguage: string
 }
 
 export const ShellContext = createContext<Shell | null>(null)

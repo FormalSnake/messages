@@ -88,6 +88,7 @@ const SOURCES = {
   markRead: mailOpen,
   markUnread: mail,
   effect: sparkles,
+  sparkles,
   tapback: smile,
   addTapback: smilePlus,
   leave: logOut,
