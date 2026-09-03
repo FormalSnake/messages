@@ -92,11 +92,11 @@ export const FONT_SANS = process.env.MESSAGES_FONT ?? (darwin ? 'SF Pro Text' : 
  * Asking for the emoji family by name is the only way past it.
  */
 /**
- * On Linux the emoji font is installed under the family name cosmic-text's
- * hardcoded fallback looks for (see the emoji note in CLAUDE.md), and a
- * request for any other family lands on the monochrome outline font.
+ * Only macOS gets a named emoji family. On Linux naming one, even the name
+ * the installed font carries, comes back as tofu and monochrome glyphs; the
+ * per-glyph fallback is what reaches the colour font (see CLAUDE.md).
  */
-export const FONT_EMOJI = darwin ? 'Apple Color Emoji' : 'Noto Color Emoji'
+export const FONT_EMOJI = darwin ? 'Apple Color Emoji' : undefined
 
 /**
  * One scale, every gap and inset is a step on it. `S.x1` is 4px.

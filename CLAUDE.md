@@ -147,8 +147,11 @@ server cannot do instead of failing on click.
   FreeSans and Noto Sans Symbols ahead of any emoji font, and GPUI only treats
   a glyph as emoji when the font's PostScript name is literally
   `NotoColorEmoji`. The nix config (`modules/nixos/mixins/hyprland.nix`)
-  drops those fonts and installs Apple Color Emoji under that name; the app
-  names `FONT_EMOJI` only on nodes that hold nothing but emoji.
+  drops those fonts and installs Apple Color Emoji under that name. Never
+  name an emoji family in a style on Linux: a run that asks for one, by any
+  of its names, renders tofu, while an unnamed run reaches the colour font
+  through the per-glyph fallback. `FONT_EMOJI` is therefore undefined off
+  macOS and only the emoji-only nodes use it.
 - A child with a background fill (`backgroundColor` or a gradient) swallows
   the click meant for an ancestor's `onClick`; a border, a shadow, opacity or
   a `<text>` do not. Give such decorations `pointerEvents: 'none'` (avatars,
