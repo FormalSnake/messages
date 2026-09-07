@@ -211,6 +211,61 @@ describeNative('messages app', () => {
     await app.close()
   })
 
+  it('scrolls the details panel itself, not the thread behind it', async () => {
+    // Short enough that the panel's own content overflows it.
+    const { renderer } = mount({}, { width: 900, height: 520 })
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+    // Nadia's thread has the photos, so the panel gets a gallery and real height.
+    await app.getByTestId('chat-+34612345678').click()
+    await app.getByTestId('info').click()
+    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
+
+    const lists = await app.getByType('virtual-list').all()
+    const threadList = lists.find((l) => renderer.getScrollOffset(l.id)?.[1] !== 0)!
+    const panelList = lists.at(-1)!
+    // The thread keeps settling as its rows measure, so wait for it to stop
+    // before reading the offset this test is about.
+    let settled = renderer.getScrollOffset(threadList.id)?.[1]
+    for (let tries = 0; tries < 40; tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const now = renderer.getScrollOffset(threadList.id)?.[1]
+      if (now === settled) break
+      settled = now
+    }
+    await app.getByTestId('info-panel').hover()
+    await app.getByTestId('info-panel').wheel(0, -240)
+    await new Promise((resolve) => setTimeout(resolve, 400))
+
+    // The panel used to be a plain overflow div, which takes scrollTo but never
+    // the wheel, so it sat still and the wheel went to the thread behind it.
+    expect(renderer.getScrollOffset(panelList.id)?.[1]).toBeLessThan(0)
+    expect(renderer.getScrollOffset(threadList.id)?.[1]).toBe(settled)
+
+    await app.close()
+  })
+
+  it('closes the floating details panel on a click outside it', async () => {
+    // Under the docked width the panel is a sheet over the thread.
+    const { renderer } = mount({}, { width: 900, height: 760 })
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+
+    await app.getByTestId('info').click()
+    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
+
+    await app.getByTestId('composer').click()
+    for (let tries = 0; tries < 50 && (await app.getByTestId('info-panel').all()).length > 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100))
+    expect((await app.getByTestId('info-panel').all()).length).toBe(0)
+
+    // The button still toggles: the click that opens it must not count as outside.
+    await app.getByTestId('info').click()
+    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
+    expect((await app.getByTestId('info-panel').all()).length).toBe(1)
+
+    await app.close()
+  })
+
   it('shows the gallery in the details panel', async () => {
     const { renderer } = mount()
     const app = await connectTest(renderer)

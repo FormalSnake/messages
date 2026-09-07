@@ -369,6 +369,13 @@ function Workspace({
               initial={{ right: -INFO_WIDTH }}
               animate={{ right: info.open ? 0 : -INFO_WIDTH }}
               transition={{ duration: DURATION.panel, ease: EASE_DRAWER }}
+              // Floating, it is a sheet over the thread, so the thread is
+              // outside it and a click there puts it away. Docked it is a
+              // column, and closing on a click in the thread would be a
+              // nuisance. Ignored while it is already sliding out.
+              onMouseDownOutside={() => {
+                if (info.open) shell.setInfo(false)
+              }}
               style={{ position: 'absolute', top: 0, bottom: 0, width: INFO_WIDTH, display: 'flex', boxShadow: FLOATING_INFO_SHADOW }}
             >
               <InfoPanel chat={info.current} />

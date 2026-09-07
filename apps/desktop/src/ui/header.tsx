@@ -530,7 +530,6 @@ export function InfoPanel({ chat }: { chat: Chat }) {
         backgroundColor: C.sidebar,
         borderLeftWidth: 1,
         borderColor: C.sidebarBorder,
-        overflowY: 'scroll',
         userSelect: 'none',
       }}
     >
@@ -539,86 +538,91 @@ export function InfoPanel({ chat }: { chat: Chat }) {
         <IconButton icon="close" label={`Close details (${shortcut('I')})`} testId="close-info" onClick={shell.toggleInfo} />
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2, paddingTop: S.x1, paddingBottom: S.x5, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
-        <Avatar chat={chat} size={72} />
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-          <text style={{ ...TYPE.large, fontSize: 17, lineHeight: 22, color: C.text, textAlign: 'center' }}>{chatTitle(chat)}</text>
-          <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>
-            {chat.isGroup ? `${chat.participants.length} people · ${chat.service}` : chat.service}
-          </text>
+      {/* A div with overflow takes scrollTo but never the wheel, which then
+          reached the thread's list behind the panel and scrolled the
+          conversation instead. The sidebar already scrolls this way. */}
+      <virtual-list estimatedItemHeight={72} overdraw={600} style={{ flexGrow: 1, minHeight: 0, width: '100%' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2, paddingTop: S.x1, paddingBottom: S.x5, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+          <Avatar chat={chat} size={72} />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+            <text style={{ ...TYPE.large, fontSize: 17, lineHeight: 22, color: C.text, textAlign: 'center' }}>{chatTitle(chat)}</text>
+            <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>
+              {chat.isGroup ? `${chat.participants.length} people · ${chat.service}` : chat.service}
+            </text>
+          </div>
         </div>
-      </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, flexShrink: 0 }}>
-        <Row icon={chat.pinned ? 'pinOff' : 'pin'} label={chat.pinned ? 'Unpin' : 'Pin'} testId="toggle-pin" onClick={() => store.togglePin(chat.guid)} />
-        <Row icon={chat.muted ? 'unmute' : 'mute'} label={chat.muted ? 'Show alerts' : 'Hide alerts'} testId="toggle-mute" onClick={() => store.toggleMute(chat.guid)} />
-        <Row
-          icon={chat.readReceipts === false ? 'eye' : 'eyeOff'}
-          label={chat.readReceipts === false ? 'Send read receipts' : 'Read without receipts'}
-          testId="toggle-read-receipts"
-          onClick={() => store.toggleReadReceipts(chat.guid)}
-        />
-        <Row icon="markUnread" label="Mark as unread" value={shortcut('U', { shift: true })} onClick={() => void store.markUnread(chat.guid)} />
-      </div>
+        <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, flexShrink: 0 }}>
+          <Row icon={chat.pinned ? 'pinOff' : 'pin'} label={chat.pinned ? 'Unpin' : 'Pin'} testId="toggle-pin" onClick={() => store.togglePin(chat.guid)} />
+          <Row icon={chat.muted ? 'unmute' : 'mute'} label={chat.muted ? 'Show alerts' : 'Hide alerts'} testId="toggle-mute" onClick={() => store.toggleMute(chat.guid)} />
+          <Row
+            icon={chat.readReceipts === false ? 'eye' : 'eyeOff'}
+            label={chat.readReceipts === false ? 'Send read receipts' : 'Read without receipts'}
+            testId="toggle-read-receipts"
+            onClick={() => store.toggleReadReceipts(chat.guid)}
+          />
+          <Row icon="markUnread" label="Mark as unread" value={shortcut('U', { shift: true })} onClick={() => void store.markUnread(chat.guid)} />
+        </div>
 
-      <div style={{ paddingTop: S.x4, paddingBottom: S.x4, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
-        <Divider />
-      </div>
+        <div style={{ paddingTop: S.x4, paddingBottom: S.x4, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+          <Divider />
+        </div>
 
-      <SectionLabel inset={S.x4}>{chat.isGroup ? 'People' : 'Contact'}</SectionLabel>
-      <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, flexShrink: 0 }}>
-        {people(chat, state).map(({ handle, addresses }) => {
-          const location = matchFriend(Object.values(state.locations), [...addresses, ...contactAddresses(state.contacts, handle.address)])
-          return (
-            <Fragment key={handle.address}>
-              <Participant handle={handle} chat={chat} manage={manage} addresses={addresses} />
-              {location ? (
-                <>
-                  <SectionLabel inset={S.x2}>Location</SectionLabel>
-                  <LocationCard handle={handle} location={location} />
-                </>
-              ) : null}
-            </Fragment>
-          )
-        })}
-        {state.findMy === 'unavailable' ? (
-          <text style={{ ...TYPE.caption, color: C.secondary, paddingLeft: S.x2, paddingTop: S.x1 }}>Find My needs the Mac agent (see README)</text>
+        <SectionLabel inset={S.x4}>{chat.isGroup ? 'People' : 'Contact'}</SectionLabel>
+        <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, flexShrink: 0 }}>
+          {people(chat, state).map(({ handle, addresses }) => {
+            const location = matchFriend(Object.values(state.locations), [...addresses, ...contactAddresses(state.contacts, handle.address)])
+            return (
+              <Fragment key={handle.address}>
+                <Participant handle={handle} chat={chat} manage={manage} addresses={addresses} />
+                {location ? (
+                  <>
+                    <SectionLabel inset={S.x2}>Location</SectionLabel>
+                    <LocationCard handle={handle} location={location} />
+                  </>
+                ) : null}
+              </Fragment>
+            )
+          })}
+          {state.findMy === 'unavailable' ? (
+            <text style={{ ...TYPE.caption, color: C.secondary, paddingLeft: S.x2, paddingTop: S.x1 }}>Find My needs the Mac agent (see README)</text>
+          ) : null}
+        </div>
+
+        <GallerySection chat={chat} />
+
+        {manage ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: S.x2, paddingTop: S.x3, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+            <div style={{ display: 'flex', flexDirection: 'row', gap: S.x2 }}>
+              <TextField value={address} onChange={setAddress} placeholder="Phone number or email" onSubmit={addPerson} />
+              <Button onClick={addPerson} disabled={address.trim().length === 0}>
+                Add
+              </Button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'row', gap: S.x2 }}>
+              <TextField value={name} onChange={setName} placeholder="Group name" onSubmit={() => void store.renameGroup(chat.guid, name.trim())} />
+              <Button onClick={() => void store.renameGroup(chat.guid, name.trim())} disabled={name.trim() === (chat.displayName ?? '')}>
+                Rename
+              </Button>
+            </div>
+          </div>
         ) : null}
-      </div>
 
-      <GallerySection chat={chat} />
-
-      {manage ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: S.x2, paddingTop: S.x3, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
-          <div style={{ display: 'flex', flexDirection: 'row', gap: S.x2 }}>
-            <TextField value={address} onChange={setAddress} placeholder="Phone number or email" onSubmit={addPerson} />
-            <Button onClick={addPerson} disabled={address.trim().length === 0}>
-              Add
-            </Button>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'row', gap: S.x2 }}>
-            <TextField value={name} onChange={setName} placeholder="Group name" onSubmit={() => void store.renameGroup(chat.guid, name.trim())} />
-            <Button onClick={() => void store.renameGroup(chat.guid, name.trim())} disabled={name.trim() === (chat.displayName ?? '')}>
-              Rename
-            </Button>
-          </div>
+        <div style={{ paddingTop: S.x4, paddingBottom: S.x4, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+          <Divider />
         </div>
-      ) : null}
 
-      <div style={{ paddingTop: S.x4, paddingBottom: S.x4, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
-        <Divider />
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, paddingBottom: S.x4, flexShrink: 0 }}>
-        <Row
-          icon="download"
-          label={state.exportingChat === chat.guid ? 'Exporting…' : 'Export conversation…'}
-          testId="export-chat"
-          onClick={() => void store.exportConversation(chat.guid)}
-        />
-        {chat.isGroup && state.capabilities.groupManagement ? <Row icon="leave" label="Leave conversation" danger onClick={leave} /> : null}
-        <Row icon="trash" label="Delete conversation" danger testId="delete-chat" onClick={() => confirmDelete(chat, shell)} />
-      </div>
+        <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, gap: 2, paddingBottom: S.x4, flexShrink: 0 }}>
+          <Row
+            icon="download"
+            label={state.exportingChat === chat.guid ? 'Exporting…' : 'Export conversation…'}
+            testId="export-chat"
+            onClick={() => void store.exportConversation(chat.guid)}
+          />
+          {chat.isGroup && state.capabilities.groupManagement ? <Row icon="leave" label="Leave conversation" danger onClick={leave} /> : null}
+          <Row icon="trash" label="Delete conversation" danger testId="delete-chat" onClick={() => confirmDelete(chat, shell)} />
+        </div>
+      </virtual-list>
     </div>
   )
 }
