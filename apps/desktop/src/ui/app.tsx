@@ -44,10 +44,7 @@ export interface MessagesAppProps {
   transport?: Transport
 }
 
-/** Below this the thread would be narrower than a comfortable measure, so the details panel floats over it. */
-const DOCKED_INFO_MIN_WIDTH = 1000
 const COMPACT_SIDEBAR_MAX_WIDTH = 900
-const FLOATING_INFO_SHADOW = { offsetX: -8, offsetY: 0, blurRadius: 32, spreadRadius: 0, color: '#000000a6' } as const
 /** The toast rises this far as it fades in. */
 const TOAST_BOTTOM = 72
 const TOAST_RISE = 8
@@ -214,8 +211,8 @@ function Workspace({
   const assistantLanguage = useMemo(() => defaultTranslateLanguage(config.canaryllm?.language), [config.canaryllm?.language])
   const pendingJump = useRef<{ chatGuid: string; messageGuid: string } | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
-  const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
-  const infoFloats = width > 0 && width < DOCKED_INFO_MIN_WIDTH
+  const roomy = infoOpen ? COMPACT_SIDEBAR_MAX_WIDTH + INFO_WIDTH : COMPACT_SIDEBAR_MAX_WIDTH
+  const sidebarWidth = width > 0 && width < roomy ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
 
   useEffect(() => {
     if (!state.error || settingsOpen) return
@@ -364,33 +361,19 @@ function Workspace({
           )}
         </div>
         {info.current ? (
-          infoFloats ? (
-            <motion.div
-              initial={{ right: -INFO_WIDTH }}
-              animate={{ right: info.open ? 0 : -INFO_WIDTH }}
-              transition={{ duration: DURATION.panel, ease: EASE_DRAWER }}
-              // Floating, it is a sheet over the thread, so the thread is
-              // outside it and a click there puts it away. Docked it is a
-              // column, and closing on a click in the thread would be a
-              // nuisance. Ignored while it is already sliding out.
-              onMouseDownOutside={() => {
-                if (info.open) shell.setInfo(false)
-              }}
-              style={{ position: 'absolute', top: 0, bottom: 0, width: INFO_WIDTH, display: 'flex', boxShadow: FLOATING_INFO_SHADOW }}
-            >
-              <InfoPanel chat={info.current} />
-            </motion.div>
-          ) : (
-            // The clip box animates and the panel inside keeps its width, so nothing in it reflows mid-slide.
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: info.open ? INFO_WIDTH : 0 }}
-              transition={{ duration: DURATION.panel, ease: EASE_DRAWER }}
-              style={{ height: '100%', flexShrink: 0, overflow: 'hidden', display: 'flex', flexDirection: 'row', justifyContent: 'flex-end' }}
-            >
-              <InfoPanel chat={info.current} />
-            </motion.div>
-          )
+          // A column of its own, never a sheet over the thread: floating it put
+          // the panel on top of the thread's list, and a trackpad scroll went
+          // through to the list underneath instead of stopping at the panel.
+          // The clip box animates and the panel inside keeps its width, so
+          // nothing in it reflows mid-slide.
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: info.open ? INFO_WIDTH : 0 }}
+            transition={{ duration: DURATION.panel, ease: EASE_DRAWER }}
+            style={{ height: '100%', flexShrink: 0, overflow: 'hidden', display: 'flex', flexDirection: 'row', justifyContent: 'flex-end' }}
+          >
+            <InfoPanel chat={info.current} />
+          </motion.div>
         ) : null}
 
         {menu ? <ContextMenu request={menu} /> : null}
@@ -400,7 +383,7 @@ function Workspace({
 
         {photo.current ? <Lightbox target={photo.current} open={photo.open} /> : null}
 
-        <FaceTimeBanner offsetRight={infoOpen && !infoFloats ? INFO_WIDTH + S.x3 : S.x3} />
+        <FaceTimeBanner offsetRight={infoOpen ? INFO_WIDTH + S.x3 : S.x3} />
 
         {notice.current ? (
           <motion.div
