@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { TooltipProvider, useGpuix, useWindowInsets, useWindowSize, type PublicInstance } from '@gpuix/react'
+import { motion, TooltipProvider, useGpuix, useWindowInsets, useWindowSize, type PublicInstance } from '@gpuix/react'
 import {
   BlueBubblesTransport,
   CanaryLLMClient,
@@ -35,6 +35,7 @@ import { Lightbox } from './lightbox'
 import { ConfirmDialog, type ConfirmRequest } from './confirm'
 import { watchTheme } from './live-theme'
 import { Switcher } from './switcher'
+import { DURATION, EASE_DRAWER, EASE_OUT, Fade, useLeaving } from './motion'
 
 export interface MessagesAppProps {
   config: Config
@@ -46,6 +47,10 @@ export interface MessagesAppProps {
 /** Below this the thread would be narrower than a comfortable measure, so the details panel floats over it. */
 const DOCKED_INFO_MIN_WIDTH = 1000
 const COMPACT_SIDEBAR_MAX_WIDTH = 900
+const FLOATING_INFO_SHADOW = { offsetX: -8, offsetY: 0, blurRadius: 32, spreadRadius: 0, color: '#000000a6' } as const
+/** The toast rises this far as it fades in. */
+const TOAST_BOTTOM = 72
+const TOAST_RISE = 8
 
 function buildTransport(config: Config): Transport | null {
   if (config.demo) return new DemoTransport()
@@ -299,6 +304,11 @@ function Workspace({
   }
 
   const showConnect = settingsOpen || (state.status === 'offline' && state.chats.length === 0 && store.transport.kind !== 'demo')
+  // Overlays stay mounted for their exit animation; `current` is what to paint, `open` which way it is going.
+  const info = useLeaving(infoOpen && selected && !newChat ? selected : null, DURATION.panel)
+  const dialog = useLeaving(confirm, DURATION.fast)
+  const photo = useLeaving(lightbox, DURATION.fast)
+  const notice = useLeaving(toast && !showConnect ? toast : null, DURATION.fast)
 
   return (
     <ShellContext.Provider value={shell}>
@@ -313,6 +323,11 @@ function Workspace({
             else if (newChat) setNewChat(false)
             else if (infoOpen) setInfoOpen(false)
             else if (settingsOpen) setSettingsOpen(false)
+            return
+          }
+          // F12 cycles gpuix's frame-time readout: hidden, minimal, full.
+          if (event.key === 'f12') {
+            renderer?.cycleDebugFrameOverlay?.()
             return
           }
           if (!primary) return
@@ -348,23 +363,47 @@ function Workspace({
             <EmptyState status={state.status} reason={state.connectionError} onNew={shell.startNewChat} />
           )}
         </div>
-        {infoOpen && selected && !newChat ? <InfoPanel chat={selected} floating={infoFloats} /> : null}
+        {info.current ? (
+          infoFloats ? (
+            <motion.div
+              initial={{ right: -INFO_WIDTH }}
+              animate={{ right: info.open ? 0 : -INFO_WIDTH }}
+              transition={{ duration: DURATION.panel, ease: EASE_DRAWER }}
+              style={{ position: 'absolute', top: 0, bottom: 0, width: INFO_WIDTH, display: 'flex', boxShadow: FLOATING_INFO_SHADOW }}
+            >
+              <InfoPanel chat={info.current} />
+            </motion.div>
+          ) : (
+            // The clip box animates and the panel inside keeps its width, so nothing in it reflows mid-slide.
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: info.open ? INFO_WIDTH : 0 }}
+              transition={{ duration: DURATION.panel, ease: EASE_DRAWER }}
+              style={{ height: '100%', flexShrink: 0, overflow: 'hidden', display: 'flex', flexDirection: 'row', justifyContent: 'flex-end' }}
+            >
+              <InfoPanel chat={info.current} />
+            </motion.div>
+          )
+        ) : null}
 
         {menu ? <ContextMenu request={menu} /> : null}
 
-        {confirm ? <ConfirmDialog request={confirm} onClose={() => setConfirm(null)} /> : null}
+        {dialog.current ? <ConfirmDialog request={dialog.current} open={dialog.open} onClose={() => setConfirm(null)} /> : null}
         {switcherOpen ? <Switcher onClose={() => setSwitcherOpen(false)} /> : null}
 
-        {lightbox ? <Lightbox target={lightbox} /> : null}
+        {photo.current ? <Lightbox target={photo.current} open={photo.open} /> : null}
 
         <FaceTimeBanner offsetRight={infoOpen && !infoFloats ? INFO_WIDTH + S.x3 : S.x3} />
 
-        {toast && !showConnect ? (
-          <div
-            testId="toast"
-            style={{ position: 'absolute', bottom: 72, left: 0, right: 0, display: 'flex', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }}
+        {notice.current ? (
+          <motion.div
+            initial={{ opacity: 0, bottom: TOAST_BOTTOM - TOAST_RISE }}
+            animate={{ opacity: notice.open ? 1 : 0, bottom: notice.open ? TOAST_BOTTOM : TOAST_BOTTOM - TOAST_RISE }}
+            transition={{ duration: notice.open ? DURATION.base : DURATION.fast, ease: EASE_OUT }}
+            style={{ position: 'absolute', left: 0, right: 0, display: 'flex', flexDirection: 'row', justifyContent: 'center', alignItems: 'center', pointerEvents: 'none' }}
           >
             <div
+              testId="toast"
               style={{
                 display: 'flex',
                 flexDirection: 'row',
@@ -383,13 +422,13 @@ function Workspace({
               }}
             >
               <Icon name="alert" size={14} color={C.danger} />
-              <text style={{ ...TYPE.caption, color: C.text, flexShrink: 1, minWidth: 0 }}>{toast}</text>
+              <text style={{ ...TYPE.caption, color: C.text, flexShrink: 1, minWidth: 0 }}>{notice.current}</text>
             </div>
-          </div>
+          </motion.div>
         ) : null}
 
-        {showConnect ? (
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', pointerEvents: 'auto', backgroundColor: C.canvas }}>
+        <Fade show={showConnect} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex' }}>
+          <div style={{ flexGrow: 1, display: 'flex', pointerEvents: 'auto', backgroundColor: C.canvas }}>
             <ConnectScreen
               initialUrl={config.server?.url ?? ''}
               initialPassword={config.server?.password ?? ''}
@@ -401,7 +440,7 @@ function Workspace({
               onClose={settingsOpen && (state.chats.length > 0 || store.transport.kind === 'demo') ? () => setSettingsOpen(false) : undefined}
             />
           </div>
-        ) : null}
+        </Fade>
       </div>
     </ShellContext.Provider>
   )

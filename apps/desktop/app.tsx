@@ -5,7 +5,7 @@
  *   MESSAGES_DEMO=1 bun --hot app.tsx   built-in fixtures, no Mac needed
  */
 
-import { render } from '@gpuix/react'
+import { render, type DebugFrameOverlayMode } from '@gpuix/react'
 import { ensureCacheDirs, loadConfig, saveConfig } from '@messages/core'
 import { MessagesApp } from './src/ui/app'
 
@@ -26,5 +26,7 @@ if (isEntryPoint) {
     trafficLightX: darwin ? 16 : undefined,
     trafficLightY: darwin ? 18 : undefined,
     focus: process.env.GPUIX_BACKGROUND !== '1',
+    // MESSAGES_FRAME_OVERLAY=full paints gpuix's frame-time readout in the corner.
+    debugFrameOverlay: (process.env.MESSAGES_FRAME_OVERLAY as DebugFrameOverlayMode | undefined) || undefined,
   })
 }

@@ -152,6 +152,30 @@ describe('toMessage', () => {
     expect(message.groupEvent?.kind === 'leave' && message.groupEvent.who?.address).toBe('+15555550102')
   })
 
+  test('gives an attachment the server has no type for one anyway', () => {
+    const raw = rawMessage({
+      guid: 'rcs-brand-logo',
+      text: 'Your bill is ready',
+      attachments: [
+        {
+          originalROWID: 9,
+          guid: 'brand-logo-guid',
+          uti: 'public.data',
+          // chat.db has no type for the brand logo on an RCS business message,
+          // and every reader calls `mime.startsWith`.
+          mimeType: null,
+          totalBytes: 40_150,
+          transferName: 'BrandLogoImage',
+        },
+      ],
+    })
+
+    const message = toMessage(raw, DM_GUID)
+
+    expect(message.attachments[0]?.mime).toBe('application/octet-stream')
+    expect(() => message.attachments[0]!.mime.startsWith('image/')).not.toThrow()
+  })
+
   test('maps an attachment message', () => {
     const raw = rawMessage({
       guid: 'attachment-guid-1',

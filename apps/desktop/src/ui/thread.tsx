@@ -1,6 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useGpuix, type PublicInstance } from '@gpuix/react'
+import { motion, useGpuix, type PublicInstance } from '@gpuix/react'
 import {
+  conversationFocus,
+  conversationHandles,
   conversationHasOlder,
   conversationKey,
   conversationLoading,
@@ -20,10 +22,11 @@ import { useAppState } from './use-app-state'
 import { copyText } from '@messages/core'
 import { openExternal, splitLinks } from '@messages/core'
 import { BUBBLE_MAX_FRACTION, BUBBLE_MAX_WIDTH, C, FONT_EMOJI, RADIUS, S, THREAD_INSET, TYPE } from './theme'
-import { BubbleContent } from './bubble'
+import { BubbleContent, Tail } from './bubble'
 import { Icon } from './icons'
 import { Avatar } from './primitives'
 import { useShell, type MenuItem } from './context'
+import { DURATION, EASE_IN_OUT, EASE_OUT } from './motion'
 
 type Position = 'single' | 'first' | 'middle' | 'last'
 
@@ -37,14 +40,13 @@ interface Translation {
 type Row =
   | { kind: 'separator'; key: string; label: string }
   | { kind: 'event'; key: string; text: string }
-  | { kind: 'message'; key: string; message: Message; position: Position; showSender: boolean; receipt: string | null }
+  | { kind: 'message'; key: string; message: Message; position: Position; showSender: boolean; receipt: string | null; notify: boolean; showQuote: boolean }
   | { kind: 'typing'; key: string }
   | { kind: 'loading'; key: string }
 
 const RUN_GAP = 60_000
 const EDIT_WINDOW = 15 * 60_000
 const UNSEND_WINDOW = 2 * 60_000
-const EMOJI_ONLY = /^(?:\p{Extended_Pictographic}️?(?:‍\p{Extended_Pictographic}️?)*\s*){1,3}$/u
 
 /** Between two bubbles from the same person, and between two runs. */
 const GAP_IN_RUN = 2
@@ -52,6 +54,14 @@ const GAP_BETWEEN_RUNS = 10
 /** The avatar column in a group thread, and the gutter the hover time sits in. */
 const AVATAR_COLUMN = 28
 const TIME_COLUMN = 54
+/**
+ * A row dated after the thread opened fades in; everything older paints at
+ * once. The slack covers the Mac's clock running a little behind this one.
+ */
+const ENTER_SLACK_MS = 5000
+/** A tapback landing this long after its row mounted is news, and fades in. */
+const FRESH_AFTER_MS = 500
+const TYPING_STEP_MS = 400
 
 function sameAuthor(a: Message, b: Message): boolean {
   if (a.fromMe !== b.fromMe) return false
@@ -77,7 +87,8 @@ function eventText(message: Message, chat: Chat): string | null {
   return chat ? null : null
 }
 
-export function buildRows(messages: Message[], chat: Chat, typing: boolean, loading: boolean, online = true): Row[] {
+/** `silencedBy` is the name of the person whose Focus is on, when the private API says one is. */
+export function buildRows(messages: Message[], chat: Chat, typing: boolean, loading: boolean, online = true, silencedBy?: string): Row[] {
   const rows: Row[] = []
   if (loading) rows.push({ kind: 'loading', key: 'loading' })
   let lastMineIndex = -1
@@ -88,6 +99,17 @@ export function buildRows(messages: Message[], chat: Chat, typing: boolean, load
       if (message.dateRead) lastReadIndex = index
     }
   })
+  // A run of replies to the same message shares one quote, on its first row.
+  const quoted: boolean[] = []
+  let lastShown: Message | undefined
+  for (const message of messages) {
+    if (eventText(message, chat)) {
+      quoted.push(false)
+      continue
+    }
+    quoted.push(Boolean(message.replyTo) && lastShown?.replyTo !== message.replyTo)
+    lastShown = message
+  }
   let previousDate: number | undefined
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]!
@@ -101,18 +123,32 @@ export function buildRows(messages: Message[], chat: Chat, typing: boolean, load
     }
     const previous = messages[index - 1]
     const next = messages[index + 1]
-    const joinsPrevious = Boolean(previous && sameAuthor(previous, message) && !eventText(previous, chat) && message.date - previous.date < RUN_GAP && !needsSeparator(previous.date, message.date))
-    const joinsNext = Boolean(next && sameAuthor(message, next) && !eventText(next, chat) && next.date - message.date < RUN_GAP && !needsSeparator(message.date, next.date))
+    const showQuote = quoted[index] ?? false
+    const joinsPrevious = Boolean(previous && sameAuthor(previous, message) && !eventText(previous, chat) && message.date - previous.date < RUN_GAP && !needsSeparator(previous.date, message.date) && !showQuote)
+    const joinsNext = Boolean(next && sameAuthor(message, next) && !eventText(next, chat) && next.date - message.date < RUN_GAP && !needsSeparator(message.date, next.date) && !quoted[index + 1])
     const position: Position = joinsPrevious && joinsNext ? 'middle' : joinsPrevious ? 'last' : joinsNext ? 'first' : 'single'
     let receipt: string | null = null
+    let notify = false
     if (message.fromMe) {
       const state = deliveryState(message)
       if (state === 'failed') receipt = 'Not delivered'
       else if (state === 'sending') receipt = online ? 'Sending…' : 'Waiting for connection…'
       else if (index === lastReadIndex && message.dateRead) receipt = `Read ${formatTime(message.dateRead)}`
-      else if (index === lastMineIndex && lastReadIndex < index) receipt = state === 'delivered' ? 'Delivered' : message.service === 'iMessage' ? 'Sent' : 'Sent as text message'
+      else if (index === lastMineIndex && lastReadIndex < index) {
+        // A Focus shows up two ways: on the message once it landed without a
+        // sound, and on the person while theirs is on. Either way the last
+        // thing I sent is the one that can break through.
+        if (message.notified) receipt = 'Notified'
+        else if (message.deliveredQuietly) {
+          receipt = 'Delivered Quietly'
+          notify = true
+        } else if (silencedBy && state === 'delivered') {
+          receipt = `${silencedBy} has notifications silenced`
+          notify = true
+        } else receipt = state === 'delivered' ? 'Delivered' : message.service === 'iMessage' ? 'Sent' : 'Sent as text message'
+      }
     }
-    rows.push({ kind: 'message', key, message, position, showSender: chat.isGroup && !message.fromMe && (position === 'first' || position === 'single'), receipt })
+    rows.push({ kind: 'message', key, message, position, showSender: chat.isGroup && !message.fromMe && (position === 'first' || position === 'single'), receipt, notify, showQuote })
   }
   if (typing) rows.push({ kind: 'typing', key: 'typing' })
   return rows
@@ -129,29 +165,50 @@ function bubbleRadius(fromMe: boolean, position: Position): Partial<Record<'bord
 }
 
 /**
- * The bubble's fill continues past its rounded corner, then a canvas-coloured
- * quad carves the concave curve back out. Only the last bubble of a run has one.
- */
-function Tail({ fromMe, color }: { fromMe: boolean; color: string }) {
-  const side = fromMe ? { right: -5 } : { left: -5 }
-  const cut = fromMe ? { right: -10 } : { left: -10 }
-  return (
-    <>
-      <div style={{ position: 'absolute', bottom: 0, ...side, width: 14, height: 16, backgroundColor: color, ...(fromMe ? { borderBottomLeftRadius: 14 } : { borderBottomRightRadius: 14 }) }} />
-      <div style={{ position: 'absolute', bottom: 0, ...cut, width: 10, height: 20, backgroundColor: C.canvas, ...(fromMe ? { borderBottomLeftRadius: 10 } : { borderBottomRightRadius: 10 }) }} />
-    </>
-  )
-}
-
-/**
  * Tapbacks hang off the bubble's outer top corner, the side the tail is on.
  * They overlap the corner radius, never the first line of text, so the bubble
  * carries a matching top margin whenever it has any.
  */
 export const TAPBACK_LIFT = 14
 
-function Tapbacks({ tapbacks, fromMe }: { tapbacks: Tapback[]; fromMe: boolean }) {
-  const groups = new Map<string, { glyph: string; count: number; mine: boolean }>()
+interface TapbackGroup {
+  glyph: string
+  count: number
+  mine: boolean
+}
+
+function TapbackPill({ item, index, fresh }: { item: TapbackGroup; index: number; fresh: boolean }) {
+  // Read once: a pill that lands on an open thread fades in, one painted with the thread does not.
+  const enter = useRef(fresh).current
+  return (
+    <motion.div
+      initial={enter ? { opacity: 0 } : false}
+      animate={{ opacity: 1 }}
+      transition={{ duration: DURATION.base, ease: EASE_OUT }}
+      style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        height: 24,
+        paddingLeft: item.count > 1 ? 7 : 5,
+        paddingRight: item.count > 1 ? 7 : 5,
+        borderRadius: 12,
+        backgroundColor: item.mine ? C.tapbackMine : C.tapback,
+        borderWidth: 2,
+        borderColor: C.canvas,
+        marginLeft: index === 0 ? 0 : -6,
+        userSelect: 'none',
+      }}
+    >
+      <text style={{ fontFamily: FONT_EMOJI, fontSize: 12, lineHeight: 16, color: C.text }}>{item.glyph}</text>
+      {item.count > 1 ? <text style={{ ...TYPE.micro, fontWeight: 600, color: C.onAccent }}>{String(item.count)}</text> : null}
+    </motion.div>
+  )
+}
+
+function Tapbacks({ tapbacks, fromMe, rowMountedAt }: { tapbacks: Tapback[]; fromMe: boolean; rowMountedAt: number }) {
+  const groups = new Map<string, TapbackGroup>()
   for (const tapback of tapbacks) {
     const glyph = tapbackGlyph(tapback)
     const entry = groups.get(glyph) ?? { glyph, count: 0, mine: false }
@@ -160,6 +217,7 @@ function Tapbacks({ tapbacks, fromMe }: { tapbacks: Tapback[]; fromMe: boolean }
     groups.set(glyph, entry)
   }
   const items = [...groups.values()].slice(0, 3)
+  const fresh = Date.now() - rowMountedAt > FRESH_AFTER_MS
   return (
     <div
       style={{
@@ -172,27 +230,7 @@ function Tapbacks({ tapbacks, fromMe }: { tapbacks: Tapback[]; fromMe: boolean }
       }}
     >
       {items.map((item, index) => (
-        <div
-          key={item.glyph}
-          style={{
-            display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 2,
-            height: 24,
-            paddingLeft: item.count > 1 ? 7 : 5,
-            paddingRight: item.count > 1 ? 7 : 5,
-            borderRadius: 12,
-            backgroundColor: item.mine ? C.tapbackMine : C.tapback,
-            borderWidth: 2,
-            borderColor: C.canvas,
-            marginLeft: index === 0 ? 0 : -6,
-            userSelect: 'none',
-          }}
-        >
-          <text style={{ fontFamily: FONT_EMOJI, fontSize: 12, lineHeight: 16, color: C.text }}>{item.glyph}</text>
-          {item.count > 1 ? <text style={{ ...TYPE.micro, fontWeight: 600, color: C.onAccent }}>{String(item.count)}</text> : null}
-        </div>
+        <TapbackPill key={item.glyph} item={item} index={index} fresh={fresh} />
       ))}
     </div>
   )
@@ -300,8 +338,11 @@ const MessageRow = memo(function MessageRow({
   position,
   showSender,
   receipt,
+  notify,
   capabilities,
   original,
+  showQuote = true,
+  entering = false,
   highlighted = false,
   replyCount = 0,
   translation,
@@ -314,8 +355,13 @@ const MessageRow = memo(function MessageRow({
   position: Position
   showSender: boolean
   receipt: string | null
+  notify: boolean
   capabilities: Capabilities
   original?: Message
+  /** Off for a reply that sits under another reply to the same message. */
+  showQuote?: boolean
+  /** A row that arrived while the thread was open fades in. Read at mount only. */
+  entering?: boolean
   highlighted?: boolean
   replyCount?: number
   translation?: Translation
@@ -325,18 +371,13 @@ const MessageRow = memo(function MessageRow({
 }) {
   const shell = useShell()
   const [hovered, setHovered] = useState(false)
+  const mountedAt = useRef(Date.now()).current
   const fromMe = message.fromMe
-  const mine = message.service === 'iMessage' ? C.imessage : C.sms
-  const fill = fromMe ? mine : C.received
   const textColor = fromMe ? C.onAccent : C.receivedText
-  const emojiOnly = !message.attachments.length && EMOJI_ONLY.test(message.text.trim())
   const state = deliveryState(message)
   const showTail = position === 'last' || position === 'single'
   const showAvatar = chat.isGroup && !fromMe
-  const hasText = message.text.trim().length > 0
   const hasTapbacks = message.tapbacks.length > 0
-  const lastPart = message.parts?.[message.parts.length - 1]
-  const lastBlockIsText = (lastPart ? lastPart.kind === 'text' : hasText) && !emojiOnly && !message.urlPreview
 
   const openMessageMenu = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
     if (!event.isRightClick) return
@@ -354,17 +395,20 @@ const MessageRow = memo(function MessageRow({
   }
   const onBubbleClick = useDoubleClick(openPicker)
   const time = formatTime(message.date)
+  const quoted = Boolean(message.replyTo) && showQuote
 
-  return (
+  const row = (
     <div
       testId={`message-${message.guid}`}
-      style={{ backgroundColor: highlighted ? C.selectedSoft : undefined, borderRadius: RADIUS.row, 
+      style={{
         display: 'flex',
         flexDirection: 'column',
         width: '100%',
         paddingLeft: THREAD_INSET,
         paddingRight: THREAD_INSET,
         paddingTop: position === 'first' || position === 'single' ? GAP_BETWEEN_RUNS : GAP_IN_RUN,
+        borderRadius: RADIUS.row,
+        backgroundColor: highlighted ? C.selectedSoft : undefined,
       }}
     >
       {showSender && message.sender ? (
@@ -405,8 +449,8 @@ const MessageRow = memo(function MessageRow({
         ) : null}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start', maxWidth: BUBBLE_MAX_FRACTION, minWidth: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start', maxWidth: BUBBLE_MAX_WIDTH, minWidth: 0 }}>
-            {message.replyTo ? <ReplyQuote original={original} replyTo={message.replyTo} fromMe={fromMe} onJump={onJump} /> : null}
-            <div style={{ position: 'relative', marginTop: hasTapbacks && !message.replyTo ? TAPBACK_LIFT : 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start' }}>
+            {quoted && message.replyTo ? <ReplyQuote original={original} replyTo={message.replyTo} fromMe={fromMe} onJump={onJump} /> : null}
+            <div style={{ position: 'relative', marginTop: hasTapbacks && !quoted ? TAPBACK_LIFT : 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', alignItems: fromMe ? 'flex-end' : 'flex-start' }}>
               <BubbleContent
                 message={message}
                 chat={chat}
@@ -422,9 +466,9 @@ const MessageRow = memo(function MessageRow({
                   },
                   onHover: setHovered,
                 }}
+                tail={showTail}
               />
-              {showTail && lastBlockIsText ? <Tail fromMe={fromMe} color={fill} /> : null}
-              {hasTapbacks ? <Tapbacks tapbacks={message.tapbacks} fromMe={fromMe} /> : null}
+              {hasTapbacks ? <Tapbacks tapbacks={message.tapbacks} fromMe={fromMe} rowMountedAt={mountedAt} /> : null}
             </div>
             {translation ? (
               <div style={{ paddingTop: 3, paddingLeft: S.x1, paddingRight: S.x1, maxWidth: '100%' }}>
@@ -464,6 +508,15 @@ const MessageRow = memo(function MessageRow({
                     {receipt}
                   </text>
                 ) : null}
+                {notify && capabilities.focusStatus ? (
+                  <div
+                    testId={`notify-${message.guid}`}
+                    onClick={() => void shell.store.notifySilenced(chat.guid, message.guid)}
+                    style={{ cursor: 'pointer', hover: { opacity: 0.8 } }}
+                  >
+                    <text style={{ ...TYPE.micro, fontWeight: 600, color: C.accent }}>Notify Anyway</text>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -477,6 +530,12 @@ const MessageRow = memo(function MessageRow({
         ) : null}
       </div>
     </div>
+  )
+  if (!entering) return row
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: DURATION.base, ease: EASE_OUT }} style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+      {row}
+    </motion.div>
   )
 })
 
@@ -500,20 +559,37 @@ export function effectName(id: string): string {
   return EFFECT_NAMES[id] ?? id.split('.').pop() ?? id
 }
 
+/** The bubble fades in, then one dot at a time brightens, the way Messages shows someone typing. */
 function TypingRow({ chat }: { chat: Chat }) {
   const who = chat.participants[0]
+  const [lit, setLit] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setLit((current) => (current + 1) % 3), TYPING_STEP_MS)
+    return () => clearInterval(timer)
+  }, [])
   return (
-    <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x2, width: '100%', paddingLeft: THREAD_INSET, paddingRight: THREAD_INSET, paddingTop: GAP_BETWEEN_RUNS }}>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: DURATION.base, ease: EASE_OUT }}
+      style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x2, width: '100%', paddingLeft: THREAD_INSET, paddingRight: THREAD_INSET, paddingTop: GAP_BETWEEN_RUNS }}
+    >
       {chat.isGroup ? <div style={{ width: AVATAR_COLUMN, flexShrink: 0 }}>{who ? <Avatar handle={who} size={AVATAR_COLUMN} /> : null}</div> : null}
       <div style={{ position: 'relative' }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 5, height: 34, paddingLeft: S.x3, paddingRight: S.x3, borderRadius: RADIUS.bubble, backgroundColor: C.received }}>
-          {[0.35, 0.6, 1].map((opacity, index) => (
-            <div key={index} style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.secondary, opacity }} />
+          {[0, 1, 2].map((index) => (
+            <motion.div
+              key={index}
+              initial={false}
+              animate={{ opacity: index === lit ? 1 : 0.35 }}
+              transition={{ duration: TYPING_STEP_MS / 1000, ease: EASE_IN_OUT }}
+              style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: C.secondary }}
+            />
           ))}
         </div>
         <Tail fromMe={false} color={C.received} />
       </div>
-    </div>
+    </motion.div>
   )
 }
 
@@ -545,6 +621,8 @@ export function Thread({ chat }: { chat: Chat }) {
   const typing = conversationTyping(state, chat.guid)
   const loading = conversationLoading(state, chat.guid) && messages.length > 0
   const listKey = conversationKey(state, chat.guid)
+  const other = conversationHandles(state, chat.guid)[0]
+  const silencedBy = other && conversationFocus(state, chat.guid) === 'silenced' ? handleName(other) : undefined
   const [threadFor, setThreadFor] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<string | null>(null)
   const [translations, setTranslations] = useState<Record<string, Translation>>({})
@@ -554,7 +632,12 @@ export function Thread({ chat }: { chat: Chat }) {
   const pendingJump = useRef<string | null>(null)
   const requested = useRef(false)
   const online = state.status === 'online'
-  const rows = useMemo(() => buildRows(messages, chat, typing, loading, online), [messages, chat, typing, loading, online])
+  const rows = useMemo(() => buildRows(messages, chat, typing, loading, online, silencedBy), [messages, chat, typing, loading, online, silencedBy])
+  // Rows dated after this fade in as they arrive; the ones the thread opened with do not.
+  const openedAt = useMemo(() => Date.now(), [listKey])
+  // The callbacks below read the latest rows through a ref, so a new row or a typing bubble never re-renders every message.
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
 
   const toggleTranslate = useCallback(
     (message: Message) => {
@@ -605,7 +688,7 @@ export function Thread({ chat }: { chat: Chat }) {
 
   const scrollTo = useCallback(
     (guid: string) => {
-      const index = rows.findIndex((row) => row.kind === 'message' && row.message.guid === guid)
+      const index = rowsRef.current.findIndex((row) => row.kind === 'message' && row.message.guid === guid)
       const listId = listRef.current?.id
       if (index < 0 || listId == null || !renderer?.scrollToItem) return false
       renderer.scrollToItem(listId, index, -96)
@@ -613,7 +696,7 @@ export function Thread({ chat }: { chat: Chat }) {
       setTimeout(() => setHighlight((current) => (current === guid ? null : current)), 2200)
       return true
     },
-    [rows, renderer],
+    [renderer],
   )
 
   useEffect(() => {
@@ -692,7 +775,9 @@ export function Thread({ chat }: { chat: Chat }) {
                 position="single"
                 showSender={chat.isGroup && !row.message.fromMe}
                 receipt={null}
+                notify={false}
                 capabilities={state.capabilities}
+                showQuote={false}
                 highlighted={false}
                 replyCount={0}
                 translation={translations[row.message.guid]}
@@ -753,8 +838,11 @@ export function Thread({ chat }: { chat: Chat }) {
                   position={row.position}
                   showSender={row.showSender}
                   receipt={row.receipt}
+                  notify={row.notify}
                   capabilities={state.capabilities}
-                  original={row.message.replyTo ? byGuid.get(row.message.replyTo) : undefined}
+                  original={row.showQuote && row.message.replyTo ? byGuid.get(row.message.replyTo) : undefined}
+                  showQuote={row.showQuote}
+                  entering={row.message.date > openedAt - ENTER_SLACK_MS}
                   highlighted={highlight === row.message.guid}
                   replyCount={replyCounts.get(row.message.guid) ?? 0}
                   translation={translations[row.message.guid]}

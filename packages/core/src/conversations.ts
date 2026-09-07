@@ -1,5 +1,5 @@
 import { normalizeAddress } from './findmy'
-import type { Chat, Contact, Handle, Message } from './model'
+import type { Chat, Contact, FocusStatus, Handle, Message } from './model'
 
 /**
  * chat.db keeps one chat per address, so a person you text on two numbers
@@ -16,6 +16,7 @@ export interface Grouping {
 
 interface GroupedState extends Grouping {
   chats: Chat[]
+  focus: Record<string, FocusStatus>
   messages: Record<string, Message[]>
   typing: Record<string, boolean>
   hasOlder: Record<string, boolean>
@@ -100,4 +101,18 @@ export function conversationHandles(state: Pick<GroupedState, 'chats' | 'primary
     for (const handle of chat?.participants ?? []) if (!handles.some((item) => item.address === handle.address)) handles.push(handle)
   }
   return handles
+}
+
+/** The key a Focus answer is kept under: one person, however many numbers they have. */
+export function focusKey(address: string): string {
+  return normalizeAddress(address) || address.toLowerCase()
+}
+
+/** The Focus of the person on the other end. A group, or anyone not asked about yet, is `unknown`. */
+export function conversationFocus(state: Pick<GroupedState, 'chats' | 'primaryOf' | 'merged' | 'focus'>, guid: string): FocusStatus {
+  const chat = state.chats.find((item) => item.guid === conversationGuid(state, guid))
+  if (!chat || chat.isGroup) return 'unknown'
+  const address = conversationHandles(state, guid)[0]?.address
+  if (!address) return 'unknown'
+  return state.focus[focusKey(address)] ?? 'unknown'
 }

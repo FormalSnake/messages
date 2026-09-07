@@ -29,6 +29,9 @@ export interface Tapback {
   sender?: Handle
 }
 
+/** What an attachment the server gave no type for is called. Every consumer reads `mime` as a string. */
+export const UNKNOWN_MIME = 'application/octet-stream'
+
 export interface Attachment {
   guid: string
   name: string
@@ -36,6 +39,8 @@ export interface Attachment {
   bytes: number
   width?: number
   height?: number
+  /** The size was read from the file header, so a re-read must not put the server's EXIF-blind one back. */
+  measured?: boolean
   isSticker: boolean
   /** Path inside the attachment cache once downloaded. */
   localPath?: string
@@ -70,6 +75,9 @@ export type MessagePart = { kind: 'text'; runs: RichRun[] } | { kind: 'attachmen
 
 export type DeliveryState = 'sending' | 'sent' | 'delivered' | 'read' | 'failed'
 
+/** A person's Focus, as the private API reports it. `unknown` covers a Focus they do not share and anyone who has never been asked about. */
+export type FocusStatus = 'silenced' | 'none' | 'unknown'
+
 export type GroupEvent =
   | { kind: 'rename'; title: string }
   | { kind: 'join'; who?: Handle }
@@ -97,6 +105,10 @@ export interface Message {
   dateRead?: number
   dateEdited?: number
   dateRetracted?: number
+  /** The recipient had a Focus on: Messages delivered this without lighting up their screen. Monterey and newer. */
+  deliveredQuietly?: boolean
+  /** "Notify Anyway" has already broken through that Focus for this message. */
+  notified?: boolean
   service: Service
   attachments: Attachment[]
   tapbacks: Tapback[]
@@ -181,6 +193,8 @@ export interface Capabilities {
   markUnread: boolean
   facetime: boolean
   scheduledMessages: boolean
+  /** Reading a person's Focus, and breaking through it, both landed in Monterey. */
+  focusStatus: boolean
 }
 
 export function macosMajor(info: ServerInfo | null): number {
@@ -206,6 +220,7 @@ export function capabilitiesFor(info: ServerInfo | null): Capabilities {
     markUnread: privateApi,
     facetime: faceTimeWorks,
     scheduledMessages: Boolean(info),
+    focusStatus: privateApi && macosMajor(info) >= 12,
   }
 }
 

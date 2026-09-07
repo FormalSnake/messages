@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { splitLinks } from './open'
-import type { Attachment, Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
+import type { Attachment, Chat, Contact, FocusStatus, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
 import type { Page, SearchFilters, SendAttachmentOptions, SendTextOptions, Transport, TransportEvent } from './transport'
 
 function matchesAttachmentFilter(attachment: Attachment, filter: NonNullable<SearchFilters['attachments']>): boolean {
@@ -47,6 +47,9 @@ const photos: Record<string, string> = {
   'demo-att-3': photo(140, 200, 'Trailhead'),
   'demo-att-5': `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="1300" viewBox="0 0 600 1300"><rect width="600" height="1300" fill="#2f5d8a"/><rect x="40" y="40" width="520" height="1220" rx="40" fill="#123"/><text x="60" y="140" font-family="sans-serif" font-size="48" fill="white">Tall screenshot</text><text x="60" y="1220" font-family="sans-serif" font-size="40" fill="#9cf">bottom edge</text></svg>').toString('base64')}`,
   'demo-att-4': photo(28, 300, 'Roof terrace'),
+  'demo-att-6': photo(190, 240, 'Rooftops'),
+  'demo-att-7': photo(330, 20, 'Plaza Mayor'),
+  'demo-att-8': photo(80, 140, 'Tapas'),
   'demo-sticker-1': stickerFace(),
 }
 
@@ -229,6 +232,12 @@ const seeds: Seed[] = [
           { kind: 'text', runs: [{ text: 'And the same spot at 7am, nobody about' }] },
         ],
       },
+      {
+        text: 'Three more from the roof',
+        ago: 2 * DAY + 5 * HOUR + 30 * MIN,
+        from: people.nadia,
+        attachments: [attachment('demo-att-6', 'IMG_1043.HEIC', 1200, 800), attachment('demo-att-7', 'IMG_1044.HEIC', 1200, 800), attachment('demo-att-8', 'IMG_1045.HEIC', 1200, 800)],
+      },
       { text: '', ago: 2 * DAY + 5 * HOUR, from: people.nadia, isAudio: true, attachments: [voiceNote('demo-audio-1', 12)] },
     ],
   },
@@ -240,7 +249,7 @@ const seeds: Seed[] = [
     participants: [people.ben],
     messages: [
       { text: 'PR is up, no rush', ago: 4 * DAY + 2 * HOUR, from: people.ben },
-      { text: 'Reviewing tonight', ago: 4 * DAY + HOUR, dateDelivered: now - 4 * DAY },
+      { text: 'Reviewing tonight', ago: 4 * DAY + HOUR, dateDelivered: now - 4 * DAY, deliveredQuietly: true },
       {
         text: 'https://docs.bluebubbles.app/private-api/installation',
         ago: 3 * DAY + 8 * HOUR,
@@ -616,6 +625,9 @@ export class DemoTransport implements Transport {
 
   async setGroupIcon(): Promise<void> {}
 
+  async focusStatus(address: string): Promise<FocusStatus> {
+    return address === people.ben.address ? 'silenced' : 'none'
+  }
   async notifySilenced(): Promise<void> {}
 
   async createFaceTimeLink(): Promise<string> {

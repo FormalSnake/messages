@@ -47,6 +47,7 @@ import eyeOff from 'lucide-static/icons/eye-off.svg' with { type: 'text' }
 import imagePlay from 'lucide-static/icons/image-play.svg' with { type: 'text' }
 import clock from 'lucide-static/icons/clock.svg' with { type: 'text' }
 import heart from 'lucide-static/icons/heart.svg' with { type: 'text' }
+import moon from 'lucide-static/icons/moon.svg' with { type: 'text' }
 import { C } from './theme'
 
 /**
@@ -110,6 +111,7 @@ const SOURCES = {
   removePerson: userMinus,
   schedule: clock,
   heart,
+  silenced: moon,
 } as const
 
 export type IconName = keyof typeof SOURCES

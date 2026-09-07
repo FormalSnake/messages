@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { parseScheduleTime } from './format'
+import { isEmojiOnly, parseScheduleTime } from './format'
 
 const NOW = new Date(2026, 8, 3, 14, 30, 0, 0).getTime() // Thu Sep 3 2026, 14:30 local
 
@@ -50,5 +50,27 @@ describe('parseScheduleTime', () => {
 
   test('rejects empty input', () => {
     expect('error' in parseScheduleTime('   ', NOW)).toBe(true)
+  })
+})
+
+describe('isEmojiOnly', () => {
+  test('accepts a country flag, which is two code points', () => {
+    expect(isEmojiOnly('\u{1F1F9}\u{1F1F7}')).toBe(true)
+    expect(isEmojiOnly('\u{1F1F9}\u{1F1F7} \u{1F1EA}\u{1F1F8}')).toBe(true)
+  })
+
+  test('accepts ZWJ sequences, skin tones, keycaps and tag flags', () => {
+    expect(isEmojiOnly('\u{1F3F3}\uFE0F\u200D\u{1F308}')).toBe(true)
+    expect(isEmojiOnly('\u{1F44B}\u{1F3FD}')).toBe(true)
+    expect(isEmojiOnly('1\uFE0F\u20E3')).toBe(true)
+    expect(isEmojiOnly('\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}')).toBe(true)
+  })
+
+  test('rejects text, empty strings and more than the allowed count', () => {
+    expect(isEmojiOnly('')).toBe(false)
+    expect(isEmojiOnly('ok \u{1F44D}')).toBe(false)
+    expect(isEmojiOnly('5')).toBe(false)
+    expect(isEmojiOnly('\u{1F600}\u{1F600}\u{1F600}\u{1F600}')).toBe(false)
+    expect(isEmojiOnly('\u{1F1F9}\u{1F1F7}\u{1F1EA}\u{1F1F8}\u{1F1EB}\u{1F1F7}\u{1F1F3}\u{1F1F1}')).toBe(false)
   })
 })

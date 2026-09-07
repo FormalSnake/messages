@@ -46,20 +46,76 @@ refused (`TransportError`) fails at once; one the network dropped is retried
 a few times. The connection itself is retried with backoff until it comes up.
 The reconcile sweep asks for ten messages at a time and keeps paging, so a
 long absence catches up progressively instead of in one request that hangs.
+It re-reads the open thread before the sweep, so what is on screen never waits
+for the backlog. Threads nobody has opened are paged in the background after
+every pass (`warmThreads`), newest conversation first, one page at a time with
+a gap between them, so opening a chat left alone for days paints from memory
+instead of waiting on a fifty-message request. The same pass downloads the
+media of the last dozen messages in the fifteen most recent chats
+(`warmMedia`), so a thread opens with its photos, videos and voice notes on
+disk rather than a row of placeholders. `warmBudget` decides what is worth
+pulling: images and audio up to 25 MB, video up to 60 MB, everything else (a
+PDF, a zip) left to a click, which is the bargain the thread already makes.
+`warmChats: 0` turns both off.
+
+A Focus on the other end shows up twice. The message carries it: chat.db's
+`was_delivered_quietly` and `did_notify_recipient` become `deliveredQuietly`
+and `notified`, and the receipt under the last thing I sent reads "Delivered
+Quietly" with a Notify Anyway button (`store.notifySilenced`, which is
+`POST /message/:guid/notify`). The person carries it too:
+`GET /handle/:address/focus` answers `silenced`, `none` or `unknown`, so
+`refreshFocus` asks about the open conversation on open and every minute after,
+and the same pass that warms threads keeps an answer for the fifteen most
+recent one-to-one chats (`warmFocus`, a ten minute TTL) so the sidebar and the
+header can show the moon without each thread being opened first. Answers are
+keyed by `focusKey`, one entry per person rather than per number, and
+`conversationFocus` reads them back.
+
+None of that is re-pulled after a restart. `StateCache` (`cache.ts`) keeps the
+chat list, contacts and the last 100 messages per chat in
+`$XDG_CACHE_HOME/messages/state.json`, written debounced and atomically, and
+the window paints from it before the server answers; the messages carry the
+`localPath` of anything already downloaded, and the client resolves that path
+again for every message it maps, so a file in the attachment cache is never
+fetched twice. A message the server sends again keeps the attachment size the
+client read from the file header (`measured`): the server's own size ignores
+EXIF, so without that the open thread recropped its photos every sweep. What a restart does cost is one page of the open thread and the
+sweep since `savedAt`.
 
 `apps/mac-agent` (`@messages/mac-agent`) runs on the Mac as a launchd user
 agent (`scripts/install-mac-agent.sh`, label `es.canarycoders.messages.agent`,
 port 1236, token in `~/.config/messages/agent.json`). It decrypts the Find My
 caches with keys from `~/.config/messages/findmy/` and serves
-`/findmy/friends` and `/findmy/devices`; `/health` says which keys exist. It
-also keeps `~/.config/messages/prefs.json`, the pinned and muted state and GIF
-favorites shared between clients (`PUT /prefs`, newest entry per chat or gif id
-wins, an unfavorite kept as a tombstone), and reports the chats pinned in
-Messages.app itself, read from
+`/findmy/friends` and `/findmy/devices`; `/health` says which keys exist and
+whether Find My is running. It also keeps `~/.config/messages/prefs.json`, the
+pinned and muted state and GIF favorites shared between clients (`PUT /prefs`,
+newest entry per chat or gif id wins, an unfavorite kept as a tombstone), and
+reports the chats pinned in Messages.app itself, read from
 `~/Library/Preferences/com.apple.messages.pinning.plist`. The client talks to
 it through `MacAgentClient` in `packages/core/src/agent.ts` when
 `config.agent` is set; `isPinned` in the same file decides between a Mac pin
-and a client change.
+and a client change, comparing the Mac's list against `pinnedAt`, which only a
+pin moves. `updatedAt` is the whole entry's clock, so a draft syncing while you
+type used to read as a pin change and unpin the chat.
+
+Nothing on the Mac refreshes those caches unless FindMy.app is running, and it
+only refreshes them for about five minutes after it launches: hidden, it then
+goes quiet. With the app closed `Devices.data` never changes at all and
+findmylocateagent keeps only the friend whose push arrived last, which is how a
+panel opened on Monday shows Wednesday's location. So `findmy/refresher.ts`
+keeps the app running hidden (`open -g -j`) and watches the source mtimes,
+restarting it (SIGTERM, since an `osascript` quit would need automation rights
+the agent cannot ask for) whenever they stop moving for 45 seconds. A Find My
+someone is using is refreshing on its own and is never restarted under them.
+Setting `keepFindMyOpen` to false in `agent.json` leaves the app alone.
+
+Both payloads are memoized on their source files' mtimes rather than a TTL, and
+`GET /findmy/stream` (`findmy/feed.ts`) watches those files and pushes a
+snapshot whenever one changes: `MacAgentClient.streamFindMy` reads that stream
+and the store applies it while the details panel is open, so someone who moves
+shows up in seconds. The minute poll stays as the fallback, and an answer to it
+that arrives after a push has landed is dropped rather than allowed to
+overwrite it.
 
 Colours live in `apps/desktop/src/ui/theme.ts` (`C`). A flat JSON of palette
 tokens at `~/.config/messages/theme.json` overrides them and is polled every
@@ -157,6 +213,19 @@ server cannot do instead of failing on click.
   the click meant for an ancestor's `onClick`; a border, a shadow, opacity or
   a `<text>` do not. Give such decorations `pointerEvents: 'none'` (avatars,
   dots, badges) or put the handler on the filled element itself.
+- Motion is `motion.div` from gpuix, driven natively: it animates `width`,
+  `height`, `opacity`, `top/right/bottom/left` and `borderRadius`, nothing
+  else (no transforms, no springs, no keyframes) and nothing on unmount.
+  `src/ui/motion.tsx` holds the durations and easing plus `usePresence`,
+  `useLeaving`, `Fade` and `Reveal`, which keep a closing element mounted
+  long enough to animate out. A panel slides by animating a clipping box
+  around content of fixed width, so nothing inside reflows mid-slide.
+- A content mask is a rectangle. An image inside a box with `overflow: hidden`
+  and a corner radius is cut to the box but keeps its square corners, so the
+  tail lobe under a photo came out as a square nub. Only the element that
+  paints rounds itself: the lobe is a 14x16 `<img>` with its own radius, fed a
+  corner cut ffmpeg makes on disk (`generateTailCut`), the same bargain the
+  photo tiles already make.
 
 ## Server quirks worth knowing
 
@@ -166,6 +235,12 @@ server cannot do instead of failing on click.
   for two minutes.
 - Attachments: download without `original=true` so HEIC becomes JPEG and CAF
   audio becomes AAC (labelled mp3). See `downloadPlan` in `map.ts`.
+- The attachment `width`/`height` the server reports ignore EXIF
+  orientation, so a portrait iPhone photo arrives as a landscape box and the
+  renderer, which does turn the pixels upright, paints past it into the next
+  row. `imageSize` in `image.ts` reads the file header, orientation included,
+  and `attachmentSrc` trusts it over the server; `ImageAttachment` reads it
+  once per mount for files already in the cache.
 - Editing a message through the helper on macOS 26 calls an `IMChat`
   selector that no longer exists, Messages.app crashes, and the helper is gone
   for 30 s. `capabilitiesFor` turns `edit` off when the reported macOS major
@@ -179,6 +254,11 @@ server cannot do instead of failing on click.
   only the legacy `incoming-facetime` event fires and nothing can be answered.
   The FaceTime helper needs `enable_ft_private_api` and does not inject on
   macOS 26 (bluebubbles-server#776).
+- Focus status (`GET /handle/:address/focus`) is Monterey and newer and needs
+  the private API, so `capabilitiesFor` gates it on both; the same goes for
+  `wasDeliveredQuietly` and `didNotifyRecipient`, which the server also leaves
+  out of the message it serializes for a notification. Someone who does not
+  share their Focus with this Apple ID answers `unknown`, not an error.
 - Scheduled sends (`POST /message/schedule`) are `Transport.scheduleText`,
   `listScheduled` and `cancelScheduled`; the server holds and fires them, not
   the client.

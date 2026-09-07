@@ -1,7 +1,12 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { isPinned } from './agent'
+import { conversationFocus } from './conversations'
+import { StateCache } from './cache'
 import { favoriteGifs, type Gif } from './gifs'
-import type { Chat, Contact, Message, ScheduledMessage, ServerInfo } from './model'
+import type { Chat, Contact, FocusStatus, Message, ScheduledMessage, ServerInfo } from './model'
 import { MessagesStore } from './store'
 import { TransportError, type Page, type SearchFilters, type Transport, type TransportEvent } from './transport'
 
@@ -13,6 +18,16 @@ function chat(guid: string, lastActivity = 1000): Chat {
 
 function gif(id: string): Gif {
   return { id, previewUrl: `https://static.klipy.com/${id}/sm.gif`, gifUrl: `https://static.klipy.com/${id}/hd.gif`, width: 200, height: 200 }
+}
+
+function media(chatGuid: string, attachmentGuid: string, date: number, bytes: number, mime = 'image/jpeg'): Message {
+  return { ...message(chatGuid, '', date), attachments: [{ guid: attachmentGuid, name: `file-${attachmentGuid}`, mime, bytes, isSticker: false, hidden: false }] }
+}
+
+/** Ten bytes is all `imageSize` reads from a GIF: the signature and the logical screen size. */
+function gifDataUrl(width: number, height: number): string {
+  const bytes = Uint8Array.from([...Buffer.from('GIF89a'), width & 0xff, width >> 8, height & 0xff, height >> 8])
+  return `data:image/gif;base64,${Buffer.from(bytes).toString('base64')}`
 }
 
 let seq = 0
@@ -29,6 +44,8 @@ class FakeTransport implements Transport {
   failConnects = 0
   chats: Chat[] = []
   messages: Message[] = []
+  /** A real image, as a data URL, for the tests where the store has to measure one. */
+  attachmentSource?: string
   sendCalls: string[] = []
   sendFailures: Array<'network' | 'server'> = []
   searchCalls: number[] = []
@@ -73,7 +90,9 @@ class FakeTransport implements Transport {
     return found
   }
 
+  loadCalls: string[] = []
   async loadMessages(chatGuid: string, options: { limit: number; before?: number }): Promise<Page<Message>> {
+    this.loadCalls.push(chatGuid)
     const all = this.messages.filter((item) => item.chatGuid === chatGuid && (options.before === undefined || item.date < options.before)).sort((a, b) => a.date - b.date)
     const items = all.slice(Math.max(0, all.length - options.limit))
     return { items, hasMore: items.length < all.length }
@@ -105,8 +124,10 @@ class FakeTransport implements Transport {
   sendAttachment(): Promise<Message> {
     throw new Error('not in this test')
   }
-  attachmentPath(): Promise<string> {
-    throw new Error('not in this test')
+  attachmentCalls: string[] = []
+  async attachmentPath(attachmentGuid: string): Promise<string> {
+    this.attachmentCalls.push(attachmentGuid)
+    return this.attachmentSource ?? `/cache/${attachmentGuid}.jpg`
   }
   createChat(): Promise<Chat> {
     throw new Error('not in this test')
@@ -115,7 +136,10 @@ class FakeTransport implements Transport {
   async markRead(chatGuid: string): Promise<void> {
     this.markReadCalls.push(chatGuid)
   }
-  async deleteChat(): Promise<void> {}
+  deleteFailure: Error | null = null
+  async deleteChat(): Promise<void> {
+    if (this.deleteFailure) throw this.deleteFailure
+  }
   async react(): Promise<void> {}
   async setTyping(): Promise<void> {}
   async markUnread(): Promise<void> {}
@@ -123,12 +147,26 @@ class FakeTransport implements Transport {
     throw new Error('not in this test')
   }
   async unsendMessage(): Promise<void> {}
-  async renameGroup(): Promise<void> {}
+  renameFailure: Error | null = null
+  async renameGroup(): Promise<void> {
+    if (this.renameFailure) throw this.renameFailure
+  }
   async addParticipant(): Promise<void> {}
   async removeParticipant(): Promise<void> {}
   async leaveGroup(): Promise<void> {}
   async setGroupIcon(): Promise<void> {}
-  async notifySilenced(): Promise<void> {}
+  focusCalls: string[] = []
+  focus: FocusStatus = 'none'
+  async focusStatus(address: string): Promise<FocusStatus> {
+    this.focusCalls.push(address)
+    return this.focus
+  }
+  notifyCalls: string[] = []
+  notifyFailure: Error | null = null
+  async notifySilenced(_chatGuid: string, messageGuid: string): Promise<void> {
+    this.notifyCalls.push(messageGuid)
+    if (this.notifyFailure) throw this.notifyFailure
+  }
   createFaceTimeLink(): Promise<string> {
     throw new Error('not in this test')
   }
@@ -241,11 +279,48 @@ describe('sending', () => {
 })
 
 describe('reading', () => {
-  it('pages a chat the socket touched before it was opened', async () => {
+  afterEach(() => vi.useRealTimers())
+
+  it('pages the chats it has not opened in the background', async () => {
     const transport = new FakeTransport()
     transport.chats = [chat('a', 2000), chat('b', 1000)]
     for (let index = 0; index < 60; index += 1) transport.messages.push(message('b', `older ${index}`, index + 1))
     const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    await settle()
+    expect(store.state.selectedChat).toBe('a')
+    expect(store.state.messages.b).toHaveLength(50)
+    expect(store.state.hasOlder.b).toBe(true)
+    store.stop()
+  })
+
+  it('downloads the media of recent messages in the background', async () => {
+    vi.useFakeTimers()
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    transport.messages.push(
+      media('b', 'att-photo', 900, 1024),
+      media('b', 'att-video', 910, 30 * 1024 * 1024, 'video/quicktime'),
+      media('b', 'att-voice', 920, 20_000, 'audio/mp4'),
+      // Too big for its kind, and a file that is not media at all: both wait
+      // to be asked for, same as they would in the thread.
+      media('b', 'att-huge', 930, 40 * 1024 * 1024),
+      media('b', 'att-doc', 940, 1024, 'application/pdf'),
+    )
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(transport.attachmentCalls).toEqual(['att-photo', 'att-video', 'att-voice'])
+    expect(store.state.messages.b?.[0]?.attachments[0]?.localPath).toBe('/cache/att-photo.jpg')
+    store.stop()
+  })
+
+  it('pages a chat the socket touched before it was opened', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    for (let index = 0; index < 60; index += 1) transport.messages.push(message('b', `older ${index}`, index + 1))
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
     await store.start()
     expect(store.state.selectedChat).toBe('a')
 
@@ -275,6 +350,46 @@ describe('reading', () => {
     await store.reconcile()
     expect(store.state.chats).toBe(chatsBefore)
     expect(store.state.messages.a).toBe(rowBefore)
+    store.stop()
+  })
+
+  it('applies a page as one publish rather than one per row', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    for (let index = 0; index < 50; index += 1) transport.messages.push(message('b', `row ${index}`, index + 1))
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    await store.start()
+    let publishes = 0
+    store.subscribe(() => {
+      publishes += 1
+    })
+
+    await store.selectChat('b')
+    expect(store.state.messages.b).toHaveLength(50)
+    // The selection, the loading flag either side of the page, and the page:
+    // a handful. It used to be one per row, and each one re-rendered the window.
+    expect(publishes).toBeLessThan(10)
+    store.stop()
+  })
+
+  it('trims a conversation once it is not the open one, leaving it pageable', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    for (let index = 0; index < 260; index += 1) transport.messages.push(message('b', `row ${index}`, index + 1))
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    await store.start()
+
+    await store.selectChat('b')
+    await store.loadEarlier('b')
+    await store.loadEarlier('b')
+    await store.loadEarlier('b')
+    // What the open thread paged is what the reader is looking at, so it stays.
+    expect(store.state.messages.b).toHaveLength(200)
+
+    await store.selectChat('a')
+    expect(store.state.messages.b).toHaveLength(100)
+    expect(store.state.messages.b?.[99]?.text).toBe('row 259')
+    expect(store.state.hasOlder.b).toBe(true)
     store.stop()
   })
 
@@ -331,9 +446,57 @@ describe('pins', () => {
     expect(isPinned(undefined)).toBe(false)
     expect(isPinned({ pinned: true })).toBe(true)
     expect(isPinned({ macPinned: true, macPinnedAt: 100 })).toBe(true)
-    expect(isPinned({ pinned: false, updatedAt: 200, macPinned: true, macPinnedAt: 100 })).toBe(false)
-    expect(isPinned({ pinned: false, updatedAt: 50, macPinned: true, macPinnedAt: 100 })).toBe(true)
-    expect(isPinned({ pinned: true, updatedAt: 50 })).toBe(true)
+    expect(isPinned({ pinned: false, pinnedAt: 200, updatedAt: 200, macPinned: true, macPinnedAt: 100 })).toBe(false)
+    expect(isPinned({ pinned: false, pinnedAt: 50, updatedAt: 50, macPinned: true, macPinnedAt: 100 })).toBe(true)
+    expect(isPinned({ pinned: true, pinnedAt: 50, updatedAt: 50 })).toBe(true)
+  })
+
+  it('keeps a Mac pin when a draft or a mute writes to the same entry', () => {
+    expect(isPinned({ draft: 'typing', updatedAt: 200, macPinned: true, macPinnedAt: 100 })).toBe(true)
+    expect(isPinned({ muted: true, updatedAt: 200, macPinned: true, macPinnedAt: 100 })).toBe(true)
+  })
+
+  it('leaves a chat pinned in Messages.app pinned while it is typed in, and still unpins on request', async () => {
+    vi.useFakeTimers()
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ chats: {}, gifs: {}, macPinned: ['a'], macPinnedAt: 100 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, agent: { url: 'http://mac.local:1236', token: 'tok' } })
+    await store.start()
+    expect(store.state.chats[0]?.pinned).toBe(true)
+
+    store.setDraft('a', 'on my way')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(store.state.chats[0]?.pinned).toBe(true)
+
+    store.togglePin('a')
+    expect(store.state.chats[0]?.pinned).toBe(false)
+    store.stop()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+})
+
+describe('attachments', () => {
+  it('keeps the size read from the file header when the server sends the message again', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const server = media('a', 'att-1', 5000, 1000, 'image/gif')
+    // chat.db reports the pixels the way they are stored, so a portrait photo arrives as a landscape box.
+    server.attachments = [{ ...server.attachments[0]!, width: 1200, height: 800 }]
+    transport.messages = [server]
+    transport.attachmentSource = gifDataUrl(240, 180)
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    await store.selectChat('a')
+    await store.attachmentSrc('a', server.guid, 'att-1', 'clip.gif', 'image/gif')
+    const shown = () => store.state.messages.a?.[0]?.attachments[0]
+    expect(shown()).toMatchObject({ width: 240, height: 180, measured: true })
+
+    store.applyMessage(server, { fromServer: true, silent: true })
+    expect(shown()).toMatchObject({ width: 240, height: 180, localPath: transport.attachmentSource })
+    store.stop()
   })
 })
 
@@ -357,6 +520,77 @@ describe('read receipts', () => {
     await store.markRead('a')
     expect(transport.markReadCalls).toEqual(['a'])
     store.stop()
+  })
+})
+
+describe('restarting', () => {
+  let dir = ''
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'messages-cache-'))
+  })
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    // A debounced cache write can land while the directory is going away, which rmdir reports as ENOTEMPTY.
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  })
+
+  /** Two chats worth thirty rows each, one of them carrying a photo. */
+  function seeded(): FakeTransport {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    for (let index = 0; index < 30; index += 1) transport.messages.push(message('a', `a ${index}`, index + 1))
+    for (let index = 0; index < 30; index += 1) transport.messages.push(message('b', `b ${index}`, index + 1))
+    transport.messages.push(media('b', 'att-photo', 900, 1024))
+    return transport
+  }
+
+  it('repairs an attachment an older build cached with no mime', async () => {
+    // What an earlier `mime: string` wrote through when the server said null.
+    const file = path.join(dir, 'state.json')
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 1,
+        savedAt: Date.now(),
+        selectedChat: 'a',
+        chats: [chat('a')],
+        contacts: [],
+        messages: { a: [{ ...message('a', 'Your bill is ready', 1), attachments: [{ guid: 'brand-logo', name: 'BrandLogoImage', mime: null, bytes: 40_150, isSticker: false, hidden: false }] }] },
+      }),
+    )
+
+    const loaded = await new StateCache(dir).load()
+    const attachment = loaded?.messages.a?.[0]?.attachments[0]
+    expect(attachment?.mime).toBe('application/octet-stream')
+    expect(() => attachment!.mime.startsWith('image/')).not.toThrow()
+  })
+
+  it('comes back on the cache instead of pulling the threads and their media again', async () => {
+    vi.useFakeTimers()
+    const first = seeded()
+    const cache = new StateCache(dir)
+    const store = new MessagesStore(first, { reconcileEveryMs: 0, cache })
+    await store.start()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(first.attachmentCalls).toEqual(['att-photo'])
+    expect(store.state.messages.b).toHaveLength(31)
+    await cache.flush()
+    store.stop()
+
+    const second = seeded()
+    const restarted = new MessagesStore(second, { reconcileEveryMs: 0, cache: new StateCache(dir) })
+    await restarted.start()
+    await vi.advanceTimersByTimeAsync(5000)
+
+    // Both threads came off disk, so the only page read is the reconcile's
+    // safety net over the open one, and no attachment is fetched twice.
+    expect(second.loadCalls).toEqual(['a'])
+    expect(second.attachmentCalls).toEqual([])
+    expect(restarted.state.messages.b).toHaveLength(31)
+    expect(restarted.state.messages.b?.at(-1)?.attachments[0]?.localPath).toBe('/cache/att-photo.jpg')
+    restarted.stop()
   })
 })
 
@@ -491,6 +725,155 @@ describe('gif favorites', () => {
     await store.syncPrefs()
 
     expect(store.state.gifFavorites.one).toMatchObject({ removed: true, updatedAt: localUpdatedAt })
+    store.stop()
+  })
+})
+
+describe('chat actions', () => {
+  async function online(chats: Chat[]): Promise<{ transport: FakeTransport; store: MessagesStore }> {
+    const transport = new FakeTransport()
+    transport.chats = chats
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    return { transport, store }
+  }
+
+  it('drops a deleted conversation at once and brings it back when the server refuses', async () => {
+    const { transport, store } = await online([chat('a', 2000), chat('b', 1000)])
+    transport.deleteFailure = new TransportError(500, 'chat.db is locked')
+    const pending = store.deleteChat('a')
+    expect(store.state.chats.map((item) => item.guid)).toEqual(['b'])
+    expect(store.state.selectedChat).toBe('b')
+    await pending
+    expect(store.state.chats.map((item) => item.guid)).toEqual(['a', 'b'])
+    expect(store.state.error).toBe('chat.db is locked')
+    store.stop()
+  })
+
+  it('renames a group before the server answers and reverts when it fails', async () => {
+    const group: Chat = { ...chat('g'), isGroup: true, displayName: 'Old', participants: [{ address: 'x', service: 'iMessage' }, { address: 'y', service: 'iMessage' }] }
+    const { transport, store } = await online([group])
+    transport.renameFailure = new TransportError(400, 'the server said no')
+    const pending = store.renameGroup('g', 'New')
+    expect(store.state.chats[0]?.displayName).toBe('New')
+    await pending
+    expect(store.state.chats[0]?.displayName).toBe('Old')
+    expect(store.state.error).toBe('the server said no')
+    store.stop()
+  })
+
+  it('clears the unread dot the moment a conversation is selected', async () => {
+    const { store } = await online([{ ...chat('a', 2000), unread: false }, { ...chat('b', 1000), unread: true }])
+    const pending = store.selectChat('b')
+    expect(store.state.chats.find((item) => item.guid === 'b')?.unread).toBe(false)
+    await pending
+    store.stop()
+  })
+})
+
+describe('focus', () => {
+  it('asks about the open conversation, keeps the answer, and breaks through it', async () => {
+    const transport = new FakeTransport()
+    transport.serverInfo = { ...info, privateApi: true, helperConnected: true }
+    transport.chats = [chat('+15550101')]
+    const mine = { ...message('+15550101', 'you up', 10, true), dateDelivered: 11, deliveredQuietly: true }
+    transport.messages = [mine]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    transport.focus = 'silenced'
+    await store.start()
+    await settle()
+
+    expect(transport.focusCalls).toEqual(['+15550101'])
+    expect(conversationFocus(store.state, '+15550101')).toBe('silenced')
+
+    // The TTL holds: reopening the same thread does not ask again.
+    await store.selectChat('+15550101')
+    expect(transport.focusCalls).toHaveLength(1)
+
+    await store.notifySilenced('+15550101', mine.guid)
+    expect(transport.notifyCalls).toEqual([mine.guid])
+    expect(store.state.messages['+15550101']?.[0]?.notified).toBe(true)
+    store.stop()
+  })
+
+  it('never asks when the private API is off, and puts the message back when the notify fails', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('+15550101')]
+    const mine = { ...message('+15550101', 'you up', 10, true), dateDelivered: 11, deliveredQuietly: true }
+    transport.messages = [mine]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    transport.focus = 'silenced'
+    await store.start()
+    await settle()
+
+    expect(transport.focusCalls).toEqual([])
+    expect(conversationFocus(store.state, '+15550101')).toBe('unknown')
+
+    transport.notifyFailure = new Error('helper is gone')
+    await store.notifySilenced('+15550101', mine.guid)
+    expect(store.state.messages['+15550101']?.[0]?.notified).toBeUndefined()
+    expect(store.state.error).toBe('helper is gone')
+    store.stop()
+  })
+})
+
+describe('find my', () => {
+  const agentConfig = { url: 'http://mac.local:1236', token: 'tok' }
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  function friend(latitude: number) {
+    return { id: 'f1', addresses: ['+34600111222'], latitude, longitude: -15.4, timestamp: 1, isSharing: true }
+  }
+
+  /** Answers `/findmy/stream` with one pushed snapshot, and `/findmy/friends` (with the prefs sync) with `polled`. */
+  function stubStream(pushed: unknown, polled: unknown[] = []): void {
+    const encoder = new TextEncoder()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).endsWith('/findmy/stream')) {
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(pushed)}\n\n`))
+            },
+          })
+          return { ok: true, status: 200, body } as unknown as Response
+        }
+        return new Response(JSON.stringify({ chats: {}, gifs: {}, macPinned: [], macPinnedAt: null, friends: polled, updatedAt: 0 }), { status: 200 })
+      }),
+    )
+  }
+
+  it('takes a pushed location while the details panel is open, without waiting for the poll', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('+34600111222')]
+    stubStream({ friends: [friend(28.1)], devices: null, updatedAt: 5 })
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0, agent: agentConfig })
+    await store.start()
+
+    store.setDetailsOpen(true)
+    await vi.waitFor(() => expect(store.state.locations['600111222']?.latitude).toBe(28.1), { timeout: 5000 })
+    expect(store.state.findMy).toBe('ok')
+
+    store.setDetailsOpen(false)
+    store.stop()
+  })
+
+  it('leaves the last known locations alone when a snapshot carries no friends', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('+34600111222')]
+    stubStream({ friends: null, devices: [], updatedAt: 5 }, [friend(28.9)])
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0, agent: agentConfig })
+    await store.start()
+    await settle()
+    expect(store.state.locations['600111222']?.latitude).toBe(28.9)
+
+    store.setDetailsOpen(true)
+    await settle()
+    expect(store.state.locations['600111222']?.latitude).toBe(28.9)
+
+    store.setDetailsOpen(false)
     store.stop()
   })
 })

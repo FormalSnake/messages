@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import { useGpuix, type PublicInstance } from '@gpuix/react'
-import { chatTitle, conversationChats, conversationGuid, conversationTyping, conversationUnread, handleName, parseSearchQuery, resolveSearchQuery, type Chat, type Message } from '@messages/core'
+import { motion, useGpuix, useWindowSize, type PublicInstance } from '@gpuix/react'
+import { chatTitle, conversationChats, conversationFocus, conversationGuid, conversationTyping, conversationUnread, handleName, parseSearchQuery, resolveSearchQuery, type Chat, type Message } from '@messages/core'
 import { formatListDate } from '@messages/core'
 import { useAppState } from './use-app-state'
 import type { ConnectionStatus } from '@messages/core'
@@ -8,17 +8,38 @@ import { AVATAR_ROW, C, RADIUS, ROW_HEIGHT, S, TITLEBAR_HEIGHT, TRAFFIC_LIGHT_CL
 import { Icon } from './icons'
 import { Avatar, IconButton, ring } from './primitives'
 import { shortcut, useShell, type MenuItem } from './context'
+import { DURATION, EASE_OUT, usePresence } from './motion'
 
 /** The dot column and the row's right inset, so every row lines up on two edges. */
 const DOT_COLUMN = 16
 const ROW_INSET = 10
 const PINNED_CELL = 92
+/** The unread badge on a pin, centred on the picture's edge the way Messages puts it. */
+const BADGE = 16
+const FOOTER_HEIGHT = 38
+/**
+ * The list is windowed on the React side: only rows near the viewport exist
+ * as elements, since gpuix rebuilds every element it holds each frame and a
+ * few hundred conversations cost more per frame than the whole thread.
+ */
+const WINDOW_MARGIN = 10
+const INITIAL_WINDOW = 30
+
+/** One row of the sidebar list. Pins sit above the list, so every row here is about one row tall. */
+type SidebarItem =
+  | { kind: 'chat'; key: string; chat: Chat }
+  | { kind: 'results'; key: string }
+  | { kind: 'result'; key: string; message: Message; chat: Chat }
+  | { kind: 'note'; key: string; title: string; body: string }
+  | { kind: 'backdrop'; key: string }
 
 interface RowProps {
   chat: Chat
   selected: boolean
   typing?: boolean
   unread?: boolean
+  /** The other person has a Focus on. The list reads it; the row only paints the moon. */
+  silenced?: boolean
   /** The row the keyboard is on. gpuix has no focus event, so the list owns this. */
   cursored: boolean
   onSelect: (guid: string) => void
@@ -88,8 +109,10 @@ export function confirmDelete(chat: Chat, shell: ReturnType<typeof useShell>): v
   })
 }
 
-const ChatRow = memo(function ChatRow({ chat, selected, typing = false, unread = chat.unread, cursored, onSelect, onArrow, register }: RowProps) {
+const ChatRow = memo(function ChatRow({ chat, selected, typing = false, unread = chat.unread, silenced = false, cursored, onSelect, onArrow, register }: RowProps) {
   const shell = useShell()
+  const dot = unread && !selected
+  const showDot = usePresence(dot, DURATION.fast)
   const title = chatTitle(chat)
   const preview = typing ? 'Typing…' : previewText(chat.lastMessage, chat)
   const fg = selected ? C.onAccent : C.text
@@ -125,7 +148,14 @@ const ChatRow = memo(function ChatRow({ chat, selected, typing = false, unread =
       }}
     >
       <div style={{ width: DOT_COLUMN, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-        {unread && !selected ? <div style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.unread, pointerEvents: 'none' }} /> : null}
+        {showDot ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: dot ? 1 : 0 }}
+            transition={{ duration: DURATION.fast, ease: EASE_OUT }}
+            style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.unread, pointerEvents: 'none' }}
+          />
+        ) : null}
       </div>
       <Avatar chat={chat} size={AVATAR_ROW} />
       <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, gap: 1 }}>
@@ -133,6 +163,7 @@ const ChatRow = memo(function ChatRow({ chat, selected, typing = false, unread =
           <text style={{ ...TYPE.body, fontWeight: 600, color: fg, flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
             {title}
           </text>
+          {silenced ? <Icon name="silenced" size={11} color={muted} /> : null}
           {chat.muted ? <Icon name="mute" size={11} color={muted} /> : null}
           <text style={{ ...TYPE.micro, color: muted, whiteSpace: 'nowrap', flexShrink: 0 }}>{chat.lastActivity ? formatListDate(chat.lastActivity) : ''}</text>
         </div>
@@ -144,6 +175,7 @@ const ChatRow = memo(function ChatRow({ chat, selected, typing = false, unread =
 
 function PinnedChat({ chat, selected, unread = chat.unread, cursored, onSelect, onArrow, register }: RowProps) {
   const shell = useShell()
+  const showBadge = usePresence(unread, DURATION.fast)
   const title = chatTitle(chat)
   return (
     <div
@@ -189,8 +221,13 @@ function PinnedChat({ chat, selected, unread = chat.unread, cursored, onSelect, 
         >
           <Avatar chat={chat} size={52} />
         </div>
-        {unread ? (
-          <div style={{ position: 'absolute', top: 0, left: 0, width: 14, height: 14, borderRadius: 7, backgroundColor: C.unread, borderWidth: 2, borderColor: C.sidebar, pointerEvents: 'none' }} />
+        {showBadge ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: unread ? 1 : 0 }}
+            transition={{ duration: DURATION.fast, ease: EASE_OUT }}
+            style={{ position: 'absolute', top: 3, right: 3, width: BADGE, height: BADGE, borderRadius: BADGE / 2, backgroundColor: C.unread, borderWidth: 2, borderColor: C.sidebar, pointerEvents: 'none' }}
+          />
         ) : null}
       </div>
       <text style={{ ...TYPE.micro, color: selected ? C.text : C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis', maxWidth: PINNED_CELL - S.x2, textAlign: 'center' }}>
@@ -279,16 +316,65 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
   const [cursor, setCursor] = useState<string | null>(null)
   const rows = useRef(new Map<string, PublicInstance | null>())
   const order = useRef<string[]>([])
+  const listRef = useRef<PublicInstance | null>(null)
+  const items = useRef<SidebarItem[]>([])
+  const [range, setRange] = useState({ start: 0, end: INITIAL_WINDOW })
+  const rangeRef = useRef(range)
+  /** A row the keyboard asked for while it was outside the window; it takes focus when it mounts. */
+  const pendingFocus = useRef<string | null>(null)
+  const { height: windowHeight } = useWindowSize()
+  const listHeight = Math.max(ROW_HEIGHT * 2, windowHeight - TITLEBAR_HEIGHT - FOOTER_HEIGHT)
   const trimmed = query.trim()
   const hasQuery = trimmed.length > 0
   const parsed = useMemo(() => parseSearchQuery(trimmed), [trimmed])
   const freeText = parsed.text.trim().toLowerCase()
   const hasFilter = parsed.fromMe || parsed.senders.length > 0 || Boolean(parsed.attachments) || parsed.links || parsed.before !== undefined || parsed.after !== undefined || parsed.chatNames.length > 0
 
-  const register = useCallback((guid: string, instance: PublicInstance | null) => {
-    if (instance) rows.current.set(guid, instance)
-    else rows.current.delete(guid)
-  }, [])
+  /**
+   * gpui scrolls a `List` to reveal whatever takes focus, and it lands the row
+   * against the bottom edge even when the row was already on screen, so a click
+   * on a row halfway down jumped the list. The list is scrolled here or not at
+   * all: read the anchor, focus, put it back.
+   */
+  const focusRow = useCallback(
+    (instance: PublicInstance) => {
+      const listId = listRef.current?.id
+      const anchor = listId != null ? (renderer?.getListScrollTop?.(listId) ?? null) : null
+      renderer?.focusElement?.(instance.id)
+      const index = anchor?.[0]
+      if (listId == null || index === undefined || index >= items.current.length) return
+      renderer?.scrollToItem?.(listId, index, anchor?.[1] ?? 0)
+    },
+    [renderer],
+  )
+
+  const register = useCallback(
+    (guid: string, instance: PublicInstance | null) => {
+      if (instance) rows.current.set(guid, instance)
+      else rows.current.delete(guid)
+      if (instance && pendingFocus.current === guid && renderer?.focusElement) {
+        pendingFocus.current = null
+        focusRow(instance)
+      }
+    },
+    [renderer, focusRow],
+  )
+
+  /** Focuses a row, scrolling it into the window first when the keyboard has walked off screen. */
+  const reveal = useCallback(
+    (guid: string, delta: number) => {
+      const instance = rows.current.get(guid)
+      if (instance) focusRow(instance)
+      else pendingFocus.current = guid
+      const index = items.current.findIndex((item) => item.kind === 'chat' && item.chat.guid === guid)
+      const listId = listRef.current?.id
+      if (index < 0 || listId == null || !renderer?.scrollToItem) return
+      const { start, end } = rangeRef.current
+      if (instance && index >= start && index < end - 1) return
+      renderer.scrollToItem(listId, index, delta > 0 ? -(listHeight - ROW_HEIGHT - S.x2) : 0)
+    },
+    [renderer, focusRow, listHeight],
+  )
 
   const onArrow = useCallback(
     (guid: string, delta: number) => {
@@ -296,10 +382,9 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
       const next = order.current[Math.min(Math.max(index + delta, 0), order.current.length - 1)]
       if (!next || next === guid) return
       setCursor(next)
-      const instance = rows.current.get(next)
-      if (instance && renderer?.focusElement) renderer.focusElement(instance.id)
+      reveal(next, delta)
     },
-    [renderer],
+    [reveal],
   )
 
   useEffect(() => {
@@ -335,16 +420,19 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
   const pinned = hasQuery ? [] : visible.filter((chat) => chat.pinned)
   const rest = hasQuery ? visible : visible.filter((chat) => !chat.pinned)
   order.current = [...pinned, ...rest].map((chat) => chat.guid)
-  const select = (guid: string) => {
-    setCursor(guid)
-    const instance = rows.current.get(guid)
-    if (instance && renderer?.focusElement) renderer.focusElement(instance.id)
-    void shell.store.selectChat(conversationGuid(state, guid))
-  }
+  // Stable, so the memoised rows survive the sidebar re-rendering on every store change.
+  const select = useCallback(
+    (guid: string) => {
+      setCursor(guid)
+      const instance = rows.current.get(guid)
+      if (instance) focusRow(instance)
+      void shell.store.selectChat(guid)
+    },
+    [focusRow, shell.store],
+  )
   // Only for a plain-text query with nothing found: someone already using an operator knows the syntax.
   const showTips = hasQuery && !hasFilter && visible.length === 0 && results.length === 0 && /^[a-zA-Z]/.test(trimmed)
   const host = state.server ? (shell.store.transport.kind === 'demo' ? 'Demo data' : `macOS ${state.server.macosVersion ?? ''}`.trim()) : ''
-  const chatByGuid = new Map(state.chats.map((chat) => [chat.guid, chat]))
   const backdropMenu = (event: { x?: number; y?: number; isRightClick?: boolean }) => {
     if (!event.isRightClick) return
     shell.openMenu({
@@ -352,6 +440,54 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
       y: event.y ?? 0,
       items: [{ label: 'New message', icon: 'compose', shortcut: shortcut('N'), onSelect: shell.startNewChat }],
     })
+  }
+
+  const list: SidebarItem[] = []
+  for (const chat of rest) list.push({ kind: 'chat', key: chat.guid, chat })
+  if (hasQuery && results.length > 0) {
+    // Only search results need this, and the sidebar re-renders on every store
+    // change, so it is not worth a few hundred entries the rest of the time.
+    const chatByGuid = new Map(state.chats.map((chat) => [chat.guid, chat]))
+    list.push({ kind: 'results', key: 'results' })
+    for (const message of results) {
+      const chat = chatByGuid.get(conversationGuid(state, message.chatGuid))
+      if (chat) list.push({ kind: 'result', key: `result-${message.guid}`, message, chat })
+    }
+  }
+  if (hasQuery && visible.length === 0 && results.length === 0) list.push({ kind: 'note', key: 'no-results', title: `No results for “${trimmed}”`, body: 'Try a name, number or a word from a message.' })
+  if (!hasQuery && state.chats.length === 0 && state.status === 'online') list.push({ kind: 'note', key: 'empty', title: 'No conversations yet', body: 'Start one with the compose button.' })
+  list.push({ kind: 'backdrop', key: 'backdrop' })
+  items.current = list
+  const count = list.length
+  // The reported range can be stale after a search shrinks the list; clamping keeps the window inside it.
+  const windowStart = Math.max(0, Math.min(range.start, count) - WINDOW_MARGIN)
+  const windowEnd = Math.min(count, Math.max(range.end, range.start + 1) + WINDOW_MARGIN)
+
+  const renderItem = (item: SidebarItem) => {
+    switch (item.kind) {
+      case 'chat':
+        return (
+          <ChatRow
+            chat={item.chat}
+            selected={item.chat.guid === state.selectedChat}
+            typing={conversationTyping(state, item.chat.guid)}
+            unread={conversationUnread(state, item.chat.guid)}
+            silenced={conversationFocus(state, item.chat.guid) === 'silenced'}
+            cursored={item.chat.guid === cursor}
+            onSelect={select}
+            onArrow={onArrow}
+            register={register}
+          />
+        )
+      case 'results':
+        return <text style={{ ...TYPE.micro, fontWeight: 600, color: C.tertiary, paddingLeft: ROW_INSET, paddingTop: S.x3, paddingBottom: S.x1 }}>Messages</text>
+      case 'result':
+        return <SearchResult message={item.message} chat={item.chat} onOpen={() => shell.jumpTo(item.message.chatGuid, item.message.guid)} />
+      case 'note':
+        return <EmptyNote title={item.title} body={item.body} />
+      case 'backdrop':
+        return <div testId="sidebar-backdrop" onAuxClick={backdropMenu} style={{ height: S.x10 }} />
+    }
   }
 
   return (
@@ -407,8 +543,7 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
                 const first = order.current[0]
                 if (first) {
                   setCursor(first)
-                  const instance = rows.current.get(first)
-                  if (instance && renderer?.focusElement) renderer.focusElement(instance.id)
+                  reveal(first, -1)
                 }
               }
             }}
@@ -422,56 +557,46 @@ export function Sidebar({ searchRef, width }: { searchRef: RefObject<PublicInsta
 
       {showTips ? <SearchTips /> : null}
 
-      <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0, overflowY: 'scroll', paddingLeft: S.x2, paddingRight: S.x2, paddingBottom: S.x2 }}>
-        {pinned.length > 0 ? (
-          <>
-            <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', paddingTop: S.x1, paddingBottom: S.x2 }}>
-              {pinned.map((chat) => (
-                <PinnedChat
-                  key={chat.guid}
-                  chat={chat}
-                  selected={chat.guid === state.selectedChat}
-                  unread={conversationUnread(state, chat.guid)}
-                  cursored={chat.guid === cursor}
-                  onSelect={select}
-                  onArrow={onArrow}
-                  register={register}
-                />
-              ))}
-            </div>
-            {rest.length > 0 ? <div style={{ height: 1, backgroundColor: C.sidebarBorder, marginBottom: S.x2, marginLeft: ROW_INSET, marginRight: ROW_INSET, flexShrink: 0 }} /> : null}
-          </>
-        ) : null}
-        {rest.map((chat) => (
-          <ChatRow
-            key={chat.guid}
-            chat={chat}
-            selected={chat.guid === state.selectedChat}
-            typing={conversationTyping(state, chat.guid)}
-            unread={conversationUnread(state, chat.guid)}
-            cursored={chat.guid === cursor}
-            onSelect={select}
-            onArrow={onArrow}
-            register={register}
-          />
-        ))}
-        {hasQuery && results.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', paddingTop: S.x3, flexShrink: 0 }}>
-            <text style={{ ...TYPE.micro, fontWeight: 600, color: C.tertiary, paddingLeft: ROW_INSET, paddingBottom: S.x1 }}>Messages</text>
-            {results.map((message) => {
-              const chat = chatByGuid.get(conversationGuid(state, message.chatGuid))
-              return chat ? <SearchResult key={message.guid} message={message} chat={chat} onOpen={() => shell.jumpTo(message.chatGuid, message.guid)} /> : null
-            })}
+      {pinned.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2, flexShrink: 0 }}>
+          <div style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', paddingTop: S.x1, paddingBottom: S.x2 }}>
+            {pinned.map((chat) => (
+              <PinnedChat
+                key={chat.guid}
+                chat={chat}
+                selected={chat.guid === state.selectedChat}
+                unread={conversationUnread(state, chat.guid)}
+                cursored={chat.guid === cursor}
+                onSelect={select}
+                onArrow={onArrow}
+                register={register}
+              />
+            ))}
           </div>
-        ) : null}
-        {hasQuery && visible.length === 0 && results.length === 0 ? (
-          <EmptyNote title={`No results for “${trimmed}”`} body="Try a name, number or a word from a message." />
-        ) : null}
-        {!hasQuery && state.chats.length === 0 && state.status === 'online' ? (
-          <EmptyNote title="No conversations yet" body="Start one with the compose button." />
-        ) : null}
-        <div testId="sidebar-backdrop" onAuxClick={backdropMenu} style={{ flexGrow: 1, minHeight: S.x10 }} />
-      </div>
+          {rest.length > 0 ? <div style={{ height: 1, backgroundColor: C.sidebarBorder, marginBottom: S.x2, marginLeft: ROW_INSET, marginRight: ROW_INSET, flexShrink: 0 }} /> : null}
+        </div>
+      ) : null}
+
+      <virtual-list
+        ref={listRef}
+        itemCount={count}
+        windowStart={windowStart}
+        estimatedItemHeight={ROW_HEIGHT}
+        overdraw={400}
+        onVisibleRange={(event) => {
+          const start = event.startIndex ?? 0
+          const end = event.endIndex ?? start
+          rangeRef.current = { start, end }
+          setRange((current) => (current.start === start && current.end === end ? current : { start, end }))
+        }}
+        style={{ flexGrow: 1, minHeight: 0, width: '100%', paddingBottom: S.x2 }}
+      >
+        {items.current.slice(windowStart, windowEnd).map((item) => (
+          <div key={item.key} style={{ display: 'flex', flexDirection: 'column', paddingLeft: S.x2, paddingRight: S.x2 }}>
+            {renderItem(item)}
+          </div>
+        ))}
+      </virtual-list>
 
       <div
         style={{

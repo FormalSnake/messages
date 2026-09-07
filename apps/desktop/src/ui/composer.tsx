@@ -9,6 +9,7 @@ import { useAppState } from './use-app-state'
 import { effectName } from './thread'
 import { GifPicker } from './gif-picker'
 import { ScheduledMessages } from './scheduled'
+import { DURATION, Fade, Reveal, useHeld } from './motion'
 
 const HOUR = 60 * 60_000
 
@@ -50,6 +51,9 @@ const EDIT_WINDOW = 15 * 60_000
 const FIELD_HEIGHT = 34
 const BUTTON_HIT = 28
 const BUTTON_LIFT = (FIELD_HEIGHT - BUTTON_HIT) / 2
+/** Fixed, so the reveal that clips it knows how far to grow. */
+const BANNER_HEIGHT = 34
+const ATTACH_FIELD_HEIGHT = 30
 
 const IMAGE_FILE = /\.(jpe?g|png|gif|webp|heic|bmp)$/i
 
@@ -83,13 +87,13 @@ function Banner({ label, body, onClose, testId }: { label: string; body: string;
         flexDirection: 'row',
         alignItems: 'center',
         gap: S.x2,
+        height: BANNER_HEIGHT,
         marginBottom: S.x2,
         paddingLeft: S.x2,
         paddingRight: S.x1,
-        paddingTop: S.x1,
-        paddingBottom: S.x1,
         borderRadius: RADIUS.control,
         backgroundColor: C.raised,
+        flexShrink: 0,
       }}
     >
       <div style={{ width: 2, height: 26, borderRadius: 1, backgroundColor: C.accent, flexShrink: 0 }} />
@@ -113,6 +117,9 @@ export function Composer({ chat }: { chat: Chat }) {
   const messages = conversationMessages(state, chat.guid)
   const replyTarget = replyGuid ? messages.find((item) => item.guid === replyGuid) : undefined
   const editTarget = editGuid ? messages.find((item) => item.guid === editGuid) : undefined
+  // The banners keep painting the last target while they collapse.
+  const shownReply = useHeld(replyTarget)
+  const shownEdit = useHeld(editTarget)
   const [effect, setEffect] = useState('none')
   const [attachOpen, setAttachOpen] = useState(false)
   const [attachPath, setAttachPath] = useState('')
@@ -242,30 +249,40 @@ export function Composer({ chat }: { chat: Chat }) {
       style={{ display: 'flex', flexDirection: 'column', flexShrink: 0, paddingLeft: S.x3, paddingRight: S.x3, paddingTop: S.x2, paddingBottom: S.x3, userSelect: 'none' }}
     >
       <ScheduledMessages chatGuid={chat.guid} />
-      {replyTarget ? (
-        <Banner
-          testId="reply-banner"
-          label={`Replying to ${replyTarget.fromMe ? 'yourself' : replyTarget.sender ? handleName(replyTarget.sender) : 'message'}`}
-          body={replyTarget.text || 'Attachment'}
-          onClose={() => store.setReplyingTo(chat.guid, undefined)}
-        />
-      ) : null}
-      {editTarget ? <Banner testId="edit-banner" label="Editing" body={editTarget.text} onClose={() => store.setEditing(chat.guid, undefined)} /> : null}
-      {attachOpen ? (
-        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, marginBottom: S.x2 }}>
+      <Reveal show={Boolean(replyTarget)} height={BANNER_HEIGHT + S.x2}>
+        {shownReply ? (
+          <Banner
+            testId="reply-banner"
+            label={`Replying to ${shownReply.fromMe ? 'yourself' : shownReply.sender ? handleName(shownReply.sender) : 'message'}`}
+            body={shownReply.text || 'Attachment'}
+            onClose={() => store.setReplyingTo(chat.guid, undefined)}
+          />
+        ) : null}
+      </Reveal>
+      <Reveal show={Boolean(editTarget)} height={BANNER_HEIGHT + S.x2}>
+        {shownEdit ? <Banner testId="edit-banner" label="Editing" body={shownEdit.text} onClose={() => store.setEditing(chat.guid, undefined)} /> : null}
+      </Reveal>
+      <Reveal show={attachOpen} height={ATTACH_FIELD_HEIGHT + S.x2}>
+        <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2, height: ATTACH_FIELD_HEIGHT, marginBottom: S.x2, flexShrink: 0 }}>
           <TextField testId="attach-path" value={attachPath} onChange={setAttachPath} onSubmit={sendFile} placeholder="Path to a file, for example ~/Pictures/photo.jpg" autoFocus />
           <IconButton icon="plus" label="Add file" onClick={sendFile} color={C.accent} strong disabled={attachPath.trim().length === 0} />
           <IconButton icon="close" label="Cancel" onClick={() => setAttachOpen(false)} />
         </div>
-      ) : null}
+      </Reveal>
       {pending.length > 0 ? (
-        <div testId="staged" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: S.x2, marginBottom: S.x2 }}>
-          {pending.map((path) => (
-            <Staged key={path} path={path} onRemove={() => setPending((current) => current.filter((item) => item !== path))} />
-          ))}
-        </div>
+        <Fade enter={DURATION.fast} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+          <div testId="staged" style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: S.x2, marginBottom: S.x2 }}>
+            {pending.map((path) => (
+              <Staged key={path} path={path} onRemove={() => setPending((current) => current.filter((item) => item !== path))} />
+            ))}
+          </div>
+        </Fade>
       ) : null}
-      {note ? <text style={{ ...TYPE.caption, color: C.secondary, paddingBottom: S.x1 }}>{note}</text> : null}
+      {note ? (
+        <Fade enter={DURATION.fast} style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+          <text style={{ ...TYPE.caption, color: C.secondary, paddingBottom: S.x1 }}>{note}</text>
+        </Fade>
+      ) : null}
 
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: S.x1 }}>
         <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, paddingBottom: BUTTON_LIFT, flexShrink: 0 }}>
@@ -439,36 +456,38 @@ export function Composer({ chat }: { chat: Chat }) {
       {gifAnchor ? <GifPicker anchor={gifAnchor} chatGuid={chat.guid} onClose={() => setGifAnchor(null)} /> : null}
       {schedulePanel ? (
         <anchored deferred occlude priority={2} position={schedulePanel} anchor="bottomLeft" fit="snap" snapMargin={S.x2}>
-          <div
-            testId="schedule-panel"
-            tabIndex={-1}
-            onMouseDownOutside={() => setSchedulePanel(null)}
-            onKeyDown={(event) => {
-              if (event.key === 'escape') setSchedulePanel(null)
-            }}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: S.x2,
-              minWidth: 240,
-              padding: S.x2,
-              borderRadius: RADIUS.menu,
-              backgroundColor: C.overlay,
-              borderWidth: 1,
-              borderColor: C.overlayBorder,
-              boxShadow: overlayShadow,
-            }}
-          >
-            <TextField
-              testId="schedule-time"
-              value={scheduleInput}
-              onChange={setScheduleInput}
-              onSubmit={submitSchedule}
-              placeholder="HH:MM, tomorrow HH:MM, or YYYY-MM-DD HH:MM"
-              autoFocus
-            />
-            {scheduleError ? <text style={{ ...TYPE.caption, color: C.danger }}>{scheduleError}</text> : null}
-          </div>
+          <Fade enter={DURATION.fast}>
+            <div
+              testId="schedule-panel"
+              tabIndex={-1}
+              onMouseDownOutside={() => setSchedulePanel(null)}
+              onKeyDown={(event) => {
+                if (event.key === 'escape') setSchedulePanel(null)
+              }}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: S.x2,
+                minWidth: 240,
+                padding: S.x2,
+                borderRadius: RADIUS.menu,
+                backgroundColor: C.overlay,
+                borderWidth: 1,
+                borderColor: C.overlayBorder,
+                boxShadow: overlayShadow,
+              }}
+            >
+              <TextField
+                testId="schedule-time"
+                value={scheduleInput}
+                onChange={setScheduleInput}
+                onSubmit={submitSchedule}
+                placeholder="HH:MM, tomorrow HH:MM, or YYYY-MM-DD HH:MM"
+                autoFocus
+              />
+              {scheduleError ? <text style={{ ...TYPE.caption, color: C.danger }}>{scheduleError}</text> : null}
+            </div>
+          </Fade>
         </anchored>
       ) : null}
     </div>

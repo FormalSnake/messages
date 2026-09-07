@@ -10,6 +10,8 @@ import path from 'node:path'
 
 export interface ChatPrefs {
   pinned?: boolean
+  /** When a client last pinned or unpinned; only a pin moves it, so it outranks a Mac pin on its own clock. */
+  pinnedAt?: number
   muted?: boolean
   readReceipts?: boolean
   draft?: string
@@ -52,6 +54,7 @@ function sanitizeEntry(raw: unknown): ChatPrefs | null {
   if (typeof record.updatedAt !== 'number' || !Number.isFinite(record.updatedAt)) return null
   const entry: ChatPrefs = { updatedAt: record.updatedAt }
   if (typeof record.pinned === 'boolean') entry.pinned = record.pinned
+  if (typeof record.pinnedAt === 'number' && Number.isFinite(record.pinnedAt)) entry.pinnedAt = record.pinnedAt
   if (typeof record.muted === 'boolean') entry.muted = record.muted
   if (typeof record.readReceipts === 'boolean') entry.readReceipts = record.readReceipts
   if (typeof record.draft === 'string') entry.draft = record.draft

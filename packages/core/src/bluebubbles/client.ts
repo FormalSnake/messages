@@ -3,7 +3,7 @@ import { mkdir, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
 import { squareThumbnail } from '../image'
-import type { Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from '../model'
+import type { Chat, Contact, FocusStatus, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from '../model'
 import {
   TransportError,
   type Page,
@@ -94,6 +94,25 @@ function toScheduledMessage(raw: RawScheduledMessage): ScheduledMessage {
     text: raw.payload.message,
     sendAt: new Date(raw.scheduledFor).getTime(),
   }
+}
+
+/** Contact photos decoded at once. Every one of them is a full RGBA bitmap in the heap while it is cut square. */
+const CONTACT_AVATARS = 4
+
+/** `map` with at most `limit` of them running at a time, in order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next
+      next += 1
+      if (index >= items.length) return
+      out[index] = await run(items[index]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
 }
 
 const MESSAGE_EVENTS = ['new-message', 'updated-message', 'message-send-error']
@@ -239,7 +258,7 @@ export class BlueBubblesTransport implements Transport {
 
   async listContacts(): Promise<Contact[]> {
     const raw = await this.fetchRawContacts()
-    return Promise.all(raw.map(async item => toContact(item, await this.saveContactAvatar(item))))
+    return mapLimit(raw, CONTACT_AVATARS, async item => toContact(item, await this.saveContactAvatar(item)))
   }
 
   // extraProperties=avatar is a separate opt-in on top of the plain contact
@@ -295,7 +314,9 @@ export class BlueBubblesTransport implements Transport {
       const response = await this.download(`/attachment/${encodeURIComponent(attachmentGuid)}/download`, {
         original,
       })
-      await Bun.write(path, await response.arrayBuffer())
+      // Straight to disk: buffering it first put a whole sixty megabyte video
+      // in the heap, and the warm pass fetches these in the background.
+      await Bun.write(path, response)
       return path
     })()
 
@@ -411,6 +432,13 @@ export class BlueBubblesTransport implements Transport {
     const form = new FormData()
     form.append('icon', Bun.file(path), basename(path))
     await this.request('POST', `/chat/${encodeURIComponent(chatGuid)}/icon`, { form })
+  }
+
+  // The helper answers "unknown" for a Focus the person does not share with
+  // this Apple ID, which is the same shape as no Focus at all from here.
+  async focusStatus(address: string): Promise<FocusStatus> {
+    const data = await this.request<{ status: string }>('GET', `/handle/${encodeURIComponent(address)}/focus`)
+    return data.status === 'silenced' ? 'silenced' : data.status === 'none' ? 'none' : 'unknown'
   }
 
   async notifySilenced(chatGuid: string, messageGuid: string): Promise<void> {
@@ -547,7 +575,7 @@ export class BlueBubblesTransport implements Transport {
     await Promise.all(
       messages.flatMap(message =>
         (message.attachments ?? []).map(async attachment => {
-          const { extension } = downloadPlan(attachment.transferName, attachment.mimeType)
+          const { extension } = downloadPlan(attachment.transferName, attachment.mimeType ?? undefined)
           const path = this.attachmentCachePath(attachment.guid, extension)
           if (await Bun.file(path).exists()) paths.set(attachment.guid, path)
         }),

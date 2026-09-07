@@ -5,6 +5,7 @@ import { HeartIcon, Icon } from './icons'
 import { overlayShadow } from './primitives'
 import { useShell } from './context'
 import { useAppState } from './use-app-state'
+import { DURATION, Fade } from './motion'
 
 const PANEL_WIDTH = 300
 const PANEL_HEIGHT = 340
@@ -150,94 +151,96 @@ export function GifPicker({ anchor, chatGuid, onClose }: { anchor: { x: number; 
 
   return (
     <anchored deferred occlude priority={3} position={anchor} anchor="bottomLeft" fit="snap" snapMargin={S.x2}>
-      <div
-        testId="gif-picker"
-        onMouseDownOutside={onClose}
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          width: PANEL_WIDTH,
-          height: PANEL_HEIGHT,
-          gap: S.x2,
-          padding: S.x2,
-          borderRadius: RADIUS.menu,
-          backgroundColor: C.overlay,
-          borderWidth: 1,
-          borderColor: C.overlayBorder,
-          boxShadow: overlayShadow,
-        }}
-      >
+      <Fade enter={DURATION.fast}>
         <div
+          testId="gif-picker"
+          onMouseDownOutside={onClose}
           style={{
             display: 'flex',
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: S.x1,
-            flexShrink: 0,
-            height: 28,
-            paddingLeft: S.x2,
-            paddingRight: S.x2,
-            borderRadius: RADIUS.control,
-            backgroundColor: C.canvas,
+            flexDirection: 'column',
+            width: PANEL_WIDTH,
+            height: PANEL_HEIGHT,
+            gap: S.x2,
+            padding: S.x2,
+            borderRadius: RADIUS.menu,
+            backgroundColor: C.overlay,
             borderWidth: 1,
-            borderColor: C.separator,
+            borderColor: C.overlayBorder,
+            boxShadow: overlayShadow,
           }}
         >
-          <Icon name="search" size={13} color={C.tertiary} />
-          <input
-            testId="gif-search"
-            value={query}
-            autoFocus
-            placeholder="Search KLIPY"
-            onChange={(event) => setQuery(event.value ?? '')}
-            onSubmit={() => setCommitted(query)}
-            onKeyDown={(event) => {
-              if (event.key === 'escape') onClose()
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: S.x1,
+              flexShrink: 0,
+              height: 28,
+              paddingLeft: S.x2,
+              paddingRight: S.x2,
+              borderRadius: RADIUS.control,
+              backgroundColor: C.canvas,
+              borderWidth: 1,
+              borderColor: C.separator,
             }}
-            theme={{ caret: C.accent, textMuted: C.tertiary }}
-            style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, ...TYPE.body, color: C.text, backgroundColor: C.transparent, borderWidth: 0 }}
-          />
-        </div>
+          >
+            <Icon name="search" size={13} color={C.tertiary} />
+            <input
+              testId="gif-search"
+              value={query}
+              autoFocus
+              placeholder="Search KLIPY"
+              onChange={(event) => setQuery(event.value ?? '')}
+              onSubmit={() => setCommitted(query)}
+              onKeyDown={(event) => {
+                if (event.key === 'escape') onClose()
+              }}
+              theme={{ caret: C.accent, textMuted: C.tertiary }}
+              style={{ flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0, ...TYPE.body, color: C.text, backgroundColor: C.transparent, borderWidth: 0 }}
+            />
+          </div>
 
-        <div testId="gif-grid" style={{ flexGrow: 1, minHeight: 0, overflowY: 'scroll', display: 'flex', flexDirection: 'column', gap: S.x3 }}>
-          {showFavorites && favorites.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: S.x1, flexShrink: 0 }}>
-              <text style={{ ...TYPE.caption, color: C.secondary }}>Favorites</text>
-              <div style={{ display: 'grid', gridTemplateColumns: 3, gap: S.x1 }}>
-                {favorites.map((item) => (
-                  <GifCell key={item.id} item={item} previewPath={favoritePreviews[item.id]} favorited onSelect={() => pick(item)} onToggleFavorite={() => store.toggleGifFavorite(item)} />
-                ))}
+          <div testId="gif-grid" style={{ flexGrow: 1, minHeight: 0, overflowY: 'scroll', display: 'flex', flexDirection: 'column', gap: S.x3 }}>
+            {showFavorites && favorites.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: S.x1, flexShrink: 0 }}>
+                <text style={{ ...TYPE.caption, color: C.secondary }}>Favorites</text>
+                <div style={{ display: 'grid', gridTemplateColumns: 3, gap: S.x1 }}>
+                  {favorites.map((item) => (
+                    <GifCell key={item.id} item={item} previewPath={favoritePreviews[item.id]} favorited onSelect={() => pick(item)} onToggleFavorite={() => store.toggleGifFavorite(item)} />
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
 
-          {loading ? (
-            <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <text style={{ ...TYPE.caption, color: C.secondary }}>Loading…</text>
-            </div>
-          ) : items.length === 0 ? (
-            <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>{`No GIFs for "${term}"`}</text>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: S.x1, flexShrink: 0 }}>
-              {showFavorites ? <text style={{ ...TYPE.caption, color: C.secondary }}>Trending</text> : null}
-              <div style={{ display: 'grid', gridTemplateColumns: 3, gap: S.x1 }}>
-                {items.map((item) => (
-                  <GifCell
-                    key={item.id}
-                    item={item}
-                    previewPath={previews[item.id]}
-                    favorited={favoriteIds.has(item.id)}
-                    onSelect={() => pick(item)}
-                    onToggleFavorite={() => store.toggleGifFavorite(item)}
-                  />
-                ))}
+            {loading ? (
+              <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <text style={{ ...TYPE.caption, color: C.secondary }}>Loading…</text>
               </div>
-            </div>
-          )}
+            ) : items.length === 0 ? (
+              <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <text style={{ ...TYPE.caption, color: C.secondary, textAlign: 'center' }}>{`No GIFs for "${term}"`}</text>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: S.x1, flexShrink: 0 }}>
+                {showFavorites ? <text style={{ ...TYPE.caption, color: C.secondary }}>Trending</text> : null}
+                <div style={{ display: 'grid', gridTemplateColumns: 3, gap: S.x1 }}>
+                  {items.map((item) => (
+                    <GifCell
+                      key={item.id}
+                      item={item}
+                      previewPath={previews[item.id]}
+                      favorited={favoriteIds.has(item.id)}
+                      onSelect={() => pick(item)}
+                      onToggleFavorite={() => store.toggleGifFavorite(item)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      </Fade>
     </anchored>
   )
 }

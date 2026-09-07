@@ -14,6 +14,7 @@ import type {
   TapbackKind,
   TextEffect,
 } from '../model'
+import { UNKNOWN_MIME } from '../model'
 
 export interface RawHandle {
   originalROWID: number
@@ -30,7 +31,8 @@ export interface RawAttachment {
   height?: number
   width?: number
   uti: string
-  mimeType: string
+  /** Null for an attachment chat.db has no type for, e.g. the brand logo on an RCS business message. */
+  mimeType: string | null
   totalBytes: number
   transferName: string
   isSticker?: boolean
@@ -94,6 +96,10 @@ export interface RawMessage {
   threadOriginatorPart?: string | null
   dateRetracted?: number | null
   dateEdited?: number | null
+  /** Monterey and newer, and left out of the notification serializer. A Focus on the other end silenced this message. */
+  wasDeliveredQuietly?: boolean
+  /** Someone pressed Notify Anyway on it. */
+  didNotifyRecipient?: boolean
   partCount?: number | null
   payloadData?: unknown
 }
@@ -572,7 +578,7 @@ export function toAttachment(raw: RawAttachment, localPath?: string): Attachment
   return {
     guid: raw.guid,
     name: wellFormed(raw.transferName),
-    mime: raw.mimeType,
+    mime: raw.mimeType ?? UNKNOWN_MIME,
     bytes: raw.totalBytes,
     width: raw.width,
     height: raw.height,
@@ -610,6 +616,8 @@ export function toMessage(raw: RawMessage, chatGuid?: string, options: MapOption
     dateRead: raw.dateRead ?? undefined,
     dateEdited: raw.dateEdited ?? undefined,
     dateRetracted: raw.dateRetracted ?? undefined,
+    deliveredQuietly: raw.wasDeliveredQuietly || undefined,
+    notified: raw.didNotifyRecipient || undefined,
     service,
     attachments: (raw.attachments ?? []).map(a => toAttachment(a, options.attachmentPaths?.get(a.guid))),
     tapbacks: [],

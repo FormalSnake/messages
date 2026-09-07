@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 import { MessagesStore } from './store'
-import type { Chat, Contact, Message, ScheduledMessage, ServerInfo } from './model'
+import type { Chat, Contact, FocusStatus, Message, ScheduledMessage, ServerInfo } from './model'
 import type { Page, SendAttachmentOptions, SendTextOptions, Transport, TransportEvent } from './transport'
 
 const SERVER_INFO: ServerInfo = { version: 'fake', privateApi: true, helperConnected: true }
@@ -123,6 +123,9 @@ class FakeTransport implements Transport {
   async removeParticipant(): Promise<void> {}
   async leaveGroup(): Promise<void> {}
   async setGroupIcon(): Promise<void> {}
+  async focusStatus(): Promise<FocusStatus> {
+    return 'none'
+  }
   async notifySilenced(): Promise<void> {}
 
   async createFaceTimeLink(): Promise<string> {
