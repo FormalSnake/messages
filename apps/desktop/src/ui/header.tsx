@@ -538,10 +538,12 @@ export function InfoPanel({ chat }: { chat: Chat }) {
         <IconButton icon="close" label={`Close details (${shortcut('I')})`} testId="close-info" onClick={shell.toggleInfo} />
       </div>
 
-      {/* A div with overflow takes scrollTo but never the wheel, which then
-          reached the thread's list behind the panel and scrolled the
-          conversation instead. The sidebar already scrolls this way. */}
-      <virtual-list estimatedItemHeight={72} overdraw={600} style={{ flexGrow: 1, minHeight: 0, width: '100%' }}>
+      {/* A div with overflow takes scrollTo but never the wheel, so the panel
+          sat still and the wheel went to whatever was behind it. The sidebar
+          already scrolls through a list. `pointerEvents: auto` is what stops
+          the wheel here rather than letting it through to the thread; unset,
+          gpuix passes it on the way HTML does. */}
+      <virtual-list estimatedItemHeight={72} overdraw={600} style={{ flexGrow: 1, minHeight: 0, width: '100%', pointerEvents: 'auto' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2, paddingTop: S.x1, paddingBottom: S.x5, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
           <Avatar chat={chat} size={72} />
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
