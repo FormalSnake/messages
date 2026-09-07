@@ -530,11 +530,6 @@ export function InfoPanel({ chat }: { chat: Chat }) {
         backgroundColor: C.sidebar,
         borderLeftWidth: 1,
         borderColor: C.sidebarBorder,
-        // The panel keeps the wheel to itself. Unset, gpuix passes it on to
-        // whatever is behind, the way HTML does, and behind a floating panel
-        // is the thread's list. It has to sit on this div: gpui's List has no
-        // interactive element identity, so the style does nothing there.
-        pointerEvents: 'auto',
         userSelect: 'none',
       }}
     >

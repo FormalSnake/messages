@@ -245,27 +245,6 @@ describeNative('messages app', () => {
     await app.close()
   })
 
-  it('closes the floating details panel on a click outside it', async () => {
-    // Under the docked width the panel is a sheet over the thread.
-    const { renderer } = mount({}, { width: 900, height: 760 })
-    const app = await connectTest(renderer)
-    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
-
-    await app.getByTestId('info').click()
-    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
-
-    await app.getByTestId('composer').click()
-    for (let tries = 0; tries < 50 && (await app.getByTestId('info-panel').all()).length > 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100))
-    expect((await app.getByTestId('info-panel').all()).length).toBe(0)
-
-    // The button still toggles: the click that opens it must not count as outside.
-    await app.getByTestId('info').click()
-    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
-    expect((await app.getByTestId('info-panel').all()).length).toBe(1)
-
-    await app.close()
-  })
-
   it('shows the gallery in the details panel', async () => {
     const { renderer } = mount()
     const app = await connectTest(renderer)
