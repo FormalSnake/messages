@@ -169,3 +169,23 @@ export function formatBytes(bytes: number): string {
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`
 }
+
+/**
+ * One grapheme cluster that is a single emoji: a country flag (two regional
+ * indicators), a keycap, or a pictograph with its modifiers, variation
+ * selectors, ZWJ parts and tag characters.
+ */
+const EMOJI_CLUSTER = /^(?:\p{Regional_Indicator}{2}|(?:\p{Extended_Pictographic}|[\d#*]️?⃣)[\p{Extended_Pictographic}\p{Emoji_Modifier}‍️⃣\u{E0020}-\u{E007F}]*)$/u
+
+/** Emoji alone, few enough to paint large instead of in a bubble. Counted in graphemes: a flag is two code points but one emoji. */
+export function isEmojiOnly(text: string, max = 3): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  let count = 0
+  for (const { segment } of graphemes.segment(trimmed)) {
+    if (!segment.trim()) continue
+    if (!EMOJI_CLUSTER.test(segment)) return false
+    if (++count > max) return false
+  }
+  return count > 0
+}

@@ -1,17 +1,19 @@
-import { MacAgentClient, isPinned, type AgentConfig, type ChatPrefs, type SharedPrefs } from './agent'
+import { AgentStreamUnsupported, MacAgentClient, isPinned, type AgentConfig, type ChatPrefs, type SharedPrefs } from './agent'
 import { normalizeAddress, type FriendLocation } from './findmy'
 import { mergeGifFavorites, type Gif, type GifFavorite } from './gifs'
 import { openExternal } from './open'
 import { imageSize } from './image'
 import { snapshotForCache, type StateCache } from './cache'
 import { writeConversationExport } from './export'
-import { conversationGuid, conversationHandles, conversationHasOlder, conversationMembers, conversationMessages, groupChats, type Grouping } from './conversations'
+import { conversationChats, conversationGuid, conversationHandles, conversationHasOlder, conversationMembers, conversationMessages, focusKey, groupChats, type Grouping } from './conversations'
 import {
   capabilitiesFor,
   handleName,
+  type Attachment,
   type Capabilities,
   type Chat,
   type Contact,
+  type FocusStatus,
   type Message,
   type Reaction,
   type ScheduledMessage,
@@ -57,6 +59,7 @@ export interface AppState extends Grouping {
   lastSyncAt: number
   /** Find My friend locations, keyed by `normalizeAddress`. */
   locations: Record<string, FriendLocation>
+  /** When one of those locations last changed, not when they were last read. */
   locationsUpdatedAt: number
   /** `off` when no Mac agent is configured; `unavailable` once a fetch has failed. */
   findMy: 'off' | 'unavailable' | 'ok'
@@ -64,6 +67,8 @@ export interface AppState extends Grouping {
   exportingChat: string | null
   /** Favorited GIFs, keyed by gif id, synced through the Mac agent same as chat prefs. */
   gifFavorites: Record<string, GifFavorite>
+  /** Who is on a Focus, keyed by `normalizeAddress`. Only people who share it, and only chats that have been asked about. */
+  focus: Record<string, FocusStatus>
 }
 
 export interface StoreOptions {
@@ -74,18 +79,48 @@ export interface StoreOptions {
   onIncoming?: (chat: Chat, message: Message, target?: Message) => void
   pageSize?: number
   reconcileEveryMs?: number
+  /** How many recent chats the background pass keeps paged. 0 turns it off. */
+  warmChats?: number
   /** Address of the `@messages/mac-agent` on the Mac. Omit to leave Find My and prefs sync off. */
   agent?: AgentConfig
   /** Last known state, painted before the server answers and kept current afterwards. */
   cache?: StateCache
 }
 
+/** The fallback behind the push stream: an agent that cannot stream, or one whose stream is down. */
 const LOCATIONS_POLL_MS = 60_000
 const LOCATIONS_MIN_INTERVAL_MS = 20_000
+/** Ceiling on the wait between reconnects to the Find My stream. */
+const LOCATIONS_STREAM_RETRY_MAX_MS = 30_000
+
+/** How often the open conversation re-asks whether the other person is on a Focus. */
+const FOCUS_POLL_MS = 60_000
+/** An answer about the open conversation younger than this is reused rather than asked for again. */
+const FOCUS_TTL_MS = 45_000
+/** The background pass is only feeding the sidebar, so it settles for a much older answer. */
+const FOCUS_WARM_TTL_MS = 10 * 60_000
+/** How many of the most recent one-to-one chats the background pass keeps a Focus answer for, so the sidebar can show it. */
+const FOCUS_CHATS = 15
+/** Gap between background Focus checks: each one is a round trip through the helper. */
+const FOCUS_GAP_MS = 150
 
 const PAGE = 50
+/** Rows kept for a conversation once it is not the open one, the same depth the cache keeps on disk. */
+const KEEP_MESSAGES = 100
 /** The server is slow per message once attributedBody is requested, and one big request can hang it for minutes. */
 const SWEEP_PAGE = 10
+/** How many of the most recent chats the background pass keeps paged. */
+const WARM_CHATS = 40
+/** Gap between background pages, so warming never crowds out a send or an open thread. */
+const WARM_GAP_MS = 400
+/** A thread thinner than this is topped up in the background; the sweep leaves a chat holding two rows. */
+const WARM_MESSAGES = 20
+/** Chats whose recent images are fetched ahead of a look. Fewer than are paged: the files are the expensive part. */
+const WARM_MEDIA_CHATS = 15
+/** How far back in a thread the images are fetched. */
+const WARM_MEDIA_MESSAGES = 12
+/** Gap between background downloads. A file costs the server less than a chat.db page. */
+const WARM_MEDIA_GAP_MS = 150
 const TYPING_IDLE_MS = 3000
 /** Messages.app drops a typing bubble after about a minute if the other side never sends; so do we, in case the stop event is lost. */
 const TYPING_SHOWN_MAX_MS = 60_000
@@ -101,6 +136,17 @@ let tempCounter = 0
 function nextTempGuid(): string {
   tempCounter += 1
   return `temp-${Date.now()}-${tempCounter}`
+}
+
+/**
+ * How big a file of this kind the background pass will pull, matching what the
+ * thread downloads the moment it comes into view. Anything else (a PDF, a zip)
+ * waits for a click there, so it waits here too.
+ */
+function warmBudget(mime: string | undefined): number {
+  if (mime?.startsWith('video/')) return 60 * 1024 * 1024
+  if (mime?.startsWith('image/') || mime?.startsWith('audio/')) return 25 * 1024 * 1024
+  return 0
 }
 
 function sortChats(chats: Chat[]): Chat[] {
@@ -122,9 +168,24 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Structural equality for the small plain objects the store keeps, so a refresh that changes nothing changes no identity. */
+/** Keys carrying a value, so an absent field and one explicitly set to undefined still compare equal. */
+function definedKeys(value: object): string[] {
+  return Object.keys(value).filter((key) => (value as Record<string, unknown>)[key] !== undefined)
+}
+
+/**
+ * Structural equality for the small plain objects the store keeps, so a
+ * refresh that changes nothing changes no identity. Walks the pair rather
+ * than serialising both: this runs on every message of every sweep, and two
+ * `JSON.stringify` calls per message is real work on a slow machine.
+ */
 function same(a: unknown, b: unknown): boolean {
-  return a === b || JSON.stringify(a) === JSON.stringify(b)
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const keys = definedKeys(a)
+  if (keys.length !== definedKeys(b).length) return false
+  return keys.every((key) => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]))
 }
 
 /** The row's own copy of the last message is richer (a downloaded path, a temp guid), so it is compared by identity of the message, not by shape. */
@@ -133,6 +194,21 @@ function sameChat(a: Chat | undefined, b: Chat): boolean {
   const { lastMessage: aLast, ...aRest } = a
   const { lastMessage: bLast, ...bRest } = b
   return same(aRest, bRest) && aLast?.guid === bLast?.guid && aLast?.date === bLast?.date
+}
+
+/**
+ * The server re-sends the pixel size chat.db holds, which ignores EXIF, so a
+ * refresh of the open thread would flip a portrait photo back to a landscape
+ * box and the row would visibly recrop. What the client read from the file
+ * header wins, and so does a path it already has.
+ */
+function mergeAttachments(existing: Attachment[], incoming: Attachment[]): Attachment[] {
+  return incoming.map((item) => {
+    const previous = existing.find((entry) => entry.guid === item.guid)
+    if (!previous) return item
+    const measured = previous.measured ? { width: previous.width, height: previous.height, measured: true } : {}
+    return { ...item, localPath: item.localPath ?? previous.localPath, ...measured }
+  })
 }
 
 /** An optimistic row and a server row describe the same send when text and attachment names agree. */
@@ -154,6 +230,10 @@ interface Outgoing {
 export class MessagesStore {
   state: AppState
   private listeners = new Set<() => void>()
+  /** Depth of the `batch` calls holding back a publish, and what they have to publish once the last one leaves. */
+  private batchDepth = 0
+  private batched = false
+  private batchedCacheable = false
   private prefs: Record<string, ChatPrefs>
   private options: StoreOptions
   private unsubscribe: (() => void) | null = null
@@ -166,9 +246,17 @@ export class MessagesStore {
   private draftEditedAt = new Map<string, number>()
   private reconcileTimer: ReturnType<typeof setInterval> | null = null
   private reconciling = false
+  private warming = false
+  private warmingFocus = false
   private agent: MacAgentClient | null
   private locationsTimer: ReturnType<typeof setInterval> | null = null
+  private locationsStream: AbortController | null = null
   private lastLocationsFetchAt = 0
+  /** When a read (a poll answer or a push) last landed, so a slow poll cannot overwrite a newer push. */
+  private lastLocationsAt = 0
+  private focusTimer: ReturnType<typeof setInterval> | null = null
+  /** Address to when it was last asked about, so a poll and the background pass do not ask twice. */
+  private focusCheckedAt = new Map<string, number>()
   private outbox: Outgoing[] = []
   private flushing = false
   private stopped = false
@@ -203,6 +291,7 @@ export class MessagesStore {
       findMy: 'off',
       exportingChat: null,
       gifFavorites: options.gifFavorites ?? {},
+      focus: {},
       primaryOf: {},
       merged: {},
     }
@@ -224,9 +313,40 @@ export class MessagesStore {
       next = { ...next, ...grouping, selectedChat: selected }
     }
     this.state = next
+    const cacheable = 'chats' in patch || 'messages' in patch || 'contacts' in patch || 'selectedChat' in patch
+    if (this.batchDepth > 0) {
+      this.batched = true
+      this.batchedCacheable ||= cacheable
+      return
+    }
+    this.publish(cacheable)
+  }
+
+  private publish(cacheable: boolean): void {
     for (const listener of this.listeners) listener()
-    if (this.options.cache && ('chats' in patch || 'messages' in patch || 'contacts' in patch || 'selectedChat' in patch)) {
-      this.options.cache.schedule(() => snapshotForCache(this.state))
+    if (this.options.cache && cacheable) this.options.cache.schedule(() => snapshotForCache(this.state))
+  }
+
+  /**
+   * Folds the sets inside `run` into one publish. Applying a page went through
+   * `set` once per message, and every one of those re-rendered the whole
+   * window; a warm pass over forty chats did it two thousand times, which is
+   * what made a slower machine stop answering while it caught up. State is
+   * still assigned as it goes, so anything reading `this.state` inside `run`
+   * sees the same thing it always did.
+   */
+  private batch(run: () => void): void {
+    this.batchDepth += 1
+    try {
+      run()
+    } finally {
+      this.batchDepth -= 1
+      if (this.batchDepth === 0 && this.batched) {
+        const cacheable = this.batchedCacheable
+        this.batched = false
+        this.batchedCacheable = false
+        this.publish(cacheable)
+      }
     }
   }
 
@@ -263,6 +383,9 @@ export class MessagesStore {
     if (every > 0) this.reconcileTimer = setInterval(() => void this.reconcile(), every)
     void this.syncPrefs()
     void this.refreshLocations()
+    void this.warmThreads()
+    void this.refreshFocus(this.state.selectedChat)
+    if (every > 0) this.focusTimer = setInterval(() => void this.refreshFocus(this.state.selectedChat), FOCUS_POLL_MS)
   }
 
   stop(): void {
@@ -274,6 +397,10 @@ export class MessagesStore {
     this.reconcileTimer = null
     if (this.locationsTimer) clearInterval(this.locationsTimer)
     this.locationsTimer = null
+    this.locationsStream?.abort()
+    this.locationsStream = null
+    if (this.focusTimer) clearInterval(this.focusTimer)
+    this.focusTimer = null
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
     for (const timer of this.typingShown.values()) clearTimeout(timer)
     for (const timer of this.draftSyncTimers.values()) clearTimeout(timer)
@@ -311,16 +438,57 @@ export class MessagesStore {
     })
   }
 
-  /** The details panel is the only Find My consumer, so it drives the poll: on while it's open, off otherwise. */
+  /** The details panel is the only Find My consumer, so it drives both the push stream and the poll behind it: on while it's open, off otherwise. */
   setDetailsOpen(open: boolean): void {
     if (open) {
       if (this.locationsTimer) return
       void this.refreshLocations()
       this.locationsTimer = setInterval(() => void this.refreshLocations(), LOCATIONS_POLL_MS)
+      void this.streamLocations()
     } else {
       if (this.locationsTimer) clearInterval(this.locationsTimer)
       this.locationsTimer = null
+      this.locationsStream?.abort()
+      this.locationsStream = null
     }
+  }
+
+  private applyFriends(friends: FriendLocation[]): void {
+    const locations: Record<string, FriendLocation> = {}
+    for (const friend of friends) for (const address of friend.addresses) locations[normalizeAddress(address)] = friend
+    this.lastLocationsAt = Date.now()
+    // A push arrives whenever any Find My cache changes, which is usually no news about anyone in a chat.
+    if (this.state.findMy === 'ok' && same(this.state.locations, locations)) return
+    this.set({ locations, locationsUpdatedAt: this.lastLocationsAt, findMy: 'ok' })
+  }
+
+  /**
+   * The agent pushes a snapshot as Find My writes one, so an open panel shows
+   * a move within a second or so instead of at the next poll. Reconnects with
+   * backoff for as long as the panel is open; an agent too old to serve the
+   * stream is left to the poll.
+   */
+  private async streamLocations(): Promise<void> {
+    if (!this.agent || this.locationsStream) return
+    const controller = new AbortController()
+    this.locationsStream = controller
+    let delay = 1000
+    while (!this.stopped && this.locationsStream === controller) {
+      try {
+        await this.agent.streamFindMy((snapshot) => {
+          if (snapshot.friends) this.applyFriends(snapshot.friends)
+        }, controller.signal)
+        delay = 1000
+      } catch (error) {
+        if (controller.signal.aborted) break
+        if (error instanceof AgentStreamUnsupported) break
+        console.error(`findmy: ${String(error)}`)
+      }
+      if (controller.signal.aborted) break
+      await this.pause(delay)
+      delay = Math.min(delay * 2, LOCATIONS_STREAM_RETRY_MAX_MS)
+    }
+    if (this.locationsStream === controller) this.locationsStream = null
   }
 
   async refreshLocations(): Promise<void> {
@@ -330,14 +498,58 @@ export class MessagesStore {
     this.lastLocationsFetchAt = now
     try {
       const { friends } = await this.agent.friends()
-      const locations: Record<string, FriendLocation> = {}
-      for (const friend of friends) for (const address of friend.addresses) locations[normalizeAddress(address)] = friend
-      this.set({ locations, locationsUpdatedAt: Date.now(), findMy: 'ok' })
+      // A push that landed while this request was in flight is the newer answer of the two.
+      if (this.lastLocationsAt >= now) return
+      this.applyFriends(friends)
     } catch (error) {
       // Quiet: a Mac with no agent running, or one that's asleep, is a normal
       // state, not an error worth surfacing through `state.error`.
       console.error(`findmy: ${String(error)}`)
       this.set({ findMy: 'unavailable' })
+    }
+  }
+
+  /**
+   * Asks whether the person on the other end of a one-to-one conversation has
+   * a Focus on, and answers whether it went to the helper: an answer inside
+   * the TTL is reused. Only the primary address is asked, since a Focus
+   * belongs to the person and not to whichever number they are reachable on.
+   */
+  async refreshFocus(guid: string | null, options: { ttl?: number } = {}): Promise<boolean> {
+    if (!guid || !this.state.capabilities.focusStatus || this.state.status !== 'online') return false
+    const chat = this.state.chats.find((item) => item.guid === conversationGuid(this.state, guid))
+    if (!chat || chat.isGroup) return false
+    const address = conversationHandles(this.state, guid)[0]?.address
+    if (!address) return false
+    const key = focusKey(address)
+    if (Date.now() - (this.focusCheckedAt.get(key) ?? 0) < (options.ttl ?? FOCUS_TTL_MS)) return false
+    this.focusCheckedAt.set(key, Date.now())
+    try {
+      const status = await this.transport.focusStatus(address)
+      if (this.state.focus[key] !== status) this.set({ focus: { ...this.state.focus, [key]: status } })
+    } catch (error) {
+      // Someone who shares no Focus, or a helper that just dropped: the next
+      // pass asks again, and neither is worth a toast.
+      console.error(`focus: ${String(error)}`)
+    }
+    return true
+  }
+
+  /**
+   * Keeps an answer for the most recent one-to-one chats so the sidebar can
+   * show the moon without each thread being opened first. One round trip per
+   * chat, spaced out, and the TTL stops the open thread being asked twice.
+   */
+  private async warmFocus(): Promise<void> {
+    if (this.warmingFocus || !this.state.capabilities.focusStatus) return
+    this.warmingFocus = true
+    try {
+      for (const chat of conversationChats(this.state).filter((item) => !item.isGroup).slice(0, FOCUS_CHATS)) {
+        if (this.stopped || this.state.status !== 'online') return
+        if (await this.refreshFocus(chat.guid, { ttl: FOCUS_WARM_TTL_MS })) await this.pause(FOCUS_GAP_MS)
+      }
+    } finally {
+      this.warmingFocus = false
     }
   }
 
@@ -397,10 +609,21 @@ export class MessagesStore {
     const startedAt = Date.now()
     try {
       await this.refreshChats()
+      // The open thread comes before the sweep: after a long absence the sweep
+      // has many pages to walk and what is on screen must not wait for them.
+      const selected = this.state.selectedChat
+      if (selected) {
+        const page = await this.transport.loadMessages(selected, { limit: PAGE })
+        this.batch(() => {
+          for (const message of page.items) this.applyMessage(message, { fromServer: true, silent: true })
+        })
+      }
       let since = this.state.lastSyncAt
       for (;;) {
         const recent = await this.transport.searchMessages('', { limit: SWEEP_PAGE, after: since })
-        for (const message of recent) this.applyMessage(message, { fromServer: true, silent: true })
+        this.batch(() => {
+          for (const message of recent) this.applyMessage(message, { fromServer: true, silent: true })
+        })
         if (recent.length < SWEEP_PAGE) break
         // `after` is exclusive, so the newest date of the page is the next cursor.
         since = Math.max(since + 1, ...recent.map((message) => message.date))
@@ -408,17 +631,88 @@ export class MessagesStore {
         if (this.stopped || this.state.status !== 'online') return
       }
       this.set({ lastSyncAt: startedAt })
-      const selected = this.state.selectedChat
-      if (selected) {
-        const page = await this.transport.loadMessages(selected, { limit: PAGE })
-        for (const message of page.items) this.applyMessage(message, { fromServer: true, silent: true })
-      }
       if (this.state.capabilities.scheduledMessages) await this.refreshScheduled()
     } catch (error) {
       console.error(`reconcile: ${String(error)}`)
     } finally {
       this.reconciling = false
+      this.trimMessages()
+      void this.warmThreads()
+      void this.warmFocus()
     }
+  }
+
+  /**
+   * Pages the threads nobody has opened yet, most recent conversation first,
+   * one page at a time with a gap between them. Opening one then paints from
+   * memory instead of waiting on a fifty-message request, which is what made a
+   * chat left alone for a while feel like it was syncing on open.
+   */
+  private async warmThreads(): Promise<void> {
+    const budget = this.options.warmChats ?? WARM_CHATS
+    if (this.warming || budget === 0) return
+    this.warming = true
+    try {
+      const chats = this.state.chats.slice(0, budget)
+      for (const [index, chat] of chats.entries()) {
+        if (this.stopped || this.state.status !== 'online') return
+        // Never paged, or paged so thin that opening it would page again: the
+        // sweep leaves a chat holding the two rows it happened to touch.
+        const hasOlder = this.state.hasOlder[chat.guid]
+        const loaded = this.state.messages[chat.guid]?.length ?? 0
+        if (hasOlder === undefined || (hasOlder && loaded < WARM_MESSAGES)) {
+          await this.loadOlder(chat.guid, { quiet: true })
+          await this.pause(WARM_GAP_MS)
+        }
+        if (index < WARM_MEDIA_CHATS) await this.warmMedia(chat.guid)
+      }
+    } finally {
+      this.warming = false
+    }
+  }
+
+  /**
+   * Downloads the photos, videos and voice notes in a chat's most recent
+   * messages, so a thread opens with its media on disk instead of a row of
+   * placeholders that fill in as they arrive.
+   */
+  private async warmMedia(chatGuid: string): Promise<void> {
+    for (const message of (this.state.messages[chatGuid] ?? []).slice(-WARM_MEDIA_MESSAGES)) {
+      for (const attachment of message.attachments) {
+        if (this.stopped || this.state.status !== 'online') return
+        if (attachment.localPath || attachment.hidden) continue
+        const budget = warmBudget(attachment.mime)
+        if (budget === 0 || attachment.bytes > budget) continue
+        try {
+          await this.attachmentSrc(chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime)
+        } catch {
+          // A file the server cannot produce is left to the next pass, or to
+          // the click on the placeholder.
+        }
+        await this.pause(WARM_MEDIA_GAP_MS)
+      }
+    }
+  }
+
+  /**
+   * Drops the oldest rows of every conversation but the open one. Nothing ever
+   * left `state.messages`, so a warm pass over forty chats and an afternoon of
+   * paging back grew the process until it was the largest thing on a machine
+   * with 8 GB. A chat that loses rows gets `hasOlder` back, since paging into
+   * them again is exactly what has to keep working.
+   */
+  private trimMessages(): void {
+    const open = new Set(this.state.selectedChat ? conversationMembers(this.state, this.state.selectedChat) : [])
+    let messages: Record<string, Message[]> | null = null
+    let hasOlder: Record<string, boolean> | null = null
+    for (const [guid, list] of Object.entries(this.state.messages)) {
+      if (open.has(guid) || list.length <= KEEP_MESSAGES) continue
+      messages ??= { ...this.state.messages }
+      hasOlder ??= { ...this.state.hasOlder }
+      messages[guid] = list.slice(-KEEP_MESSAGES)
+      hasOlder[guid] = true
+    }
+    if (messages && hasOlder) this.set({ messages, hasOlder })
   }
 
   async refreshScheduled(): Promise<void> {
@@ -507,11 +801,16 @@ export class MessagesStore {
     const previous = this.state.selectedChat
     if (previous && previous !== chatGuid) void this.stopTyping(previous)
     this.set({ selectedChat: chatGuid })
+    // The thread just left keeps only its recent rows; whatever was paged into
+    // it to read something from last year has no claim on memory any more.
+    this.trimMessages()
     if (!chatGuid) return
-    // A chat the socket or the sweep touched holds a few recent rows and no page boundary yet; page it before showing it.
-    await Promise.all(conversationMembers(this.state, chatGuid).map((member) => (this.state.hasOlder[member] === undefined ? this.loadOlder(member) : undefined)))
+    // The dot clears the moment the thread opens, not once its first page is in.
     const unread = conversationMembers(this.state, chatGuid).some((member) => this.state.chats.find((item) => item.guid === member)?.unread)
     if (unread) void this.markRead(chatGuid)
+    void this.refreshFocus(chatGuid)
+    // A chat the socket or the sweep touched holds a few recent rows and no page boundary yet; page it before showing it.
+    await Promise.all(conversationMembers(this.state, chatGuid).map((member) => (this.state.hasOlder[member] === undefined ? this.loadOlder(member) : undefined)))
   }
 
   /** Pages every member of the conversation back by one page. */
@@ -519,20 +818,24 @@ export class MessagesStore {
     await Promise.all(conversationMembers(this.state, guid).map((member) => this.loadOlder(member)))
   }
 
-  async loadOlder(chatGuid: string): Promise<void> {
+  async loadOlder(chatGuid: string, options: { quiet?: boolean } = {}): Promise<void> {
     if (this.state.loading[chatGuid]) return
     if (this.state.messages[chatGuid] && this.state.hasOlder[chatGuid] === false) return
     this.set({ loading: { ...this.state.loading, [chatGuid]: true } })
     try {
       const oldest = this.state.messages[chatGuid]?.[0]?.date
       const page = await this.transport.loadMessages(chatGuid, { limit: PAGE, before: oldest })
-      for (const message of page.items) this.applyMessage(message, { fromServer: true, silent: true })
-      this.set({
-        messages: { ...this.state.messages, [chatGuid]: this.state.messages[chatGuid] ?? [] },
-        hasOlder: { ...this.state.hasOlder, [chatGuid]: page.hasMore },
+      this.batch(() => {
+        for (const message of page.items) this.applyMessage(message, { fromServer: true, silent: true })
+        this.set({
+          messages: { ...this.state.messages, [chatGuid]: this.state.messages[chatGuid] ?? [] },
+          hasOlder: { ...this.state.hasOlder, [chatGuid]: page.hasMore },
+        })
       })
     } catch (error) {
-      this.set({ error: errorText(error) })
+      // A background page that fails is retried by the next pass; it has no
+      // business putting an error in front of the user.
+      if (!options.quiet) this.set({ error: errorText(error) })
     } finally {
       this.set({ loading: { ...this.state.loading, [chatGuid]: false } })
     }
@@ -599,7 +902,13 @@ export class MessagesStore {
     let next: Message[]
     if (existingIndex >= 0) {
       const existing = list[existingIndex]!
-      message = { ...existing, ...incoming, tapbacks: incoming.tapbacks.length ? incoming.tapbacks : existing.tapbacks, tempGuid: existing.tempGuid ?? incoming.tempGuid }
+      message = {
+        ...existing,
+        ...incoming,
+        attachments: mergeAttachments(existing.attachments, incoming.attachments),
+        tapbacks: incoming.tapbacks.length ? incoming.tapbacks : existing.tapbacks,
+        tempGuid: existing.tempGuid ?? incoming.tempGuid,
+      }
       // A re-read that brings back what is already here must not touch state at all.
       if (same(existing, message)) return
       next = list.slice()
@@ -918,6 +1227,19 @@ export class MessagesStore {
     }
   }
 
+  /** Breaks the other side's Focus for one message I already sent: iMessage's "Notify Anyway". */
+  async notifySilenced(chatGuid: string, messageGuid: string): Promise<void> {
+    const target = this.findMessage(chatGuid, messageGuid)
+    if (!target) return
+    this.replaceMessage(chatGuid, { ...target, notified: true })
+    try {
+      await this.transport.notifySilenced(target.chatGuid, messageGuid)
+    } catch (error) {
+      this.replaceMessage(chatGuid, target)
+      this.set({ error: errorText(error) })
+    }
+  }
+
   async markRead(chatGuid: string): Promise<void> {
     // "Read without receipts" clears the dot for every member but skips the network call, so the other side never learns.
     const sendReceipt = this.prefs[conversationGuid(this.state, chatGuid)]?.readReceipts ?? true
@@ -957,7 +1279,10 @@ export class MessagesStore {
   }
 
   private savePrefs(chatGuid: string, patch: ChatPrefs): void {
-    this.prefs = { ...this.prefs, [chatGuid]: { ...this.prefs[chatGuid], ...patch, updatedAt: Date.now() } }
+    const now = Date.now()
+    // A draft or a mute must not look like a pin change, or a chat pinned in Messages.app unpins itself the moment it is typed in.
+    const pinnedAt = patch.pinned === undefined ? {} : { pinnedAt: now }
+    this.prefs = { ...this.prefs, [chatGuid]: { ...this.prefs[chatGuid], ...patch, ...pinnedAt, updatedAt: now } }
     this.options.onPrefsChange?.(this.prefs)
     void this.syncPrefs()
   }
@@ -980,7 +1305,7 @@ export class MessagesStore {
     if (!this.agent || this.state.status !== 'online') return
     const mine: Record<string, ChatPrefs> = {}
     for (const [guid, entry] of Object.entries(this.prefs)) {
-      if (entry.updatedAt) mine[guid] = { pinned: entry.pinned, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
+      if (entry.updatedAt) mine[guid] = { pinned: entry.pinned, pinnedAt: entry.pinnedAt, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
     }
     try {
       this.applySharedPrefs(await this.agent.syncPrefs(mine, this.state.gifFavorites))
@@ -1000,7 +1325,7 @@ export class MessagesStore {
     for (const [guid, entry] of Object.entries(shared.chats)) {
       const local = next[guid]
       if (!local?.updatedAt || (entry.updatedAt ?? 0) > local.updatedAt) {
-        next[guid] = { ...local, pinned: entry.pinned, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
+        next[guid] = { ...local, pinned: entry.pinned, pinnedAt: entry.pinnedAt, muted: entry.muted, readReceipts: entry.readReceipts, draft: entry.draft, updatedAt: entry.updatedAt }
       }
     }
     for (const identifier of shared.macPinned) {
@@ -1031,10 +1356,38 @@ export class MessagesStore {
     if (Object.keys(patch).length > 0) this.set(patch)
   }
 
+  /** The row goes at once. It comes back, with the error, if the server refuses. */
   async deleteChat(chatGuid: string): Promise<void> {
-    await this.transport.deleteChat(chatGuid)
+    const target = this.state.chats.find((chat) => chat.guid === chatGuid)
+    if (!target) return
     const chats = this.state.chats.filter((chat) => chat.guid !== chatGuid)
-    this.set({ chats, selectedChat: this.state.selectedChat === chatGuid ? (chats[0]?.guid ?? null) : this.state.selectedChat })
+    const messages = { ...this.state.messages }
+    delete messages[chatGuid]
+    this.set({ chats, messages, selectedChat: this.state.selectedChat === chatGuid ? (chats[0]?.guid ?? null) : this.state.selectedChat })
+    this.forget(chatGuid)
+    try {
+      await this.transport.deleteChat(chatGuid)
+    } catch (error) {
+      if (!this.state.chats.some((chat) => chat.guid === chatGuid)) this.set({ chats: sortChats([...this.state.chats, target]) })
+      this.set({ error: errorText(error) })
+    }
+  }
+
+  /** Everything keyed on a chat that has gone. Without this a deleted chat kept its thread, its draft and its flags for the life of the process. */
+  private forget(chatGuid: string): void {
+    const drop = <T,>(record: Record<string, T>): Record<string, T> => {
+      const next = { ...record }
+      delete next[chatGuid]
+      return next
+    }
+    this.set({
+      hasOlder: drop(this.state.hasOlder),
+      loading: drop(this.state.loading),
+      typing: drop(this.state.typing),
+      drafts: drop(this.state.drafts),
+      replyingTo: drop(this.state.replyingTo),
+      editing: drop(this.state.editing),
+    })
   }
 
   /** Pages in the rest of the conversation's history, writes it to Markdown in Downloads, and opens the file. */
@@ -1068,12 +1421,48 @@ export class MessagesStore {
   }
 
   async renameGroup(chatGuid: string, name: string): Promise<void> {
-    await this.transport.renameGroup(chatGuid, name)
+    const chat = this.state.chats.find((item) => item.guid === chatGuid)
+    if (!chat) return
     this.patchChat(chatGuid, { displayName: name })
+    try {
+      await this.transport.renameGroup(chatGuid, name)
+    } catch (error) {
+      this.patchChat(chatGuid, { displayName: chat.displayName })
+      this.set({ error: errorText(error) })
+    }
+  }
+
+  /** The list shows the new person right away; the server's chat event brings their name. */
+  async addParticipant(chatGuid: string, address: string): Promise<void> {
+    const chat = this.state.chats.find((item) => item.guid === chatGuid)
+    if (!chat || !address) return
+    this.patchChat(chatGuid, { participants: [...chat.participants, { address, service: chat.service }] })
+    try {
+      await this.transport.addParticipant(chatGuid, address)
+    } catch (error) {
+      this.patchChat(chatGuid, { participants: chat.participants })
+      this.set({ error: errorText(error) })
+    }
+  }
+
+  async removeParticipant(chatGuid: string, address: string): Promise<void> {
+    const chat = this.state.chats.find((item) => item.guid === chatGuid)
+    if (!chat) return
+    this.patchChat(chatGuid, { participants: chat.participants.filter((item) => item.address !== address) })
+    try {
+      await this.transport.removeParticipant(chatGuid, address)
+    } catch (error) {
+      this.patchChat(chatGuid, { participants: chat.participants })
+      this.set({ error: errorText(error) })
+    }
   }
 
   async leaveGroup(chatGuid: string): Promise<void> {
-    await this.transport.leaveGroup(chatGuid)
+    try {
+      await this.transport.leaveGroup(chatGuid)
+    } catch (error) {
+      this.set({ error: errorText(error) })
+    }
   }
 
   dismissFaceTime(): void {
@@ -1118,14 +1507,16 @@ export class MessagesStore {
     const local = await this.transport.attachmentPath(attachmentGuid, { name, mime })
     const target = this.findMessage(chatGuid, messageGuid)
     const current = target?.attachments.find((item) => item.guid === attachmentGuid)
-    // chat.db often has no pixel size for an attachment; the file header does.
-    const needsSize = Boolean(current && (!current.width || !current.height) && (mime ?? current.mime ?? '').startsWith('image/'))
-    const size = needsSize ? await imageSize(local) : null
+    // chat.db often has no pixel size for an attachment, and the one the server
+    // reports ignores EXIF orientation, so a portrait photo arrives as a
+    // landscape box. The file header settles both.
+    const isImage = Boolean(current && (mime ?? current.mime ?? '').startsWith('image/'))
+    const size = isImage ? await imageSize(local) : null
     const fresh = this.findMessage(chatGuid, messageGuid)
     if (fresh) {
       this.replaceMessage(chatGuid, {
         ...fresh,
-        attachments: fresh.attachments.map((item) => (item.guid === attachmentGuid ? { ...item, localPath: local, ...(size ? { width: size.width, height: size.height } : {}) } : item)),
+        attachments: fresh.attachments.map((item) => (item.guid === attachmentGuid ? { ...item, localPath: local, ...(size ? { width: size.width, height: size.height, measured: true } : {}) } : item)),
       })
     }
     return local

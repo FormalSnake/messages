@@ -43,7 +43,69 @@ function svgSize(source: string): ImageSize | null {
   return null
 }
 
-/** Pixel size from the container header alone: PNG, JPEG, GIF, WebP, BMP, or an SVG's declared size. */
+function isJpeg(bytes: Uint8Array): boolean {
+  return bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8
+}
+
+/** Every marker segment up to and including the start of scan. */
+function* jpegSegments(bytes: Uint8Array): Generator<{ marker: number; offset: number; length: number }> {
+  let offset = 2
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    const marker = bytes[offset + 1]!
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2
+      continue
+    }
+    const length = u16be(bytes, offset + 2)
+    yield { marker, offset, length }
+    if (marker === 0xda) return
+    offset += 2 + length
+  }
+}
+
+/** The Orientation tag (0x0112) of an APP1 segment that carries Exif, or null: XMP travels in APP1 too. */
+function orientationFromApp1(bytes: Uint8Array, offset: number, length: number): number | null {
+  const start = offset + 4
+  const end = Math.min(bytes.length, offset + 2 + length)
+  if (start + 14 > end || ascii(bytes, start, 4) !== 'Exif') return null
+  const tiff = start + 6
+  const order = ascii(bytes, tiff, 2)
+  if (order !== 'II' && order !== 'MM') return null
+  const u16 = order === 'II' ? u16le : u16be
+  const u32 = order === 'II' ? u32le : u32be
+  const ifd = tiff + u32(bytes, tiff + 4)
+  if (ifd + 2 > end) return null
+  const count = u16(bytes, ifd)
+  for (let index = 0; index < count; index += 1) {
+    const entry = ifd + 2 + index * 12
+    if (entry + 12 > end) return null
+    if (u16(bytes, entry) !== 0x0112) continue
+    const value = u16(bytes, entry + 8)
+    return value >= 1 && value <= 8 ? value : null
+  }
+  return null
+}
+
+/**
+ * A JPEG's EXIF orientation, 1 to 8, or null when it carries none. 5 to 8
+ * mean the pixels are stored a quarter turn from how the photo is meant to be
+ * seen; the renderer turns them upright, so their box has to turn with them.
+ */
+export function exifOrientation(bytes: Uint8Array): number | null {
+  if (!isJpeg(bytes)) return null
+  for (const { marker, offset, length } of jpegSegments(bytes)) {
+    if (marker !== 0xe1) continue
+    const found = orientationFromApp1(bytes, offset, length)
+    if (found !== null) return found
+  }
+  return null
+}
+
+/** Pixel size from the container header alone, the way round the picture is shown: PNG, JPEG, GIF, WebP, BMP, or an SVG's declared size. */
 export function imageSizeFromBytes(bytes: Uint8Array): ImageSize | null {
   if (bytes.length >= 24 && bytes[0] === 0x89 && ascii(bytes, 1, 3) === 'PNG') {
     return { width: u32be(bytes, 16), height: u32be(bytes, 20) }
@@ -51,23 +113,14 @@ export function imageSizeFromBytes(bytes: Uint8Array): ImageSize | null {
   if (bytes.length >= 10 && ascii(bytes, 0, 4) === 'GIF8') {
     return { width: u16le(bytes, 6), height: u16le(bytes, 8) }
   }
-  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-    let offset = 2
-    while (offset + 9 < bytes.length) {
-      if (bytes[offset] !== 0xff) {
-        offset += 1
-        continue
-      }
-      const marker = bytes[offset + 1]!
-      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
-        offset += 2
-        continue
-      }
-      const length = u16be(bytes, offset + 2)
+  if (isJpeg(bytes)) {
+    let orientation = 1
+    for (const { marker, offset, length } of jpegSegments(bytes)) {
+      if (marker === 0xe1) orientation = orientationFromApp1(bytes, offset, length) ?? orientation
       const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
-      if (isSof) return { height: u16be(bytes, offset + 5), width: u16be(bytes, offset + 7) }
-      if (marker === 0xda) break
-      offset += 2 + length
+      if (!isSof) continue
+      const stored = { height: u16be(bytes, offset + 5), width: u16be(bytes, offset + 7) }
+      return orientation >= 5 ? { width: stored.height, height: stored.width } : stored
     }
     return null
   }

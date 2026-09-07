@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { encode as encodeJpeg } from 'jpeg-js'
 import { PNG } from 'pngjs'
-import { fitInside, imageSize, imageSizeFromBytes, squareCrop, squareThumbnail } from './image'
+import { exifOrientation, fitInside, imageSize, imageSizeFromBytes, squareCrop, squareThumbnail } from './image'
 
 function png(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(33)
@@ -18,9 +18,19 @@ function jpeg(width: number, height: number): Uint8Array {
   return Uint8Array.from([0xff, 0xd8, ...app0, ...sof, 0xff, 0xda])
 }
 
+/** SOI, an APP1 Exif segment holding only the Orientation tag, then the same SOF0 as `jpeg`. */
+function jpegWithOrientation(width: number, height: number, orientation: number): Uint8Array {
+  const exif = [0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, orientation, 0, 0, 0, 0, 0, 0]
+  const app1 = [0xff, 0xe1, 0, exif.length + 2, ...exif]
+  const sof = [0xff, 0xc0, 0, 11, 8, height >> 8, height & 0xff, width >> 8, width & 0xff, 1, 1, 0x11, 0]
+  return Uint8Array.from([0xff, 0xd8, ...app1, ...sof, 0xff, 0xda])
+}
+
 describe('imageSizeFromBytes', () => {
   it('reads png', () => expect(imageSizeFromBytes(png(600, 1300))).toEqual({ width: 600, height: 1300 }))
   it('reads jpeg after an APP0 segment', () => expect(imageSizeFromBytes(jpeg(1080, 1920))).toEqual({ width: 1080, height: 1920 }))
+  it('turns a jpeg stored a quarter turn from upright', () => expect(imageSizeFromBytes(jpegWithOrientation(4032, 3024, 6))).toEqual({ width: 3024, height: 4032 }))
+  it('keeps an upright jpeg as stored', () => expect(imageSizeFromBytes(jpegWithOrientation(4032, 3024, 1))).toEqual({ width: 4032, height: 3024 }))
   it('reads gif', () => {
     const bytes = Uint8Array.from([...'GIF89a'].map((c) => c.charCodeAt(0)).concat([0xf4, 0x01, 0x2c, 0x01, 0, 0, 0]))
     expect(imageSizeFromBytes(bytes)).toEqual({ width: 500, height: 300 })
@@ -30,6 +40,11 @@ describe('imageSizeFromBytes', () => {
     expect(imageSizeFromBytes(svg)).toEqual({ width: 600, height: 1300 })
   })
   it('returns null for unknown bytes', () => expect(imageSizeFromBytes(new Uint8Array([1, 2, 3, 4]))).toBeNull())
+})
+
+describe('exifOrientation', () => {
+  it('reads the orientation tag', () => expect(exifOrientation(jpegWithOrientation(100, 50, 8))).toBe(8))
+  it('is null without exif', () => expect(exifOrientation(jpeg(100, 50))).toBeNull())
 })
 
 describe('imageSize', () => {

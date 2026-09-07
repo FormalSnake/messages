@@ -1,4 +1,4 @@
-import type { Chat, Contact, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
+import type { Chat, Contact, FocusStatus, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from './model'
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline'
 
@@ -109,6 +109,9 @@ export interface Transport {
   removeParticipant(chatGuid: string, address: string): Promise<void>
   leaveGroup(chatGuid: string): Promise<void>
   setGroupIcon(chatGuid: string, path: string): Promise<void>
+  /** Whether a Focus is silencing the person at `address`. They only share it with people they have allowed to. */
+  focusStatus(address: string): Promise<FocusStatus>
+  /** Breaks a Focus for one message I sent: the "Notify Anyway" button. */
   notifySilenced(chatGuid: string, messageGuid: string): Promise<void>
   /** Creates a FaceTime Link on the Mac and returns it. */
   createFaceTimeLink(): Promise<string>

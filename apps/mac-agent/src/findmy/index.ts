@@ -4,7 +4,7 @@
  * and devices (via `Devices.data`, the ChaCha20-Poly1305 cache envelope).
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { decryptCacheFile, loadRawKey, loadSymmetricKey } from './cache'
@@ -109,29 +109,66 @@ export function fetchDevices(): DeviceLocation[] {
   return devices
 }
 
-interface CacheEntry<T> {
+/** Every file a payload is decrypted from: what `feed.ts` watches, and what the memos below key on. */
+export function friendSourcePaths(): string[] {
+  return candidateDbPaths(home).flatMap((db) => [db, `${db}-wal`])
+}
+
+export function deviceSourcePaths(): string[] {
+  return [DEVICES_DATA_PATH]
+}
+
+/** The mtimes of `paths`, so a payload is decrypted again exactly when Find My rewrites it and never on a timer. */
+function stampOf(paths: string[]): string {
+  return paths
+    .map((file) => {
+      try {
+        return String(statSync(file).mtimeMs)
+      } catch {
+        return '-'
+      }
+    })
+    .join(':')
+}
+
+interface Memo<T> {
   value: T
+  stamp: string
   at: number
 }
 
-const CACHE_MS = 30_000
-let friendsCache: CacheEntry<FriendLocation[]> | null = null
-let devicesCache: CacheEntry<DeviceLocation[]> | null = null
+let friendsMemo: Memo<FriendLocation[]> | null = null
+let devicesMemo: Memo<DeviceLocation[]> | null = null
+/** One friend read at a time: it writes a plaintext copy of the database, and two at once would fight over that file. */
+let friendsInFlight: Promise<FriendLocation[]> | null = null
+
+async function readFriends(stamp: string): Promise<FriendLocation[]> {
+  try {
+    const friends = await fetchFriends()
+    friendsMemo = { value: friends, stamp, at: Date.now() }
+    return friends
+  } finally {
+    friendsInFlight = null
+  }
+}
 
 export async function cachedFriends(): Promise<{ friends: FriendLocation[]; updatedAt: number }> {
-  const now = Date.now()
-  if (!friendsCache || now - friendsCache.at > CACHE_MS) friendsCache = { value: await fetchFriends(), at: now }
-  return { friends: friendsCache.value, updatedAt: friendsCache.at }
+  const stamp = stampOf(friendSourcePaths())
+  if (friendsMemo?.stamp === stamp) return { friends: friendsMemo.value, updatedAt: friendsMemo.at }
+  friendsInFlight ??= readFriends(stamp)
+  const friends = await friendsInFlight
+  return { friends, updatedAt: friendsMemo?.at ?? Date.now() }
 }
 
 export function cachedDevices(): { devices: DeviceLocation[]; updatedAt: number } {
-  const now = Date.now()
-  if (!devicesCache || now - devicesCache.at > CACHE_MS) devicesCache = { value: fetchDevices(), at: now }
-  return { devices: devicesCache.value, updatedAt: devicesCache.at }
+  const stamp = stampOf(deviceSourcePaths())
+  if (!devicesMemo || devicesMemo.stamp !== stamp) devicesMemo = { value: fetchDevices(), stamp, at: Date.now() }
+  return { devices: devicesMemo.value, updatedAt: devicesMemo.at }
 }
 
-/** Test-only: drops both caches so a test does not observe another test's result. */
+/** Test-only: drops both memos so a test does not observe another test's result. */
 export function resetCachesForTesting(): void {
-  friendsCache = null
-  devicesCache = null
+  friendsMemo = null
+  devicesMemo = null
+  friendsInFlight = null
 }

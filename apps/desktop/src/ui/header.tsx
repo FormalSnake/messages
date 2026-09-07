@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   chatTitle,
+  conversationFocus,
   conversationHandles,
   conversationHasOlder,
   conversationLoading,
@@ -24,7 +25,10 @@ import { LocationCard } from './location'
 import { Avatar, Button, Divider, IconButton, SectionLabel, TextField, overlayShadow } from './primitives'
 import { shortcut, useShell, type MenuItem } from './context'
 import { chatMenu, confirmDelete } from './sidebar'
+import { AUTO_DOWNLOAD_BYTES, generateTile } from './bubble'
+import { slots } from './limit'
 import { useAppState } from './use-app-state'
+import { DURATION, Fade } from './motion'
 
 /** Caps how far back "Catch me up" looks when I have not sent anything in this thread. */
 const CATCH_UP_FALLBACK = 50
@@ -96,38 +100,40 @@ function CatchMeUp({ chat, messages }: { chat: Chat; messages: Message[] }) {
       <IconButton icon="sparkles" label="Catch me up" testId="catch-me-up" size={17} disabled={card?.loading ?? false} onClick={(event) => (card ? close() : run(event.x ?? 0))} />
       {card ? (
         <anchored deferred occlude priority={3} position={{ x: card.x, y: TITLEBAR_HEIGHT }} anchor="topRight" fit="snap" snapMargin={S.x2}>
-          <div
-            testId="catch-up-card"
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              width: 300,
-              padding: S.x3,
-              gap: S.x2,
-              borderRadius: RADIUS.card,
-              backgroundColor: C.overlay,
-              borderWidth: 1,
-              borderColor: C.overlayBorder,
-              boxShadow: overlayShadow,
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2 }}>
-              <Icon name="sparkles" size={14} color={C.accent} />
-              <text style={{ ...TYPE.body, fontWeight: 600, color: C.text, flexGrow: 1 }}>Catch me up</text>
-              <IconButton icon="close" label="Close" size={12} hit={22} onClick={close} />
+          <Fade enter={DURATION.fast}>
+            <div
+              testId="catch-up-card"
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                width: 300,
+                padding: S.x3,
+                gap: S.x2,
+                borderRadius: RADIUS.card,
+                backgroundColor: C.overlay,
+                borderWidth: 1,
+                borderColor: C.overlayBorder,
+                boxShadow: overlayShadow,
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2 }}>
+                <Icon name="sparkles" size={14} color={C.accent} />
+                <text style={{ ...TYPE.body, fontWeight: 600, color: C.text, flexGrow: 1 }}>Catch me up</text>
+                <IconButton icon="close" label="Close" size={12} hit={22} onClick={close} />
+              </div>
+              {card.loading ? (
+                <text style={{ ...TYPE.caption, color: C.secondary }}>Summarizing…</text>
+              ) : card.error ? (
+                <text testId="catch-up-error" style={{ ...TYPE.caption, color: C.danger }}>
+                  {card.error}
+                </text>
+              ) : (
+                <text testId="catch-up-summary" style={{ ...TYPE.body, color: C.text }}>
+                  {card.summary}
+                </text>
+              )}
             </div>
-            {card.loading ? (
-              <text style={{ ...TYPE.caption, color: C.secondary }}>Summarizing…</text>
-            ) : card.error ? (
-              <text testId="catch-up-error" style={{ ...TYPE.caption, color: C.danger }}>
-                {card.error}
-              </text>
-            ) : (
-              <text testId="catch-up-summary" style={{ ...TYPE.body, color: C.text }}>
-                {card.summary}
-              </text>
-            )}
-          </div>
+          </Fade>
         </anchored>
       ) : null}
     </>
@@ -141,6 +147,7 @@ export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: b
   const handles = conversationHandles(state, chat.guid)
   const first = handles[0]
   const sharing = !chat.isGroup && first ? matchFriend(Object.values(state.locations), [first.address, ...contactAddresses(state.contacts, first.address)]) : undefined
+  const silenced = conversationFocus(state, chat.guid) === 'silenced'
   const subtitle =
     (chat.isGroup
       ? chat.participants.map(handleName).join(', ')
@@ -198,9 +205,12 @@ export function ConversationHeader({ chat, infoOpen }: { chat: Chat; infoOpen: b
       >
         <Avatar chat={chat} size={30} />
         <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
-          <text testId="thread-title" style={{ ...TYPE.title, color: C.text, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-            {title}
-          </text>
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x1, minWidth: 0 }}>
+            <text testId="thread-title" style={{ ...TYPE.title, color: C.text, flexShrink: 1, minWidth: 0, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+              {title}
+            </text>
+            {silenced ? <Icon name="silenced" size={12} color={C.tertiary} /> : null}
+          </div>
           <text style={{ ...TYPE.micro, color: C.secondary, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{subtitle}</text>
         </div>
       </div>
@@ -276,7 +286,7 @@ function participantMenu(handle: Handle, chat: Chat, shell: ReturnType<typeof us
         icon: 'removePerson',
         danger: true,
         disabled: chat.participants.length <= 2,
-        onSelect: () => void shell.store.transport.removeParticipant(chat.guid, handle.address),
+        onSelect: () => void shell.store.removeParticipant(chat.guid, handle.address),
       },
     )
   }
@@ -323,7 +333,7 @@ function Participant({ handle, chat, manage, addresses = [handle.address] }: { h
           : null}
       </div>
       {manage && chat.participants.length > 2 ? (
-        <IconButton icon="close" label={`Remove ${handleName(handle)}`} size={12} hit={24} onClick={() => void shell.store.transport.removeParticipant(chat.guid, handle.address)} />
+        <IconButton icon="close" label={`Remove ${handleName(handle)}`} size={12} hit={24} onClick={() => void shell.store.removeParticipant(chat.guid, handle.address)} />
       ) : null}
     </div>
   )
@@ -346,6 +356,15 @@ const GALLERY_COLUMNS = 3
 const GALLERY_GAP = S.x1
 /** INFO_WIDTH minus the panel's own S.x4 inset on each side minus the two gaps between columns, split three ways. */
 const GALLERY_THUMB = (INFO_WIDTH - S.x4 * 2 - GALLERY_GAP * (GALLERY_COLUMNS - 1)) / GALLERY_COLUMNS
+/** Twice the box, so the cut still has pixels to spare on a HiDPI screen. */
+const GALLERY_TILE = GALLERY_THUMB * 2
+/**
+ * Photos the panel fetches at once. It mounts every picture in the
+ * conversation the moment it opens, so without this a chat with a hundred of
+ * them started a hundred requests, and each one that landed republished the
+ * store and re-rendered the window.
+ */
+const gallerySlot = slots(3)
 
 /** Newest first: every visible, non-sticker attachment across what is loaded, images for the grid and everything else for the file list. */
 function galleryItems(messages: Message[]): { images: GalleryItem[]; files: GalleryItem[] } {
@@ -361,26 +380,49 @@ function galleryItems(messages: Message[]): { images: GalleryItem[]; files: Gall
   return { images, files }
 }
 
-function GalleryThumbnail({ attachment, message }: { attachment: Attachment; message: Message }) {
+const GalleryThumbnail = memo(function GalleryThumbnail({ attachment, message }: { attachment: Attachment; message: Message }) {
   const shell = useShell()
   const [failed, setFailed] = useState(false)
+  const [thumb, setThumb] = useState<string | null>(null)
   const src = attachment.localPath
+  // Anything past the cap waits for a click, the same bargain the thread makes.
+  const wanted = !src && !failed && attachment.bytes <= AUTO_DOWNLOAD_BYTES
   useEffect(() => {
-    if (src || failed) return
-    shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => setFailed(true))
-  }, [src, failed, shell.store, message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime])
+    if (!wanted) return
+    let cancelled = false
+    void gallerySlot(() => shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime)).catch(() => {
+      if (!cancelled) setFailed(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [wanted, shell.store, message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime])
+  // An eighty pixel box was being handed the whole photo, so a panel of them
+  // asked the renderer for gigabytes of texture. Nothing is painted until the
+  // square cut is settled.
+  useEffect(() => {
+    if (!src) return
+    let cancelled = false
+    setThumb(null)
+    void generateTile(src, attachment.guid, 1, GALLERY_TILE).then((path) => {
+      if (!cancelled) setThumb(path ?? src)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [src, attachment.guid])
   return (
     <div
       testId={`gallery-photo-${attachment.guid}`}
       onClick={() => shell.openLightbox({ chatGuid: message.chatGuid, attachmentGuid: attachment.guid })}
       style={{ width: GALLERY_THUMB, height: GALLERY_THUMB, borderRadius: RADIUS.control, overflow: 'hidden', backgroundColor: C.raised, cursor: 'pointer', hover: { opacity: 0.9 } }}
     >
-      {src ? <img src={src} objectFit="contain" style={{ width: GALLERY_THUMB, height: GALLERY_THUMB }} /> : null}
+      {thumb ? <img src={thumb} objectFit="contain" style={{ width: GALLERY_THUMB, height: GALLERY_THUMB }} /> : null}
     </div>
   )
-}
+})
 
-function GalleryFile({ attachment, message }: { attachment: Attachment; message: Message }) {
+const GalleryFile = memo(function GalleryFile({ attachment, message }: { attachment: Attachment; message: Message }) {
   const shell = useShell()
   const open = async () => {
     const local = attachment.localPath ?? (await shell.store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name, attachment.mime).catch(() => undefined))
@@ -403,13 +445,13 @@ function GalleryFile({ attachment, message }: { attachment: Attachment; message:
       </div>
     </div>
   )
-}
+})
 
 function GallerySection({ chat }: { chat: Chat }) {
   const shell = useShell()
   const { store } = shell
   const state = useAppState(store)
-  const messages = conversationMessages(state, chat.guid)
+  const messages = useMemo(() => conversationMessages(state, chat.guid), [state.messages, state.merged, state.primaryOf, chat.guid])
   const { images, files } = useMemo(() => galleryItems(messages), [messages])
   const hasOlder = conversationHasOlder(state, chat.guid)
   const loading = conversationLoading(state, chat.guid)
@@ -447,13 +489,20 @@ function GallerySection({ chat }: { chat: Chat }) {
   )
 }
 
-export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean }) {
+/** Sized to `INFO_WIDTH` whatever holds it: the app clips or slides the box around it. */
+export function InfoPanel({ chat }: { chat: Chat }) {
   const shell = useShell()
   const { store } = shell
   const state = useAppState(store)
   const [name, setName] = useState(chat.displayName ?? '')
   const [address, setAddress] = useState('')
   const manage = state.capabilities.groupManagement && chat.isGroup
+  const addPerson = () => {
+    const target = address.trim()
+    if (!target) return
+    setAddress('')
+    void store.addParticipant(chat.guid, target)
+  }
   const leave = () =>
     shell.confirm({
       title: `Leave “${chatTitle(chat)}”?`,
@@ -483,9 +532,6 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
         borderColor: C.sidebarBorder,
         overflowY: 'scroll',
         userSelect: 'none',
-        ...(floating
-          ? { position: 'absolute', top: 0, right: 0, bottom: 0, boxShadow: { offsetX: -8, offsetY: 0, blurRadius: 32, spreadRadius: 0, color: '#000000a6' } }
-          : {}),
       }}
     >
       <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', height: TITLEBAR_HEIGHT, paddingLeft: S.x4, paddingRight: S.x2, flexShrink: 0 }}>
@@ -545,13 +591,8 @@ export function InfoPanel({ chat, floating }: { chat: Chat; floating: boolean })
       {manage ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: S.x2, paddingTop: S.x3, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
           <div style={{ display: 'flex', flexDirection: 'row', gap: S.x2 }}>
-            <TextField
-              value={address}
-              onChange={setAddress}
-              placeholder="Phone number or email"
-              onSubmit={() => void store.transport.addParticipant(chat.guid, address.trim()).then(() => setAddress(''))}
-            />
-            <Button onClick={() => void store.transport.addParticipant(chat.guid, address.trim()).then(() => setAddress(''))} disabled={address.trim().length === 0}>
+            <TextField value={address} onChange={setAddress} placeholder="Phone number or email" onSubmit={addPerson} />
+            <Button onClick={addPerson} disabled={address.trim().length === 0}>
               Add
             </Button>
           </div>

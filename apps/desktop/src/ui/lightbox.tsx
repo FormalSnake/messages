@@ -5,12 +5,14 @@ import { C, RADIUS, S, TYPE } from './theme'
 import { IconButton } from './primitives'
 import { useShell, type LightboxTarget } from './context'
 import { useAppState } from './use-app-state'
+import { DURATION, Fade } from './motion'
 
 /** Margin kept between the image and every edge of the window. */
 const MARGIN = 48
 const CAPTION_HEIGHT = 40
 
-export function Lightbox({ target }: { target: LightboxTarget }) {
+/** `open=false` fades it out; the app unmounts it once that is done. */
+export function Lightbox({ target, open = true }: { target: LightboxTarget; open?: boolean }) {
   const shell = useShell()
   const state = useAppState(shell.store)
   const { width, height } = useWindowSize()
@@ -62,65 +64,67 @@ export function Lightbox({ target }: { target: LightboxTarget }) {
 
   return (
     <anchored deferred occlude priority={5} position={{ x: 0, y: 0 }}>
-      <div
-        testId="lightbox"
-        autoFocus
-        tabIndex={-1}
-        onKeyDown={(event) => {
-          if (event.key === 'escape') shell.closeLightbox()
-          else if (event.key === 'left' || event.key === 'k') step(-1)
-          else if (event.key === 'right' || event.key === 'j') step(1)
-        }}
-        style={{
-          width,
-          height,
-          backgroundColor: '#000000e6',
-          pointerEvents: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <div style={{ position: 'absolute', top: 20, right: 20, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2 }}>
-          {src ? (
-            <div
-              testId="lightbox-open"
-              onClick={() => openExternal(src)}
-              style={{
-                height: 28,
-                paddingLeft: S.x3,
-                paddingRight: S.x3,
-                borderRadius: RADIUS.control,
-                display: 'flex',
-                alignItems: 'center',
-                backgroundColor: '#ffffff1f',
-                cursor: 'pointer',
-                hover: { backgroundColor: '#ffffff33' },
-              }}
-            >
-              <text style={{ ...TYPE.body, fontWeight: 600, color: '#ffffff' }}>Open</text>
+      <Fade show={open} enter={DURATION.base} exit={DURATION.fast}>
+        <div
+          testId="lightbox"
+          autoFocus
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.key === 'escape') shell.closeLightbox()
+            else if (event.key === 'left' || event.key === 'k') step(-1)
+            else if (event.key === 'right' || event.key === 'j') step(1)
+          }}
+          style={{
+            width,
+            height,
+            backgroundColor: '#000000e6',
+            pointerEvents: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <div style={{ position: 'absolute', top: 20, right: 20, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2 }}>
+            {src ? (
+              <div
+                testId="lightbox-open"
+                onClick={() => openExternal(src)}
+                style={{
+                  height: 28,
+                  paddingLeft: S.x3,
+                  paddingRight: S.x3,
+                  borderRadius: RADIUS.control,
+                  display: 'flex',
+                  alignItems: 'center',
+                  backgroundColor: '#ffffff1f',
+                  cursor: 'pointer',
+                  hover: { backgroundColor: '#ffffff33' },
+                }}
+              >
+                <text style={{ ...TYPE.body, fontWeight: 600, color: '#ffffff' }}>Open</text>
+              </div>
+            ) : null}
+            <IconButton testId="lightbox-close" icon="close" label="Close" onClick={shell.closeLightbox} color="#ffffff" hit={28} />
+          </div>
+
+          {entry ? (
+            <div onMouseDownOutside={shell.closeLightbox} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2 }}>
+              {src ? (
+                <img src={src} objectFit="contain" style={{ width: dispW, height: dispH }} />
+              ) : (
+                <div style={{ width: dispW, height: dispH, borderRadius: RADIUS.card, backgroundColor: '#ffffff14', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <text style={{ ...TYPE.caption, color: '#ffffffb3' }}>{failed ? 'Could not load.' : 'Loading…'}</text>
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <text style={{ ...TYPE.caption, color: '#ffffff' }}>{entry.attachment.name}</text>
+                <text style={{ ...TYPE.micro, color: '#ffffffa6' }}>{formatBytes(entry.attachment.bytes)}</text>
+              </div>
             </div>
           ) : null}
-          <IconButton testId="lightbox-close" icon="close" label="Close" onClick={shell.closeLightbox} color="#ffffff" hit={28} />
         </div>
-
-        {entry ? (
-          <div onMouseDownOutside={shell.closeLightbox} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2 }}>
-            {src ? (
-              <img src={src} objectFit="contain" style={{ width: dispW, height: dispH }} />
-            ) : (
-              <div style={{ width: dispW, height: dispH, borderRadius: RADIUS.card, backgroundColor: '#ffffff14', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <text style={{ ...TYPE.caption, color: '#ffffffb3' }}>{failed ? 'Could not load.' : 'Loading…'}</text>
-              </div>
-            )}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <text style={{ ...TYPE.caption, color: '#ffffff' }}>{entry.attachment.name}</text>
-              <text style={{ ...TYPE.micro, color: '#ffffffa6' }}>{formatBytes(entry.attachment.bytes)}</text>
-            </div>
-          </div>
-        ) : null}
-      </div>
+      </Fade>
     </anchored>
   )
 }

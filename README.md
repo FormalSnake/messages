@@ -128,6 +128,14 @@ that runs on the Mac (`apps/mac-agent`), decrypts them the way
 serves the people sharing their location with you. The details panel then shows
 a map tile, the place and when it was updated, under each participant.
 
+Those caches only move while FindMy.app is running, and only for the first few
+minutes after it launches, so the agent keeps the app open hidden and restarts
+it whenever the files stop changing. Set `"keepFindMyOpen": false` in
+`~/.config/messages/agent.json` to leave the app alone, at the price of
+locations that go stale within the hour. Changes are pushed to the client as
+they land on disk, over `GET /findmy/stream`, so an open details panel follows
+someone in something close to real time.
+
 You need the three Find My keys once. They come out of the Mac with
 [findmy-key-extractor](https://github.com/manonstreet/findmy-key-extractor),
 which attaches a debugger to Find My, so besides SIP off it wants
@@ -205,9 +213,12 @@ you ask it to.
 
 ## Install on Linux
 
-You need [Bun](https://bun.sh) and a GPU with Vulkan. On NixOS you also need
-Nix (obviously) because the prebuilt renderer wants a handful of system
-libraries on `LD_LIBRARY_PATH`; `flake.nix` provides them.
+You need [Bun](https://bun.sh) and a GPU with Vulkan. `ffmpeg` on `PATH` is
+optional: without it a video is a dark box with a play button instead of a
+poster frame, and the tiles of a photo grid letterbox the whole picture
+instead of filling their box. On NixOS you also need Nix (obviously) because
+the prebuilt renderer wants a handful of system libraries on
+`LD_LIBRARY_PATH`; `flake.nix` provides them.
 
 ```
 git clone https://github.com/FormalSnake/messages ~/Developer/messages
@@ -226,6 +237,45 @@ developed against a Mac on the other side of a tailnet.
 
 `MESSAGES_DEMO=1 messages` runs on built-in fixtures with no Mac at all, which
 is how the screenshots were made.
+
+### A second Linux box
+
+Everything past the server address lives in `~/.config/messages/config.json`,
+which is per machine and never travels on its own. Run the installer on the
+new box, then copy the file across:
+
+```
+scp othermachine:~/.config/messages/config.json ~/.config/messages/config.json
+```
+
+Skip that and the app still connects, but the optional halves go quiet with no
+error: no pinned chats or Find My from the Mac (`agent`), no GIF button
+(`klipy`), no assistant (`canaryllm`). The sections above say what each key
+holds. Pins, mutes and GIF favorites sync themselves through the agent once
+it is configured, so only the file itself has to travel.
+
+### Autostart
+
+The desktop entry is enough for a launcher. To bring the app up with the
+session, point a systemd user unit at the same launcher:
+
+```ini
+# ~/.config/systemd/user/messages.service
+[Unit]
+Description=Messages
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/messages
+
+[Install]
+WantedBy=graphical-session.target
+```
+
+Then `systemctl --user enable messages.service`. When no window appears,
+`journalctl --user -u messages` has the renderer's output; a missing system
+library shows up there as a dlopen failure.
 
 ## On the Mac
 

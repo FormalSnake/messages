@@ -16,11 +16,22 @@ const describeNative = hasNativeTestRenderer ? describe : describe.skip
 
 const config: Config = { server: null, notifications: false, demo: true, chats: {} }
 
-function mount(overrides: Partial<Config> = {}) {
-  const { render, renderer } = createTestRoot({ width: 1120, height: 760 })
+function mount(overrides: Partial<Config> = {}, size: { width: number; height: number } = { width: 1120, height: 760 }) {
+  const { render, renderer } = createTestRoot(size)
   const transport = new DemoTransport()
   render(<MessagesApp config={{ ...config, ...overrides }} saveConfig={async () => undefined} transport={transport} />)
   return { renderer, transport }
+}
+
+/** Every chat row on screen, top first, one entry per row. */
+async function paintedRows(app: Awaited<ReturnType<typeof connectTest>>): Promise<Array<{ id: string; y: number }>> {
+  const rows = new Map<string, number>()
+  const walk = (node: { testId?: string; bounds?: { y: number }; children?: unknown[] }) => {
+    if (node.testId?.startsWith('chat-') && node.bounds && !rows.has(node.testId)) rows.set(node.testId, Math.round(node.bounds.y))
+    for (const child of (node.children ?? []) as Array<Parameters<typeof walk>[0]>) walk(child)
+  }
+  for (const node of await app.getByTestId('sidebar').all()) walk(node)
+  return [...rows].map(([id, y]) => ({ id, y })).sort((a, b) => a.y - b.y)
 }
 
 describeNative('messages app', () => {
@@ -59,6 +70,43 @@ describeNative('messages app', () => {
     await app.getByTestId('chat-chat240119384759').click()
     await app.getByTestId('thread').getByText('Sunday lunch is at ours, 1pm. Bring the good bread.').waitFor({ timeoutMs: 10_000 })
     expect(await app.getByTestId('thread-title').textContent()).toBe('Family')
+
+    await app.close()
+  })
+
+  it('names the Focus on the other end and breaks through it', async () => {
+    const { renderer } = mount()
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+
+    await app.getByTestId('chat-+14155550170').click()
+    await app.getByTestId('thread').getByText('Reviewing tonight').waitFor({ timeoutMs: 10_000 })
+    expect(await app.getByTestId('thread-title').textContent()).toBe('Ben Okafor')
+    await app.getByTestId('thread').getByText('Delivered Quietly').waitFor({ timeoutMs: 10_000 })
+
+    await app.getByTestId('thread').getByText('Notify Anyway').click()
+    await app.getByTestId('thread').getByText('Notified').waitFor({ timeoutMs: 10_000 })
+
+    await app.close()
+  })
+
+  it('leaves the sidebar where it is when a row halfway down is clicked', async () => {
+    // gpui scrolls a List to reveal whatever takes focus, so selecting a row used to jump the list.
+    const { renderer } = mount({}, { width: 1120, height: 420 })
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+    await app.getByTestId('sidebar').waitFor({ timeoutMs: 20_000 })
+
+    await app.getByTestId('sidebar').wheel(0, -120)
+    const before = await paintedRows(app)
+    expect(before.length).toBeGreaterThan(3)
+
+    // Near the top of the window, with room below: the reveal scroll had the most to take away here.
+    const row = before[1]!
+    await app.getByTestId(row.id).click()
+    await app.getByTestId('thread').waitFor({ timeoutMs: 10_000 })
+
+    expect(await paintedRows(app)).toEqual(before)
 
     await app.close()
   })
@@ -141,6 +189,60 @@ describeNative('messages app', () => {
 
     await app.getByTestId('thread-back').click()
     await app.getByTestId('thread').waitFor({ timeoutMs: 10_000 })
+
+    await app.close()
+  })
+
+  it('opens the details panel, then closes it again', async () => {
+    const { renderer } = mount()
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+
+    await app.getByTestId('info').click()
+    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
+    for (let tries = 0; tries < 50 && !renderer.getPaintedText().includes('Details'); tries += 1) await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(renderer.getPaintedText()).toContain('Details')
+
+    await app.getByTestId('close-info').click()
+    // The panel slides out before it leaves the tree.
+    for (let tries = 0; tries < 50 && (await app.getByTestId('info-panel').all()).length > 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100))
+    expect((await app.getByTestId('info-panel').all()).length).toBe(0)
+
+    await app.close()
+  })
+
+  it('shows the gallery in the details panel', async () => {
+    const { renderer } = mount()
+    const app = await connectTest(renderer)
+    await app.getByTestId('composer').waitFor({ timeoutMs: 20_000 })
+
+    // Nadia's thread is the one carrying photos.
+    await app.getByTestId('chat-+34612345678').click()
+    await app.getByTestId('info').click()
+    await app.getByTestId('info-panel').waitFor({ timeoutMs: 10_000 })
+    // Thumbnails wait for their square cut before painting, so the panel is up
+    // before the pictures are.
+    await app.getByTestId('gallery-photo-demo-att-3').waitFor({ timeoutMs: 10_000 })
+    expect(renderer.getPaintedText()).toContain('Photos and files')
+
+    await app.close()
+  })
+
+  it('replies to a message from its context menu', async () => {
+    const { renderer } = mount()
+    const app = await connectTest(renderer)
+    await app.getByTestId('draft').waitFor({ timeoutMs: 20_000 })
+
+    await app.getByTestId('thread').getByText('coffee at 4? the place on valencia').click({ button: 2 })
+    await app.getByTestId('menu-reply').waitFor({ timeoutMs: 10_000 })
+    await app.getByTestId('menu-reply').click()
+    await app.getByTestId('reply-banner').waitFor({ timeoutMs: 10_000 })
+
+    await app.getByTestId('draft').fill('on my way')
+    await app.getByTestId('send').click()
+    await app.getByTestId('thread').getByText('on my way').waitFor({ timeoutMs: 10_000 })
+    for (let tries = 0; tries < 50 && (await app.getByTestId('reply-banner').all()).length > 0; tries += 1) await new Promise((resolve) => setTimeout(resolve, 100))
+    expect((await app.getByTestId('reply-banner').all()).length).toBe(0)
 
     await app.close()
   })
