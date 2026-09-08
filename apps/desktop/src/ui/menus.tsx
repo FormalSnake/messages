@@ -92,6 +92,13 @@ export function ContextMenu({ request }: { request: MenuRequest }) {
               </text>
             )
           }
+          if (item.kind === 'note') {
+            return (
+              <text key={index} style={{ ...TYPE.body, color: C.text, paddingLeft: S.x2, paddingRight: S.x2, height: 28, lineHeight: 28, whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                {item.label}
+              </text>
+            )
+          }
           if (item.kind === 'tapbacks') {
             return <TapbackRow key={index} chatGuid={item.chatGuid} messageGuid={item.messageGuid} bare={pickerOnly} />
           }

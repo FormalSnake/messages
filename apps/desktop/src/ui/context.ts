@@ -16,6 +16,8 @@ export type MenuItem =
     }
   | { kind: 'separator' }
   | { kind: 'header'; label: string }
+  /** A line of information the pointer does nothing with. */
+  | { kind: 'note'; label: string }
   | { kind: 'tapbacks'; messageGuid: string; chatGuid: string }
 
 export interface MenuRequest {

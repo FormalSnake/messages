@@ -175,9 +175,13 @@ interface TapbackGroup {
   glyph: string
   count: number
   mine: boolean
+  /** Who sent it, in arrival order. */
+  who: string[]
 }
 
-function TapbackPill({ item, index, fresh }: { item: TapbackGroup; index: number; fresh: boolean }) {
+type PillEvent = { x?: number; y?: number; isRightClick?: boolean }
+
+function TapbackPill({ item, index, fresh, onMenu }: { item: TapbackGroup; index: number; fresh: boolean; onMenu: (item: TapbackGroup, event: PillEvent) => void }) {
   // Read once: a pill that lands on an open thread fades in, one painted with the thread does not.
   const enter = useRef(fresh).current
   return (
@@ -185,6 +189,7 @@ function TapbackPill({ item, index, fresh }: { item: TapbackGroup; index: number
       initial={enter ? { opacity: 0 } : false}
       animate={{ opacity: 1 }}
       transition={{ duration: DURATION.base, ease: EASE_OUT }}
+      onMouseDown={(event) => onMenu(item, event)}
       style={{
         display: 'flex',
         flexDirection: 'row',
@@ -202,22 +207,33 @@ function TapbackPill({ item, index, fresh }: { item: TapbackGroup; index: number
       }}
     >
       <text style={{ fontFamily: FONT_EMOJI, fontSize: 12, lineHeight: 16, color: C.text }}>{item.glyph}</text>
-      {item.count > 1 ? <text style={{ ...TYPE.micro, fontWeight: 600, color: C.onAccent }}>{String(item.count)}</text> : null}
+      {item.count > 1 ? <text style={{ ...TYPE.micro, fontWeight: 600, color: item.mine ? C.onAccent : C.text }}>{String(item.count)}</text> : null}
     </motion.div>
   )
 }
 
 function Tapbacks({ tapbacks, fromMe, rowMountedAt }: { tapbacks: Tapback[]; fromMe: boolean; rowMountedAt: number }) {
+  const shell = useShell()
   const groups = new Map<string, TapbackGroup>()
   for (const tapback of tapbacks) {
     const glyph = tapbackGlyph(tapback)
-    const entry = groups.get(glyph) ?? { glyph, count: 0, mine: false }
+    const entry = groups.get(glyph) ?? { glyph, count: 0, mine: false, who: [] }
     entry.count += 1
     entry.mine = entry.mine || tapback.fromMe
+    entry.who.push(tapback.fromMe ? 'You' : tapback.sender ? handleName(tapback.sender) : 'Unknown sender')
     groups.set(glyph, entry)
   }
   const items = [...groups.values()].slice(0, 3)
   const fresh = Date.now() - rowMountedAt > FRESH_AFTER_MS
+  const openWho = (item: TapbackGroup, event: PillEvent) => {
+    if (!event.isRightClick) return
+    shell.openMenu({
+      x: event.x ?? 0,
+      y: event.y ?? 0,
+      minWidth: 160,
+      items: [{ kind: 'header', label: item.glyph }, ...item.who.map((name): MenuItem => ({ kind: 'note', label: name }))],
+    })
+  }
   return (
     <div
       style={{
@@ -230,7 +246,7 @@ function Tapbacks({ tapbacks, fromMe, rowMountedAt }: { tapbacks: Tapback[]; fro
       }}
     >
       {items.map((item, index) => (
-        <TapbackPill key={item.glyph} item={item} index={index} fresh={fresh} />
+        <TapbackPill key={item.glyph} item={item} index={index} fresh={fresh} onMenu={openWho} />
       ))}
     </div>
   )
