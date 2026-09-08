@@ -877,3 +877,44 @@ describe('find my', () => {
     store.stop()
   })
 })
+
+describe('tapbacks', () => {
+  it('counts a reaction the server sends twice, once without its handle, as one', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a')]
+    const target = message('a', 'hello', 900)
+    transport.messages.push(target)
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    await settle()
+
+    const reaction = { ...message('a', '', 950), guid: 'reaction-1', reaction: { targetGuid: target.guid, kind: 'emoji' as const, emoji: '🔥', removed: false } }
+    transport.emit({ type: 'message', message: { ...reaction, sender: undefined } })
+    transport.emit({ type: 'message', message: { ...reaction, sender: { address: 'a', service: 'iMessage' } } })
+    transport.emit({ type: 'message', message: { ...reaction, sender: undefined } })
+
+    const tapbacks = store.state.messages.a?.find((item) => item.guid === target.guid)?.tapbacks
+    expect(tapbacks).toEqual([{ guid: 'reaction-1', kind: 'emoji', emoji: '🔥', fromMe: false, sender: { address: 'a', service: 'iMessage' } }])
+    store.stop()
+  })
+
+  it('keeps two people who sent the same emoji apart', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [{ ...chat('g'), isGroup: true, participants: [{ address: 'a', service: 'iMessage' }, { address: 'b', service: 'iMessage' }] }]
+    const target = message('g', 'hello', 900)
+    transport.messages.push(target)
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0 })
+    await store.start()
+    await settle()
+
+    const detail = { targetGuid: target.guid, kind: 'love' as const, removed: false }
+    transport.emit({ type: 'message', message: { ...message('g', '', 950), guid: 'reaction-a', reaction: detail, sender: { address: 'a', service: 'iMessage' } } })
+    transport.emit({ type: 'message', message: { ...message('g', '', 960), guid: 'reaction-b', reaction: detail, sender: { address: 'b', service: 'iMessage' } } })
+    transport.emit({ type: 'message', message: { ...message('g', '', 970), guid: 'reaction-c', reaction: detail, sender: undefined } })
+    transport.emit({ type: 'message', message: { ...message('g', '', 980), guid: 'reaction-d', reaction: { ...detail, removed: true }, sender: { address: 'b', service: 'iMessage' } } })
+
+    const tapbacks = store.state.messages.g?.find((item) => item.guid === target.guid)?.tapbacks.map((item) => item.guid)
+    expect(tapbacks).toEqual(['reaction-a', 'reaction-c'])
+    store.stop()
+  })
+})

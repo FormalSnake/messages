@@ -179,6 +179,24 @@ function definedKeys(value: object): string[] {
  * than serialising both: this runs on every message of every sweep, and two
  * `JSON.stringify` calls per message is real work on a slow machine.
  */
+type PendingReaction = Reaction & { guid: string; fromMe: boolean; sender?: Message['sender'] }
+
+/**
+ * One person holds one tapback per message. A reaction replaces the author's
+ * earlier one, and a copy the server sends again replaces itself by guid,
+ * keeping the sender the first copy carried when the new one has none. Two
+ * senders the server left blank are never the same person.
+ */
+function mergeTapback(existing: Tapback[], entry: Tapback, removed: boolean): Tapback[] {
+  const prior = existing.find((item) => item.guid === entry.guid)
+  const tapback = entry.sender || !prior?.sender ? entry : { ...entry, sender: prior.sender }
+  const sameAuthor = (item: Tapback) =>
+    item.fromMe || tapback.fromMe ? item.fromMe && tapback.fromMe : item.sender?.address != null && item.sender.address === tapback.sender?.address
+  const same = (item: Tapback) => item.guid === tapback.guid || sameAuthor(item)
+  if (removed) return existing.filter((item) => !(same(item) && item.kind === tapback.kind && item.emoji === tapback.emoji))
+  return [...existing.filter((item) => !same(item)), tapback]
+}
+
 function same(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
@@ -237,7 +255,7 @@ export class MessagesStore {
   private prefs: Record<string, ChatPrefs>
   private options: StoreOptions
   private unsubscribe: (() => void) | null = null
-  private pendingReactions = new Map<string, Reaction[]>()
+  private pendingReactions = new Map<string, PendingReaction[]>()
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private typingSent = new Set<string>()
   private typingShown = new Map<string, ReturnType<typeof setTimeout>>()
@@ -852,7 +870,7 @@ export class MessagesStore {
       this.applyReactionTo(message.chatGuid, target, message)
     } else {
       const pending = this.pendingReactions.get(message.reaction.targetGuid) ?? []
-      this.pendingReactions.set(message.reaction.targetGuid, [...pending, { ...message.reaction, guid: message.guid, fromMe: message.fromMe, sender: message.sender } as Reaction])
+      this.pendingReactions.set(message.reaction.targetGuid, [...pending, { ...message.reaction, guid: message.guid, fromMe: message.fromMe, sender: this.reactionSender(message) }])
     }
     return true
   }
@@ -869,11 +887,19 @@ export class MessagesStore {
   private applyReactionTo(chatGuid: string, target: Message, reaction: Message): void {
     const detail = reaction.reaction
     if (!detail) return
-    const tapback: Tapback = { guid: reaction.guid, kind: detail.kind, emoji: detail.emoji, fromMe: reaction.fromMe, sender: reaction.sender }
-    const sameAuthor = (item: Tapback) => (item.fromMe && tapback.fromMe) || (!item.fromMe && !tapback.fromMe && item.sender?.address === tapback.sender?.address)
-    let tapbacks = target.tapbacks.filter((item) => !(sameAuthor(item) && item.kind === tapback.kind && item.emoji === tapback.emoji))
-    if (!detail.removed) tapbacks = [...tapbacks.filter((item) => !sameAuthor(item)), tapback]
-    this.replaceMessage(chatGuid, { ...target, tapbacks })
+    const tapback: Tapback = { guid: reaction.guid, kind: detail.kind, emoji: detail.emoji, fromMe: reaction.fromMe, sender: this.reactionSender(reaction) }
+    this.replaceMessage(chatGuid, { ...target, tapbacks: mergeTapback(target.tapbacks, tapback, detail.removed) })
+  }
+
+  /**
+   * The server sends some reactions without their handle (the socket copy of
+   * one it later re-reads with it). In a one-to-one chat the only person it
+   * can be is the other participant.
+   */
+  private reactionSender(message: Message): Message['sender'] {
+    if (message.sender || message.fromMe) return message.sender
+    const chat = this.state.chats.find((item) => item.guid === message.chatGuid)
+    return chat && !chat.isGroup && chat.participants.length === 1 ? chat.participants[0] : undefined
   }
 
   private replaceMessage(_chatGuid: string, message: Message): void {
@@ -942,13 +968,10 @@ export class MessagesStore {
     if (isNew && !message.fromMe) this.showTyping(chatGuid, false)
   }
 
-  private foldPending(existing: Tapback[], pending: Reaction[]): Tapback[] {
-    let tapbacks = existing.slice()
-    for (const item of pending) {
-      const entry = item as Reaction & { guid: string; fromMe: boolean; sender?: Message['sender'] }
-      const same = (t: Tapback) => (t.fromMe && entry.fromMe) || (!t.fromMe && !entry.fromMe && t.sender?.address === entry.sender?.address)
-      tapbacks = tapbacks.filter((t) => !same(t))
-      if (!entry.removed) tapbacks.push({ guid: entry.guid, kind: entry.kind, emoji: entry.emoji, fromMe: entry.fromMe, sender: entry.sender })
+  private foldPending(existing: Tapback[], pending: PendingReaction[]): Tapback[] {
+    let tapbacks = existing
+    for (const entry of pending) {
+      tapbacks = mergeTapback(tapbacks, { guid: entry.guid, kind: entry.kind, emoji: entry.emoji, fromMe: entry.fromMe, sender: entry.sender }, entry.removed)
     }
     return tapbacks
   }
