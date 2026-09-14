@@ -258,6 +258,8 @@ export class MessagesStore {
   private pendingReactions = new Map<string, PendingReaction[]>()
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private typingSent = new Set<string>()
+  /** Chats marked unread here: the Mac's mark-unread leaves `dateRead` alone, so a re-read of the list would clear the dot. */
+  private forcedUnread = new Set<string>()
   private typingShown = new Map<string, ReturnType<typeof setTimeout>>()
   private draftSyncTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** When the composer for a chat was last typed into, so a stale remote draft never overwrites newer local text. */
@@ -422,6 +424,8 @@ export class MessagesStore {
     for (const timer of this.typingTimers.values()) clearTimeout(timer)
     for (const timer of this.typingShown.values()) clearTimeout(timer)
     for (const timer of this.draftSyncTimers.values()) clearTimeout(timer)
+    for (const chatGuid of this.typingSent) void this.transport.setTyping(chatGuid, false).catch(() => undefined)
+    this.typingSent.clear()
     this.transport.disconnect()
     void this.options.cache?.flush()
   }
@@ -548,6 +552,7 @@ export class MessagesStore {
     } catch (error) {
       // Someone who shares no Focus, or a helper that just dropped: the next
       // pass asks again, and neither is worth a toast.
+      this.focusCheckedAt.delete(key)
       console.error(`focus: ${String(error)}`)
     }
     return true
@@ -602,9 +607,12 @@ export class MessagesStore {
       case 'typing':
         this.showTyping(this.resolveChatGuid(event.chatGuid), event.typing)
         return
-      case 'read':
-        this.patchChat(this.resolveChatGuid(event.chatGuid), { unread: !event.read })
+      case 'read': {
+        const chatGuid = this.resolveChatGuid(event.chatGuid)
+        if (event.read) this.forcedUnread.delete(chatGuid)
+        this.patchChat(chatGuid, { unread: !event.read })
         return
+      }
       case 'facetime': {
         const from = event.from ? handleName(event.from) : undefined
         if (event.status === 'ended') {
@@ -797,7 +805,7 @@ export class MessagesStore {
 
   private withPrefs(chat: Chat): Chat {
     const prefs = this.prefs[chat.guid]
-    return { ...chat, pinned: isPinned(prefs), muted: prefs?.muted ?? false, readReceipts: prefs?.readReceipts ?? true }
+    return { ...chat, pinned: isPinned(prefs), muted: prefs?.muted ?? false, readReceipts: prefs?.readReceipts ?? true, unread: chat.unread || this.forcedUnread.has(chat.guid) }
   }
 
   private upsertChat(chat: Chat): void {
@@ -928,9 +936,15 @@ export class MessagesStore {
     let next: Message[]
     if (existingIndex >= 0) {
       const existing = list[existingIndex]!
+      // The server leaves the receipt fields out of some copies (a notification's
+      // message has no quiet-delivery flags), and a read never un-reads.
       message = {
         ...existing,
         ...incoming,
+        dateRead: incoming.dateRead ?? existing.dateRead,
+        dateDelivered: incoming.dateDelivered ?? existing.dateDelivered,
+        deliveredQuietly: incoming.deliveredQuietly ?? existing.deliveredQuietly,
+        notified: incoming.notified ?? existing.notified,
         attachments: mergeAttachments(existing.attachments, incoming.attachments),
         tapbacks: incoming.tapbacks.length ? incoming.tapbacks : existing.tapbacks,
         tempGuid: existing.tempGuid ?? incoming.tempGuid,
@@ -949,23 +963,27 @@ export class MessagesStore {
       next = insertSorted(list, message)
     }
     const isNew = existingIndex < 0
+    if (isNew) this.forcedUnread.delete(chatGuid)
     this.set({ messages: { ...this.state.messages, [chatGuid]: next } })
 
     const chat = this.state.chats.find((item) => item.guid === chatGuid)
     const newest = next[next.length - 1]
     if (chat && newest && newest.guid === message.guid) {
       const selectedAndVisible = this.state.selectedChat === conversationGuid(this.state, chatGuid)
-      const unread = isNew && !message.fromMe && !selectedAndVisible ? true : selectedAndVisible ? false : chat.unread
+      // A read date on the newest incoming message means it was read on another device; the dot goes without waiting for the sweep.
+      const readElsewhere = !message.fromMe && Boolean(message.dateRead)
+      const unread = isNew && !message.fromMe && !selectedAndVisible ? true : selectedAndVisible || readElsewhere ? false : chat.unread
       this.patchChat(chatGuid, { lastMessage: message, lastActivity: Math.max(chat.lastActivity, message.date), unread })
       if (isNew && !message.fromMe && options.fromServer && !options.silent && !chat.muted) this.options.onIncoming?.(chat, message)
-      if (isNew && !message.fromMe && selectedAndVisible && this.state.capabilities.readReceipts) void this.markRead(chatGuid)
+      // The chat is already flagged read by now, so `markRead` would skip it; tell the server directly.
+      if (isNew && !message.fromMe && selectedAndVisible && options.fromServer) void this.sendReadReceipt(chatGuid)
     } else if (!chat && options.fromServer) {
       void this.transport
         .getChat(chatGuid)
         .then((fetched) => this.upsertChat(fetched))
         .catch(() => undefined)
     }
-    if (isNew && !message.fromMe) this.showTyping(chatGuid, false)
+    if (isNew && !message.fromMe) for (const member of conversationMembers(this.state, chatGuid)) this.showTyping(member, false)
   }
 
   private foldPending(existing: Tapback[], pending: PendingReaction[]): Tapback[] {
@@ -1031,8 +1049,9 @@ export class MessagesStore {
     const timer = this.typingTimers.get(chatGuid)
     if (timer) clearTimeout(timer)
     this.typingTimers.delete(chatGuid)
-    if (!this.typingSent.delete(chatGuid)) return
-    await this.transport.setTyping(chatGuid, false).catch(() => undefined)
+    if (!this.typingSent.has(chatGuid)) return
+    // A stop the network lost stays owed, so the next idle timer or send tries again.
+    await this.transport.setTyping(chatGuid, false).then(() => this.typingSent.delete(chatGuid), () => undefined)
   }
 
   setReplyingTo(chatGuid: string, messageGuid: string | undefined): void {
@@ -1088,6 +1107,7 @@ export class MessagesStore {
       editing: { ...this.state.editing, [chatGuid]: undefined },
       replyingTo: { ...this.state.replyingTo, [chatGuid]: undefined },
     })
+    this.clearDraftSync(chatGuid)
     void this.stopTyping(chatGuid)
     try {
       const message = await this.transport.scheduleText(chatGuid, body, sendAt)
@@ -1264,16 +1284,23 @@ export class MessagesStore {
   }
 
   async markRead(chatGuid: string): Promise<void> {
-    // "Read without receipts" clears the dot for every member but skips the network call, so the other side never learns.
-    const sendReceipt = this.prefs[conversationGuid(this.state, chatGuid)]?.readReceipts ?? true
     for (const member of conversationMembers(this.state, chatGuid)) {
+      this.forcedUnread.delete(member)
       if (!this.state.chats.find((chat) => chat.guid === member)?.unread) continue
       this.patchChat(member, { unread: false })
-      if (sendReceipt && this.state.capabilities.readReceipts) await this.transport.markRead(member).catch(() => undefined)
+      await this.sendReadReceipt(member)
     }
   }
 
+  /** "Read without receipts" keeps the dot logic but skips the network call, so the other side never learns. */
+  private async sendReadReceipt(chatGuid: string): Promise<void> {
+    const sendReceipt = this.prefs[conversationGuid(this.state, chatGuid)]?.readReceipts ?? true
+    if (!sendReceipt || !this.state.capabilities.readReceipts) return
+    await this.transport.markRead(chatGuid).catch(() => undefined)
+  }
+
   async markUnread(chatGuid: string): Promise<void> {
+    this.forcedUnread.add(chatGuid)
     this.patchChat(chatGuid, { unread: true })
     if (!this.state.capabilities.markUnread) return
     await this.transport.markUnread(chatGuid).catch(() => undefined)

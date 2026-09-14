@@ -501,6 +501,57 @@ describe('attachments', () => {
 })
 
 describe('read receipts', () => {
+  it('tells the server when a message lands in the open thread', async () => {
+    const transport = new FakeTransport()
+    transport.serverInfo = { ...info, privateApi: true, helperConnected: true }
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    await store.start()
+    expect(store.state.selectedChat).toBe('a')
+
+    transport.emit({ type: 'message', message: message('a', 'hi', 3000) })
+    await settle()
+    expect(store.state.chats.find((item) => item.guid === 'a')?.unread).toBe(false)
+    expect(transport.markReadCalls).toEqual(['a'])
+
+    // One for a thread that is not open waits for the thread to be opened.
+    transport.emit({ type: 'message', message: message('b', 'later', 4000) })
+    await settle()
+    expect(store.state.chats.find((item) => item.guid === 'b')?.unread).toBe(true)
+    expect(transport.markReadCalls).toEqual(['a'])
+    store.stop()
+  })
+
+  it('clears the dot when the newest message comes back read on another device', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    await store.start()
+    const incoming = message('b', 'hi', 3000)
+    transport.emit({ type: 'message', message: incoming })
+    await settle()
+    expect(store.state.chats.find((item) => item.guid === 'b')?.unread).toBe(true)
+
+    transport.emit({ type: 'message', message: { ...incoming, dateRead: 3500 } })
+    await settle()
+    expect(store.state.chats.find((item) => item.guid === 'b')?.unread).toBe(false)
+    store.stop()
+  })
+
+  it('keeps a chat marked unread across a re-read of the list', async () => {
+    const transport = new FakeTransport()
+    transport.chats = [chat('a', 2000), chat('b', 1000)]
+    const store = new MessagesStore(transport, { reconcileEveryMs: 0, warmChats: 0 })
+    await store.start()
+    await store.markUnread('b')
+    await store.reconcile()
+    expect(store.state.chats.find((item) => item.guid === 'b')?.unread).toBe(true)
+    await store.markRead('b')
+    await store.reconcile()
+    expect(store.state.chats.find((item) => item.guid === 'b')?.unread).toBe(false)
+    store.stop()
+  })
+
   it('turns them off without telling the server, and back on again', async () => {
     const transport = new FakeTransport()
     transport.serverInfo = { ...info, privateApi: true, helperConnected: true }

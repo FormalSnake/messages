@@ -17,6 +17,7 @@ import {
   cacheDir,
   conversationChats,
   conversationGuid,
+  conversationMessages,
 } from '@messages/core'
 import { C, FONT_SANS, RADIUS, S, SIDEBAR_WIDTH, SIDEBAR_WIDTH_COMPACT, INFO_WIDTH, TYPE } from './theme'
 import { Icon } from './icons'
@@ -338,7 +339,7 @@ function Workspace({
           } else if (event.key === ']' || (event.modifiers?.shift && event.key === 'down')) stepChat(1)
           else if (event.key === '[' || (event.modifiers?.shift && event.key === 'up')) stepChat(-1)
           else if (typeof event.key === 'string' && event.key.length === 1 && event.key >= '1' && event.key <= '6' && state.capabilities.reactions && selected) {
-            const target = lastIncomingReactable(state.messages[selected.guid])
+            const target = lastIncomingReactable(conversationMessages(state, selected.guid))
             const kind = TAPBACK_ORDER[Number(event.key) - 1]
             if (target && kind) void store.react(selected.guid, target.guid, kind)
           }

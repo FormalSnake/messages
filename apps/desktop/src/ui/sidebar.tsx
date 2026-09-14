@@ -88,7 +88,7 @@ export function chatMenu(chat: Chat, shell: ReturnType<typeof useShell>, options
       icon: chat.readReceipts === false ? 'eye' : 'eyeOff',
       onSelect: () => store.toggleReadReceipts(chat.guid),
     },
-    chat.unread
+    conversationUnread(store.state, chat.guid)
       ? { label: 'Mark as read', icon: 'markRead', onSelect: () => void store.markRead(chat.guid) }
       : { label: 'Mark as unread', icon: 'markUnread', shortcut: shortcut('U', { shift: true }), onSelect: () => void store.markUnread(chat.guid) },
     { label: 'Show details', icon: 'info', shortcut: shortcut('I'), onSelect: () => void store.selectChat(chat.guid).then(() => shell.setInfo(true)) },

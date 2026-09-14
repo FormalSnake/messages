@@ -383,7 +383,18 @@ export class BlueBubblesTransport implements Transport {
   }
 
   async setTyping(chatGuid: string, typing: boolean): Promise<void> {
-    await this.request(typing ? 'POST' : 'DELETE', `/chat/${encodeURIComponent(chatGuid)}/typing`)
+    if (typing) {
+      await this.request('POST', `/chat/${encodeURIComponent(chatGuid)}/typing`)
+      return
+    }
+    // Server 1.9.9's DELETE /chat/:guid/typing handler calls startTyping
+    // (chatRouter.ts stopTyping), so the other side keeps seeing the bubble
+    // until Messages times it out. The socket route is wired to the real stop.
+    const socket = this.socket
+    if (!socket?.connected) return
+    await new Promise<void>((resolve, reject) => {
+      socket.timeout(5000).emit('stopped-typing', { chatGuid }, (err: Error | null) => (err ? reject(err) : resolve()))
+    })
   }
 
   async markUnread(chatGuid: string): Promise<void> {
