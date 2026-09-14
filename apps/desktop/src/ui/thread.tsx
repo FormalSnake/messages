@@ -19,7 +19,7 @@ import {
 } from '@messages/core'
 import { formatSeparator, formatTime, needsSeparator } from '@messages/core'
 import { useAppState } from './use-app-state'
-import { copyText } from '@messages/core'
+import { copyFile, copyText } from '@messages/core'
 import { openExternal, splitLinks } from '@messages/core'
 import { BUBBLE_MAX_FRACTION, BUBBLE_MAX_WIDTH, C, FONT_EMOJI, RADIUS, S, THREAD_INSET, TYPE } from './theme'
 import { BubbleContent, Tail } from './bubble'
@@ -299,7 +299,10 @@ function messageMenu(message: Message, chat: Chat, capabilities: Capabilities, s
     if (segment.kind === 'link') items.push({ label: 'Open link', icon: 'open', onSelect: () => openExternal(segment.href) })
   }
   const image = message.attachments.find((item) => item.localPath && !item.localPath.startsWith('data:'))
-  if (image?.localPath) items.push({ label: 'Open attachment', icon: 'image', onSelect: () => openExternal(image.localPath!) })
+  if (image?.localPath) {
+    items.push({ label: 'Open attachment', icon: 'image', onSelect: () => openExternal(image.localPath!) })
+    items.push({ label: image.mime.startsWith('image/') ? 'Copy image' : 'Copy file', icon: 'copy', onSelect: () => void copyFile(image.localPath!, image.mime) })
+  }
   if (message.fromMe && !failed && message.service === 'iMessage' && (capabilities.edit || capabilities.unsend)) {
     items.push({ kind: 'separator' })
     if (capabilities.edit)
@@ -317,12 +320,21 @@ function messageMenu(message: Message, chat: Chat, capabilities: Capabilities, s
 function attachmentMenu(attachment: Attachment, message: Message, chat: Chat, capabilities: Capabilities, shell: ReturnType<typeof useShell>): MenuItem[] {
   const { store } = shell
   const items: MenuItem[] = tapbackItem(message, chat, capabilities)
-  const reveal = async () => {
+  const onDisk = async () => {
     const local = attachment.localPath ?? (await store.attachmentSrc(message.chatGuid, message.guid, attachment.guid, attachment.name).catch(() => undefined))
-    if (local && !local.startsWith('data:')) openExternal(local)
+    return local && !local.startsWith('data:') ? local : undefined
+  }
+  const reveal = async () => {
+    const local = await onDisk()
+    if (local) openExternal(local)
+  }
+  const copy = async () => {
+    const local = await onDisk()
+    if (local) await copyFile(local, attachment.mime)
   }
   items.push({ label: 'Open', icon: 'open', onSelect: () => void reveal() })
   if (capabilities.replies) items.push({ label: 'Reply', icon: 'reply', onSelect: () => store.setReplyingTo(chat.guid, message.guid) })
+  items.push({ label: attachment.mime.startsWith('image/') ? 'Copy image' : 'Copy file', icon: 'copy', onSelect: () => void copy() })
   items.push({ label: 'Copy file name', icon: 'copy', onSelect: () => void copyText(attachment.name) })
   if (message.fromMe && capabilities.unsend) {
     items.push({ kind: 'separator' })

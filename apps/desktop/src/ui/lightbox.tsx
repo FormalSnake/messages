@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useWindowSize } from '@gpuix/react'
-import { conversationMessages, formatBytes, openExternal, type Attachment, type Message } from '@messages/core'
+import { conversationMessages, copyFile, formatBytes, openExternal, type Attachment, type Message } from '@messages/core'
 import { C, RADIUS, S, TYPE } from './theme'
 import { IconButton } from './primitives'
-import { useShell, type LightboxTarget } from './context'
+import { primaryModifier, useShell, type LightboxTarget } from './context'
 import { useAppState } from './use-app-state'
 import { DURATION, Fade } from './motion'
 
@@ -34,8 +34,18 @@ export function Lightbox({ target, open = true }: { target: LightboxTarget; open
   const index = images.findIndex((item) => item.attachment.guid === current)
   const entry = index >= 0 ? images[index] : undefined
   const [failed, setFailed] = useState(false)
+  const [copied, setCopied] = useState(false)
 
-  useEffect(() => setFailed(false), [current])
+  useEffect(() => {
+    setFailed(false)
+    setCopied(false)
+  }, [current])
+
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(timer)
+  }, [copied])
 
   useEffect(() => {
     if (!entry || entry.attachment.localPath) return
@@ -51,6 +61,10 @@ export function Lightbox({ target, open = true }: { target: LightboxTarget; open
   }
 
   const src = entry?.attachment.localPath
+  const copy = () => {
+    if (!src || !entry) return
+    void copyFile(src, entry.attachment.mime).then(() => setCopied(true))
+  }
   const availableW = Math.max(120, width - MARGIN * 2)
   const availableH = Math.max(120, height - MARGIN * 2 - CAPTION_HEIGHT - S.x2)
   const attachment = entry?.attachment
@@ -71,6 +85,7 @@ export function Lightbox({ target, open = true }: { target: LightboxTarget; open
           tabIndex={-1}
           onKeyDown={(event) => {
             if (event.key === 'escape') shell.closeLightbox()
+            else if (event.key === 'c' && primaryModifier(event.modifiers)) copy()
             else if (event.key === 'left' || event.key === 'k') step(-1)
             else if (event.key === 'right' || event.key === 'j') step(1)
           }}
@@ -87,23 +102,10 @@ export function Lightbox({ target, open = true }: { target: LightboxTarget; open
         >
           <div style={{ position: 'absolute', top: 20, right: 20, display: 'flex', flexDirection: 'row', alignItems: 'center', gap: S.x2 }}>
             {src ? (
-              <div
-                testId="lightbox-open"
-                onClick={() => openExternal(src)}
-                style={{
-                  height: 28,
-                  paddingLeft: S.x3,
-                  paddingRight: S.x3,
-                  borderRadius: RADIUS.control,
-                  display: 'flex',
-                  alignItems: 'center',
-                  backgroundColor: '#ffffff1f',
-                  cursor: 'pointer',
-                  hover: { backgroundColor: '#ffffff33' },
-                }}
-              >
-                <text style={{ ...TYPE.body, fontWeight: 600, color: '#ffffff' }}>Open</text>
-              </div>
+              <>
+                <LightboxButton testId="lightbox-copy" label={copied ? 'Copied' : 'Copy'} onClick={copy} />
+                <LightboxButton testId="lightbox-open" label="Open" onClick={() => openExternal(src)} />
+              </>
             ) : null}
             <IconButton testId="lightbox-close" icon="close" label="Close" onClick={shell.closeLightbox} color="#ffffff" hit={28} />
           </div>
@@ -126,5 +128,27 @@ export function Lightbox({ target, open = true }: { target: LightboxTarget; open
         </div>
       </Fade>
     </anchored>
+  )
+}
+
+function LightboxButton({ label, onClick, testId }: { label: string; onClick: () => void; testId: string }) {
+  return (
+    <div
+      testId={testId}
+      onClick={onClick}
+      style={{
+        height: 28,
+        paddingLeft: S.x3,
+        paddingRight: S.x3,
+        borderRadius: RADIUS.control,
+        display: 'flex',
+        alignItems: 'center',
+        backgroundColor: '#ffffff1f',
+        cursor: 'pointer',
+        hover: { backgroundColor: '#ffffff33' },
+      }}
+    >
+      <text style={{ ...TYPE.body, fontWeight: 600, color: '#ffffff' }}>{label}</text>
+    </div>
   )
 }
