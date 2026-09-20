@@ -1,3 +1,5 @@
+import { powershell } from './windows'
+
 export interface PickFilesOptions {
   title?: string
   multiple?: boolean
@@ -5,6 +7,7 @@ export interface PickFilesOptions {
 
 /** Opens a native file picker and resolves to the chosen paths, or [] on cancel. */
 export async function pickFiles(options: PickFilesOptions = {}): Promise<string[]> {
+  if (process.platform === 'win32') return pickFilesWindows(options)
   if (Bun.which('gdbus')) return pickFilesLinux(options)
   if (Bun.which('osascript')) return pickFilesMac(options)
   throw new Error('No file picker available')
@@ -123,6 +126,18 @@ return thePaths as text`
   } catch {
     return []
   }
+}
+
+async function pickFilesWindows(options: PickFilesOptions): Promise<string[]> {
+  const out = await powershell(
+    `Add-Type -AssemblyName System.Windows.Forms
+$dialog = New-Object Windows.Forms.OpenFileDialog
+$dialog.Title = $env:MESSAGES_TITLE
+$dialog.Multiselect = $env:MESSAGES_MULTIPLE -eq '1'
+if ($dialog.ShowDialog() -eq 'OK') { $dialog.FileNames }`,
+    { MESSAGES_TITLE: options.title ?? 'Choose a file', MESSAGES_MULTIPLE: options.multiple ? '1' : '0' },
+  )
+  return (out ?? '').split(/\r?\n/).map(line => line.trim()).filter(Boolean)
 }
 
 function escapeAppleScriptString(value: string): string {

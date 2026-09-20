@@ -1,6 +1,11 @@
-/** Hand a URL or file to the desktop: xdg-open on Linux, open on macOS. */
+/**
+ * Hand a URL or file to the desktop: xdg-open on Linux, open on macOS, the
+ * shell's protocol handler on Windows (`cmd /c start` would split a URL at
+ * its first `&`).
+ */
 export function openExternal(target: string): void {
-  const command = process.platform === 'darwin' ? ['open', target] : ['xdg-open', target]
+  const command =
+    process.platform === 'darwin' ? ['open', target] : process.platform === 'win32' ? ['rundll32', 'url.dll,FileProtocolHandler', target] : ['xdg-open', target]
   try {
     Bun.spawn(command, { stdout: 'ignore', stderr: 'ignore' })
   } catch (error) {

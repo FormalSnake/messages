@@ -4,6 +4,7 @@ import path from 'node:path'
 import { decode as decodeJpeg } from 'jpeg-js'
 import { PNG } from 'pngjs'
 import { attachmentsDir } from './config'
+import { powershell } from './windows'
 
 /**
  * Parses a `text/uri-list` payload into local file paths, decoding
@@ -83,9 +84,23 @@ async function macClipboardAttachments(): Promise<string[]> {
   return (await Bun.file(target).exists()) ? [target] : []
 }
 
+async function windowsClipboardAttachments(): Promise<string[]> {
+  const out = await powershell(
+    `Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+if ([Windows.Forms.Clipboard]::ContainsFileDropList()) { [Windows.Forms.Clipboard]::GetFileDropList() }
+elseif ([Windows.Forms.Clipboard]::ContainsImage()) {
+  [Windows.Forms.Clipboard]::GetImage().Save($env:MESSAGES_TARGET, [Drawing.Imaging.ImageFormat]::Png)
+  $env:MESSAGES_TARGET
+}`,
+    { MESSAGES_TARGET: path.join(attachmentsDir, `paste-${Date.now()}.png`) },
+  )
+  return (out ?? '').split(/\r?\n/).map(line => line.trim()).filter(line => line && existsSync(line))
+}
+
 /** Saves whatever the clipboard holds, files or an image, into the attachment cache and returns local paths. Empty when the clipboard holds only text. */
 export async function clipboardAttachments(): Promise<string[]> {
   try {
+    if (process.platform === 'win32') return await windowsClipboardAttachments()
     return process.platform === 'darwin' ? await macClipboardAttachments() : await linuxClipboardAttachments()
   } catch {
     return []
@@ -99,6 +114,11 @@ export async function clipboardImage(): Promise<string | null> {
 }
 
 export async function copyText(text: string): Promise<void> {
+  if (process.platform === 'win32') {
+    // clip.exe reads its stdin in the OEM code page and mangles anything outside it.
+    if ((await powershell('Set-Clipboard -Value $env:MESSAGES_TEXT', { MESSAGES_TEXT: text })) === null) console.error('clipboard: Set-Clipboard failed')
+    return
+  }
   const command = process.platform === 'darwin' ? ['pbcopy'] : process.env.WAYLAND_DISPLAY ? ['wl-copy'] : ['xclip', '-selection', 'clipboard']
   try {
     const child = Bun.spawn(command, { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' })
@@ -153,10 +173,25 @@ pb.writeObjects(items)
   await child.exited
 }
 
+/** Same pairing as macOS: the bitmap for whatever pastes pictures, the file drop for Explorer. */
+async function windowsCopyFile(source: string, mime: string): Promise<void> {
+  await powershell(
+    `Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$data = New-Object Windows.Forms.DataObject
+if ($env:MESSAGES_IMAGE -eq '1') { try { $data.SetImage([Drawing.Image]::FromFile($env:MESSAGES_SOURCE)) } catch {} }
+$files = New-Object Collections.Specialized.StringCollection
+[void]$files.Add($env:MESSAGES_SOURCE)
+$data.SetFileDropList($files)
+[Windows.Forms.Clipboard]::SetDataObject($data, $true)`,
+    { MESSAGES_SOURCE: source, MESSAGES_IMAGE: mime.startsWith('image/') ? '1' : '0' },
+  )
+}
+
 /** Puts a file from the attachment cache on the clipboard: an image as an image, anything else as a file. */
 export async function copyFile(source: string, mime = ''): Promise<void> {
   try {
     if (process.platform === 'darwin') await macCopyFile(source, mime)
+    else if (process.platform === 'win32') await windowsCopyFile(source, mime)
     else await linuxCopyFile(source, mime)
   } catch (error) {
     console.error(`clipboard: ${String(error)}`)

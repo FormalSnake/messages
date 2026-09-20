@@ -1,3 +1,4 @@
+import { powershell } from './windows'
 import { chatTitle, handleName, tapbackGlyph, type Chat, type Message } from './model'
 
 export interface NotifyOptions {
@@ -33,9 +34,24 @@ function body(chat: Chat, message: Message, target?: Message): string | null {
 }
 
 /**
+ * A toast needs an AppUserModelID Windows knows about, or it is dropped
+ * without an error. The registry key is enough (no Start Menu shortcut
+ * needed), so the script writes it before every toast.
+ */
+const WINDOWS_TOAST = `$key = 'HKCU:\\Software\\Classes\\AppUserModelId\\Messages'
+if (-not (Test-Path $key)) { New-Item $key -Force | Out-Null; Set-ItemProperty $key DisplayName 'Messages' }
+[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+[void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$lines = $xml.GetElementsByTagName('text')
+[void]$lines.Item(0).AppendChild($xml.CreateTextNode($env:MESSAGES_TITLE))
+[void]$lines.Item(1).AppendChild($xml.CreateTextNode($env:MESSAGES_TEXT))
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Messages').Show([Windows.UI.Notifications.ToastNotification]::new($xml))`
+
+/**
  * Desktop notification: notify-send on Linux (with an Open action when the
- * daemon supports it), osascript on macOS. Resolves to 'open' when the person
- * clicked the action. Failures are logged, never thrown.
+ * daemon supports it), osascript on macOS, a toast on Windows. Resolves to
+ * 'open' when the person clicked the action. Failures are logged, never thrown.
  */
 export async function notifyIncoming(chat: Chat, message: Message, options: NotifyOptions = {}): Promise<NotifyAction> {
   const title = chatTitle(chat)
@@ -45,6 +61,10 @@ export async function notifyIncoming(chat: Chat, message: Message, options: Noti
     if (process.platform === 'darwin') {
       const script = `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
       await Bun.spawn(['osascript', '-e', script], { stdout: 'ignore', stderr: 'ignore' }).exited
+      return null
+    }
+    if (process.platform === 'win32') {
+      if ((await powershell(WINDOWS_TOAST, { MESSAGES_TITLE: title, MESSAGES_TEXT: text })) === null) console.error('notify: toast failed')
       return null
     }
     const args = ['notify-send', '--app-name=Messages', '--category=im.received', '--action=open=Open']
