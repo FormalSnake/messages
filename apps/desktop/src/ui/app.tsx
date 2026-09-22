@@ -212,8 +212,7 @@ function Workspace({
   const assistantLanguage = useMemo(() => defaultTranslateLanguage(config.canaryllm?.language), [config.canaryllm?.language])
   const pendingJump = useRef<{ chatGuid: string; messageGuid: string } | null>(null)
   const selected = state.chats.find((chat) => chat.guid === state.selectedChat) ?? null
-  const roomy = infoOpen ? COMPACT_SIDEBAR_MAX_WIDTH + INFO_WIDTH : COMPACT_SIDEBAR_MAX_WIDTH
-  const sidebarWidth = width > 0 && width < roomy ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
+  const sidebarWidth = width > 0 && width < COMPACT_SIDEBAR_MAX_WIDTH ? SIDEBAR_WIDTH_COMPACT : SIDEBAR_WIDTH
 
   useEffect(() => {
     if (!state.error || settingsOpen) return

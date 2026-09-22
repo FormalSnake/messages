@@ -541,7 +541,7 @@ export function InfoPanel({ chat }: { chat: Chat }) {
       {/* A div with overflow takes scrollTo but never the wheel, so the panel
           sat still. The sidebar already scrolls through a list. */}
       <virtual-list estimatedItemHeight={72} overdraw={600} style={{ flexGrow: 1, minHeight: 0, width: '100%' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: S.x2, paddingTop: S.x1, paddingBottom: S.x5, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', gap: S.x2, paddingTop: S.x1, paddingBottom: S.x5, paddingLeft: S.x4, paddingRight: S.x4, flexShrink: 0 }}>
           <Avatar chat={chat} size={72} />
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
             <text style={{ ...TYPE.large, fontSize: 17, lineHeight: 22, color: C.text, textAlign: 'center' }}>{chatTitle(chat)}</text>
