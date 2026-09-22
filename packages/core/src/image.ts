@@ -142,6 +142,29 @@ export function imageSizeFromBytes(bytes: Uint8Array): ImageSize | null {
   return null
 }
 
+const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1'])
+
+/** An ISO base media file whose major brand is one of the HEIF family. */
+export function isHeif(bytes: Uint8Array): boolean {
+  return bytes.length >= 12 && ascii(bytes, 4, 4) === 'ftyp' && HEIF_BRANDS.has(ascii(bytes, 8, 4))
+}
+
+/**
+ * Decodes a HEIF still to PNG with ffmpeg. A sticker's transparency travels
+ * as a second, grey video stream, so that is merged in as the alpha plane
+ * first; a file without one falls back to a plain decode. False when ffmpeg
+ * is missing or both runs fail.
+ */
+export async function heifToPng(source: string, target: string): Promise<boolean> {
+  if (!Bun.which('ffmpeg')) return false
+  const attempts = [['-filter_complex', '[0:v:0][0:v:1]alphamerge'], []]
+  for (const filter of attempts) {
+    const proc = Bun.spawn(['ffmpeg', '-y', '-v', 'error', '-i', source, ...filter, '-frames:v', '1', target], { stdout: 'ignore', stderr: 'ignore' })
+    if ((await proc.exited) === 0 && (await Bun.file(target).exists())) return true
+  }
+  return false
+}
+
 /** Size of a local image file or a `data:` URL, or null when the format is not recognised. */
 export async function imageSize(source: string): Promise<ImageSize | null> {
   try {

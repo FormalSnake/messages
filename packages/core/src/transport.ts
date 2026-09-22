@@ -87,7 +87,7 @@ export interface Transport {
   sendText(chatGuid: string, text: string, options?: SendTextOptions): Promise<Message>
   sendAttachment(chatGuid: string, path: string, options?: SendAttachmentOptions): Promise<Message>
   /** Downloads into the attachment cache when needed and returns the local path. */
-  attachmentPath(attachmentGuid: string, options?: { name?: string; mime?: string }): Promise<string>
+  attachmentPath(attachmentGuid: string, options?: { name?: string; mime?: string; sticker?: boolean }): Promise<string>
 
   createChat(addresses: string[], firstMessage: string, service?: Service): Promise<Chat>
   markRead(chatGuid: string): Promise<void>

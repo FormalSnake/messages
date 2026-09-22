@@ -553,16 +553,22 @@ const CONVERTIBLE_IMAGE_EXT = new Set(['.heic', '.heif', '.tif', '.tiff'])
  * everything else comes back byte-identical either way. Request the
  * conversion for those two so the client gets a format it can actually
  * render/play, and request the original for everything else.
+ *
+ * A sticker is the exception: iOS 17 stickers are HEIC with an alpha plane,
+ * and sips flattens that onto black, so the client fetches the original and
+ * converts it itself (`heifToPng`). The cache entry is `.png` whatever the
+ * bytes turn out to be; every reader sniffs the format from the header.
  */
-export function downloadPlan(name?: string, mime?: string): { original: boolean; extension: string } {
+export function downloadPlan(name?: string, mime?: string, options: { sticker?: boolean } = {}): { original: boolean; extension: string; sticker: boolean } {
+  if (options.sticker) return { original: true, extension: '.png', sticker: true }
   const ext = name ? extname(name).toLowerCase() : ''
   const isHeicHeifTiff = CONVERTIBLE_IMAGE_EXT.has(ext)
   const isCafAudio = mime === 'audio/x-caf' || ext === '.caf'
   const isImage = mime?.startsWith('image/') ?? false
 
-  if (isHeicHeifTiff) return { original: false, extension: '.jpg' }
-  if (isCafAudio) return { original: false, extension: '.m4a' }
-  return { original: !isImage, extension: ext }
+  if (isHeicHeifTiff) return { original: false, extension: '.jpg', sticker: false }
+  if (isCafAudio) return { original: false, extension: '.m4a', sticker: false }
+  return { original: !isImage, extension: ext, sticker: false }
 }
 
 export function toHandle(raw: RawHandle, contacts?: ContactIndex): Handle {

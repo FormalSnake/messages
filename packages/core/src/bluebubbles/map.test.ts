@@ -471,23 +471,27 @@ describe('chat and message service resolution', () => {
 
 describe('downloadPlan', () => {
   test('requests a converted jpeg for a HEIC attachment', () => {
-    expect(downloadPlan('IMG_0001.HEIC', 'image/heic')).toEqual({ original: false, extension: '.jpg' })
+    expect(downloadPlan('IMG_0001.HEIC', 'image/heic')).toEqual({ original: false, extension: '.jpg', sticker: false })
   })
 
   test('requests a converted m4a for a CAF audio attachment', () => {
-    expect(downloadPlan('Audio Message.caf', 'audio/x-caf')).toEqual({ original: false, extension: '.m4a' })
+    expect(downloadPlan('Audio Message.caf', 'audio/x-caf')).toEqual({ original: false, extension: '.m4a', sticker: false })
   })
 
   test('keeps a plain png as-is', () => {
-    expect(downloadPlan('photo.png', 'image/png')).toEqual({ original: false, extension: '.png' })
+    expect(downloadPlan('photo.png', 'image/png')).toEqual({ original: false, extension: '.png', sticker: false })
   })
 
   test('requests the original for a video attachment', () => {
-    expect(downloadPlan('clip.mp4', 'video/mp4')).toEqual({ original: true, extension: '.mp4' })
+    expect(downloadPlan('clip.mp4', 'video/mp4')).toEqual({ original: true, extension: '.mp4', sticker: false })
+  })
+
+  test('fetches the original of a sticker and caches it as png', () => {
+    expect(downloadPlan('08D7E2F1.heic.jpeg', 'image/jpeg', { sticker: true })).toEqual({ original: true, extension: '.png', sticker: true })
   })
 
   test('handles an attachment with no name or mime', () => {
-    expect(downloadPlan(undefined, undefined)).toEqual({ original: true, extension: '' })
+    expect(downloadPlan(undefined, undefined)).toEqual({ original: true, extension: '', sticker: false })
   })
 })
 

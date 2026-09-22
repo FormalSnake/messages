@@ -404,13 +404,13 @@ const GalleryThumbnail = memo(function GalleryThumbnail({ attachment, message }:
     if (!src) return
     let cancelled = false
     setThumb(null)
-    void generateTile(src, attachment.guid, 1, GALLERY_TILE).then((path) => {
+    void generateTile(src, 1, GALLERY_TILE).then((path) => {
       if (!cancelled) setThumb(path ?? src)
     })
     return () => {
       cancelled = true
     }
-  }, [src, attachment.guid])
+  }, [src])
   return (
     <div
       testId={`gallery-photo-${attachment.guid}`}

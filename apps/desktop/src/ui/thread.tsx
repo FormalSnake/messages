@@ -27,6 +27,7 @@ import { Icon } from './icons'
 import { Avatar } from './primitives'
 import { useShell, type MenuItem } from './context'
 import { DURATION, EASE_IN_OUT, EASE_OUT } from './motion'
+import { GifWindow } from './gif'
 
 type Position = 'single' | 'first' | 'middle' | 'last'
 
@@ -657,6 +658,8 @@ export function Thread({ chat }: { chat: Chat }) {
   const translateControllers = useRef(new Map<string, AbortController>())
   const { renderer } = useGpuix()
   const listRef = useRef<PublicInstance | null>(null)
+  // The rows the list is painting, so only the GIFs among them keep stepping.
+  const [painted, setPainted] = useState<[number, number]>([0, Number.MAX_SAFE_INTEGER])
   const pendingJump = useRef<string | null>(null)
   const requested = useRef(false)
   const online = state.status === 'online'
@@ -832,6 +835,9 @@ export function Thread({ chat }: { chat: Chat }) {
         estimatedItemHeight={44}
         overdraw={700}
         onVisibleRange={(event) => {
+          const start = event.startIndex ?? 0
+          const end = event.endIndex ?? start
+          setPainted((current) => (current[0] === start && current[1] === end ? current : [start, end]))
           if ((event.startIndex ?? 99) > 3 || requested.current) return
           if (!conversationHasOlder(state, chat.guid) || conversationLoading(state, chat.guid)) return
           requested.current = true
@@ -839,7 +845,7 @@ export function Thread({ chat }: { chat: Chat }) {
         }}
         style={{ flexGrow: 1, minHeight: 0, width: '100%', paddingBottom: S.x2 }}
       >
-        {rows.map((row) => {
+        {rows.map((row, index) => {
           switch (row.kind) {
             case 'separator':
               return <Caption key={row.key}>{row.label}</Caption>
@@ -859,25 +865,26 @@ export function Thread({ chat }: { chat: Chat }) {
               return <TypingRow key={row.key} chat={chat} />
             case 'message':
               return (
-                <MessageRow
-                  key={row.key}
-                  message={row.message}
-                  chat={chat}
-                  position={row.position}
-                  showSender={row.showSender}
-                  receipt={row.receipt}
-                  notify={row.notify}
-                  capabilities={state.capabilities}
-                  original={row.showQuote && row.message.replyTo ? byGuid.get(row.message.replyTo) : undefined}
-                  showQuote={row.showQuote}
-                  entering={row.message.date > openedAt - ENTER_SLACK_MS}
-                  highlighted={highlight === row.message.guid}
-                  replyCount={replyCounts.get(row.message.guid) ?? 0}
-                  translation={translations[row.message.guid]}
-                  onJump={jumpTo}
-                  onOpenThread={setThreadFor}
-                  onToggleTranslate={toggleTranslate}
-                />
+                <GifWindow.Provider key={row.key} value={index >= painted[0] && index <= painted[1]}>
+                  <MessageRow
+                    message={row.message}
+                    chat={chat}
+                    position={row.position}
+                    showSender={row.showSender}
+                    receipt={row.receipt}
+                    notify={row.notify}
+                    capabilities={state.capabilities}
+                    original={row.showQuote && row.message.replyTo ? byGuid.get(row.message.replyTo) : undefined}
+                    showQuote={row.showQuote}
+                    entering={row.message.date > openedAt - ENTER_SLACK_MS}
+                    highlighted={highlight === row.message.guid}
+                    replyCount={replyCounts.get(row.message.guid) ?? 0}
+                    translation={translations[row.message.guid]}
+                    onJump={jumpTo}
+                    onOpenThread={setThreadFor}
+                    onToggleTranslate={toggleTranslate}
+                  />
+                </GifWindow.Provider>
               )
           }
         })}

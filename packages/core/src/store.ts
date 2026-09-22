@@ -1554,9 +1554,8 @@ export class MessagesStore {
   }
 
   async attachmentSrc(chatGuid: string, messageGuid: string, attachmentGuid: string, name: string, mime?: string): Promise<string> {
-    const local = await this.transport.attachmentPath(attachmentGuid, { name, mime })
-    const target = this.findMessage(chatGuid, messageGuid)
-    const current = target?.attachments.find((item) => item.guid === attachmentGuid)
+    const current = this.findMessage(chatGuid, messageGuid)?.attachments.find((item) => item.guid === attachmentGuid)
+    const local = await this.transport.attachmentPath(attachmentGuid, { name, mime, sticker: current?.isSticker })
     // chat.db often has no pixel size for an attachment, and the one the server
     // reports ignores EXIF orientation, so a portrait photo arrives as a
     // landscape box. The file header settles both.

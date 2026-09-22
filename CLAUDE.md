@@ -220,6 +220,15 @@ server cannot do instead of failing on click.
   `useLeaving`, `Fade` and `Reveal`, which keep a closing element mounted
   long enough to animate out. A panel slides by animating a clipping box
   around content of fixed width, so nothing inside reflows mid-slide.
+- An animated `<img>` makes GPUI request a new frame on every paint while
+  the window is active, and gpuix rebuilds and re-lays out the whole tree
+  for each one, so one GIF in the thread ran the app at the display's
+  refresh rate (a 90% core on the e1504g). GIFs are therefore never handed
+  to the renderer animated: `src/ui/gif.ts` splits them into PNG frames with
+  ffmpeg (`<file>.frames/`, delays from ffprobe, sub-20ms delays clamped to
+  100ms like a browser) and `useGif` steps the `src` from one clock per file,
+  so the window repaints only when the GIF changes and every copy of a
+  spammed GIF moves in unison. The lightbox still shows the GIF itself.
 - A content mask is a rectangle. An image inside a box with `overflow: hidden`
   and a corner radius is cut to the box but keeps its square corners, so the
   tail lobe under a photo came out as a square nub. Only the element that
@@ -234,7 +243,18 @@ server cannot do instead of failing on click.
   slow per message. Ask for 10 at a time; a request for 150 hung the server
   for two minutes.
 - Attachments: download without `original=true` so HEIC becomes JPEG and CAF
-  audio becomes AAC (labelled mp3). See `downloadPlan` in `map.ts`.
+  audio becomes AAC (labelled mp3). See `downloadPlan` in `map.ts`. Stickers
+  are the exception: an iOS 17 sticker is HEIC with an alpha plane and the
+  server's sips conversion flattens it onto black, so the client fetches the
+  original and runs it through ffmpeg (`heifToPng`, alphamerge of the second
+  video stream), caching the result as `<guid>.png`.
+- Every cache entry is a symlink to a file named by its SHA-1
+  (`shareByContent` in `dedupe.ts`), and `attachmentPath` hands back that
+  shared path. GPUI keys decoded images on the path string, so the same GIF
+  sent forty times is one decode and one set of textures instead of forty;
+  previews, tiles and tail cuts key on the file name for the same reason.
+  `cachedFile` follows only the link itself, never the directories above it,
+  because `realpath` would spell the same file two ways on macOS.
 - The attachment `width`/`height` the server reports ignore EXIF
   orientation, so a portrait iPhone photo arrives as a landscape box and the
   renderer, which does turn the pixels upright, paints past it into the next

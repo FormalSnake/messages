@@ -7,7 +7,8 @@ import playSource from 'lucide-static/icons/play.svg' with { type: 'text' }
 import stopSource from 'lucide-static/icons/square.svg' with { type: 'text' }
 import { BUBBLE_MAX_WIDTH, C, FONT_EMOJI, RADIUS, S, TYPE } from './theme'
 import { Icon } from './icons'
-import { once, slots } from './limit'
+import { ffmpegOnce, ffmpegSlot } from './ffmpeg'
+import { GifPreload, useGif } from './gif'
 import { useShell } from './context'
 
 export const AUTO_DOWNLOAD_BYTES = 25 * 1024 * 1024
@@ -31,14 +32,6 @@ const LONG_TOKEN = /\S{33,}/g
 const GRID_GAP = 2
 const GRID_MAX_TILES = 4
 const TILE_SIDE = 512
-/**
- * ffmpeg runs at once. Every one of them decodes a full photo, and a screen
- * of pictures asks for its cuts all at the same moment; on a four watt laptop
- * that took every core and left nothing to paint with.
- */
-const ffmpegSlot = slots(2)
-/** One run per output file, however many components are waiting on it. */
-const ffmpegOnce = once<string | null>()
 /** The tail lobe, the same size whether it is filled with a colour or with the picture's corner. */
 const TAIL_WIDTH = 14
 const TAIL_HEIGHT = 16
@@ -96,24 +89,30 @@ export function ImageAttachment({ attachment, message, fromMe, maxWidth, tail }:
     if (!src || !oversized) return
     let cancelled = false
     setPreview(null)
-    void generatePreview(src, attachment.guid).then((path) => {
+    void generatePreview(src).then((path) => {
       if (!cancelled) setPreview(path ?? src)
     })
     return () => {
       cancelled = true
     }
-  }, [src, oversized, attachment.guid])
+  }, [src, oversized])
   // Nothing is painted until the scaled copy is settled: one frame holding the
   // original is enough to pay for its full-size texture.
-  const shown = oversized ? preview : src
+  const still = oversized ? preview : src
+  // A GIF is stepped from here, frame by frame, rather than left to the
+  // renderer, which would repaint the whole window at the refresh rate for it.
+  // The tail keeps the file itself: its corner cut is a still either way.
+  const gif = useGif(still ?? undefined, attachment.mime === 'image/gif')
+  const shown = gif.src
   if (src) {
     return (
-      <TailBox fromMe={fromMe} picture={tail && shown ? shown : undefined}>
+      <TailBox fromMe={fromMe} picture={tail && still ? still : undefined}>
         <div
           onClick={() => shell.openLightbox({ chatGuid: message.chatGuid, attachmentGuid: attachment.guid })}
-          style={{ width, height, cursor: 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: C.received }}
+          style={{ width, height, cursor: 'pointer', borderRadius: RADIUS.bubble, overflow: 'hidden', borderWidth: 1, borderColor: '#ffffff1a', backgroundColor: C.received, position: 'relative' }}
         >
           {shown ? <img src={shown} objectFit="contain" style={{ width, height, borderRadius: RADIUS.bubble }} /> : null}
+          <GifPreload paths={gif.preload} />
         </div>
       </TailBox>
     )
@@ -134,14 +133,14 @@ export function ImageAttachment({ attachment, message, fromMe, maxWidth, tail }:
   )
 }
 
-/** `<cache>/<guid>.tile-<aspect>x1-<side>.jpg`: the centre cut of a photo at that aspect, made by ffmpeg the way the video posters are. */
-function tileCachePath(guid: string, aspect: number, side: number): string {
-  return `${attachmentsDir}/${guid}.tile-${aspect}x1-${side}.jpg`
+/** `<cache>/<file>.tile-<aspect>x1-<side>.jpg`: the centre cut of a photo at that aspect, made by ffmpeg the way the video posters are. */
+function tileCachePath(imagePath: string, aspect: number, side: number): string {
+  return `${attachmentsDir}/${imagePath.split('/').pop()}.tile-${aspect}x1-${side}.jpg`
 }
 
-/** `<cache>/<guid>.preview.jpg`: the whole photo at the size a bubble can actually show. */
-function previewCachePath(guid: string): string {
-  return `${attachmentsDir}/${guid}.preview.jpg`
+/** `<cache>/<file>.preview.jpg`: the whole photo at the size a bubble can actually show. Keyed on the file, so copies of one photo share a preview. */
+function previewCachePath(imagePath: string): string {
+  return `${attachmentsDir}/${imagePath.split('/').pop()}.preview.jpg`
 }
 
 /**
@@ -151,9 +150,9 @@ function previewCachePath(guid: string): string {
  * a scaled copy first, the same bargain the grid tiles already make. The
  * min() keeps a small picture at its own size rather than blowing it up.
  */
-async function generatePreview(imagePath: string, guid: string): Promise<string | null> {
+async function generatePreview(imagePath: string): Promise<string | null> {
   if (imagePath.startsWith('data:')) return null
-  const target = previewCachePath(guid)
+  const target = previewCachePath(imagePath)
   if (await Bun.file(target).exists()) return target
   if (!Bun.which('ffmpeg')) return null
   return ffmpegOnce(target, async () => {
@@ -194,9 +193,9 @@ function uprightFilter(orientation: number | null): string {
 }
 
 /** A tile that fills its box exactly, so nothing has to be clipped at paint time. Null without ffmpeg, or for a data URL. */
-export async function generateTile(imagePath: string, guid: string, aspect: number, side = TILE_SIDE): Promise<string | null> {
+export async function generateTile(imagePath: string, aspect: number, side = TILE_SIDE): Promise<string | null> {
   if (imagePath.startsWith('data:')) return null
-  const target = tileCachePath(guid, aspect, side)
+  const target = tileCachePath(imagePath, aspect, side)
   if (await Bun.file(target).exists()) return target
   if (!Bun.which('ffmpeg')) return null
   return ffmpegOnce(target, async () => {
@@ -307,13 +306,13 @@ function PhotoTile({
     if (!src) return
     let cancelled = false
     setTile(null)
-    void generateTile(src, attachment.guid, aspect).then((path) => {
+    void generateTile(src, aspect).then((path) => {
       if (!cancelled) setTile({ path: path ?? src, cut: Boolean(path) })
     })
     return () => {
       cancelled = true
     }
-  }, [src, attachment.guid, aspect])
+  }, [src, aspect])
   // Nothing is painted until the cut is settled: one frame holding the original
   // is enough to pay for a full-size texture.
   const shown = src ? tile?.path : undefined

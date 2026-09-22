@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto'
-import { mkdir, stat } from 'node:fs/promises'
+import { mkdir, rename, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { io, type Socket } from 'socket.io-client'
-import { squareThumbnail } from '../image'
+import { cachedFile, shareByContent } from '../dedupe'
+import { heifToPng, isHeif, squareThumbnail } from '../image'
 import type { Chat, Contact, FocusStatus, Handle, Message, ScheduledMessage, ServerInfo, Service, TapbackKind } from '../model'
 import {
   TransportError,
@@ -302,30 +303,54 @@ export class BlueBubblesTransport implements Transport {
     return this.mapMessage(raw, chatGuid)
   }
 
-  async attachmentPath(attachmentGuid: string, options: { name?: string; mime?: string } = {}): Promise<string> {
-    const { original, extension } = downloadPlan(options.name, options.mime)
+  /**
+   * The local file for an attachment, downloaded on first use. Every entry
+   * ends up as a link to a file named by its content (`shareByContent`), so
+   * the same GIF sent forty times is one file on disk and one decode in the
+   * renderer, and the path handed back is that shared one.
+   */
+  async attachmentPath(attachmentGuid: string, options: { name?: string; mime?: string; sticker?: boolean } = {}): Promise<string> {
+    const { original, extension, sticker } = downloadPlan(options.name, options.mime, { sticker: options.sticker })
     const path = this.attachmentCachePath(attachmentGuid, extension)
-    if (await Bun.file(path).exists()) return path
 
     const pending = this.downloads.get(attachmentGuid)
     if (pending) return pending
 
-    const download = (async () => {
-      const response = await this.download(`/attachment/${encodeURIComponent(attachmentGuid)}/download`, {
-        original,
-      })
-      // Straight to disk: buffering it first put a whole sixty megabyte video
-      // in the heap, and the warm pass fetches these in the background.
-      await Bun.write(path, response)
-      return path
+    const job = (async () => {
+      const existing = await cachedFile(path)
+      if (existing && existing !== path) return existing
+      if (!existing) await this.fetchAttachment(attachmentGuid, path, { original, sticker })
+      return shareByContent(path, extension)
     })()
 
-    this.downloads.set(attachmentGuid, download)
+    this.downloads.set(attachmentGuid, job)
     try {
-      return await download
+      return await job
     } finally {
       this.downloads.delete(attachmentGuid)
     }
+  }
+
+  /**
+   * Straight to disk: buffering it first put a whole sixty megabyte video in
+   * the heap, and the warm pass fetches these in the background. A sticker
+   * comes down as the original HEIC and is decoded here, alpha and all; when
+   * that cannot happen the server's flattened JPEG is taken instead.
+   */
+  private async fetchAttachment(attachmentGuid: string, path: string, plan: { original: boolean; sticker: boolean }): Promise<void> {
+    const route = `/attachment/${encodeURIComponent(attachmentGuid)}/download`
+    const part = `${path}.part`
+    const convert = plan.sticker && Bun.which('ffmpeg') !== null
+    await Bun.write(part, await this.download(route, { original: convert || plan.original }))
+    if (convert) {
+      const head = new Uint8Array(await Bun.file(part).slice(0, 16).arrayBuffer())
+      if (isHeif(head)) {
+        const png = `${part}.png`
+        if (await heifToPng(part, png)) await rename(png, part)
+        else await Bun.write(part, await this.download(route, { original: false }))
+      }
+    }
+    await rename(part, path)
   }
 
   async createChat(addresses: string[], firstMessage: string, service?: Service): Promise<Chat> {
@@ -586,9 +611,9 @@ export class BlueBubblesTransport implements Transport {
     await Promise.all(
       messages.flatMap(message =>
         (message.attachments ?? []).map(async attachment => {
-          const { extension } = downloadPlan(attachment.transferName, attachment.mimeType ?? undefined)
-          const path = this.attachmentCachePath(attachment.guid, extension)
-          if (await Bun.file(path).exists()) paths.set(attachment.guid, path)
+          const { extension } = downloadPlan(attachment.transferName, attachment.mimeType ?? undefined, { sticker: attachment.isSticker })
+          const local = await cachedFile(this.attachmentCachePath(attachment.guid, extension))
+          if (local) paths.set(attachment.guid, local)
         }),
       ),
     )
