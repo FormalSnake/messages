@@ -222,10 +222,14 @@ impl Theme {
         cx.global::<Theme>().palette
     }
 
-    /// `live_theme.rs` calls this after applying a `theme.json` change.
+    /// `live_theme.rs` calls this after applying a `theme.json` change. Swaps
+    /// the palette in place and repaints every open window: a `Global` change
+    /// alone notifies nobody, so without this a theme change would sit in
+    /// memory until something else happened to trigger a render.
     pub(crate) fn set(cx: &mut App, palette: Palette) {
         cx.global_mut::<Theme>().palette = palette;
         sync_component_theme(cx);
+        cx.refresh_windows();
     }
 }
 

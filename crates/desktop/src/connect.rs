@@ -1,7 +1,7 @@
 //! Port of `apps/desktop/src/ui/connect.tsx`: the "Connect to your Mac" screen,
 //! shown when there is no store yet, or overlaid when settings are open.
 
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use messages_core::ServerInfo;
@@ -20,6 +20,7 @@ pub struct ConnectScreen {
     on_connect: std::rc::Rc<dyn Fn(String, String, &mut Window, &mut App)>,
     on_demo: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
     on_close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
+    _subscriptions: [Subscription; 2],
 }
 
 impl ConnectScreen {
@@ -38,6 +39,17 @@ impl ConnectScreen {
         password.update(cx, |state, cx| state.set_value(initial_password, window, cx));
         window.focus(&if had_url { password.focus_handle(cx) } else { url.focus_handle(cx) }, cx);
 
+        // gpui-component's `Input` emits `InputEvent::PressEnter` rather than
+        // a DOM-style submit event; `subscribe_in` is the variant of
+        // `subscribe` that also hands back the `Window` the event needs to
+        // reach `submit` (`connect.tsx`'s onSubmit-on-Enter, ported).
+        let on_press_enter = |this: &mut Self, _: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.submit(window, cx);
+            }
+        };
+        let subscriptions = [cx.subscribe_in(&url, window, on_press_enter), cx.subscribe_in(&password, window, on_press_enter)];
+
         Self {
             url,
             password,
@@ -48,6 +60,7 @@ impl ConnectScreen {
             on_connect: std::rc::Rc::new(on_connect),
             on_demo: std::rc::Rc::new(on_demo),
             on_close: None,
+            _subscriptions: subscriptions,
         }
     }
 

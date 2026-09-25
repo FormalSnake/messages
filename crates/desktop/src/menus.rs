@@ -1,7 +1,7 @@
 //! Port of `apps/desktop/src/ui/menus.tsx`: the `MenuItem` data model other
-//! screens build, and the context menu that renders it. `MenuItem` is the
-//! "MenuItem data screens build" piece D0 owns; D1/D2/D3 construct
-//! `Vec<MenuItem>` for their own rows and call `open_menu`.
+//! screens build, and the `ContextMenu` entity that renders it. `MenuItem` is
+//! the "MenuItem data screens build" piece D0 owns; D1/D2/D3 construct
+//! `Vec<MenuItem>` for their own rows and open a menu through `AppRoot`.
 
 use gpui_kit::component::box_shadow;
 use gpui_kit::component::tooltip::Tooltip;
@@ -10,7 +10,18 @@ use gpui_kit::*;
 use messages_core::TapbackKind;
 
 use crate::icons::{Icon, IconName};
-use crate::theme::{Theme, radius, spacing, type_scale};
+use crate::theme::{Palette, Theme, radius, spacing, type_scale};
+
+/// Port of `context.ts`'s `shortcut()`: a menu hint reads the way the
+/// platform writes it, "⇧⌘U" on macOS, "Ctrl+Shift+U" elsewhere.
+pub fn shortcut(key: &str, shift: bool, alt: bool) -> String {
+    if cfg!(target_os = "macos") {
+        format!("{}{}⌘{}", if shift { "⇧" } else { "" }, if alt { "⌥" } else { "" }, key.to_uppercase())
+    } else {
+        let key = if key.chars().count() == 1 { key.to_uppercase() } else { key.to_owned() };
+        format!("Ctrl+{}{}{}", if shift { "Shift+" } else { "" }, if alt { "Alt+" } else { "" }, key)
+    }
+}
 
 /// Also the Ctrl/Cmd+1..6 keyboard tapback order in app.rs.
 pub const TAPBACK_ORDER: [TapbackKind; 6] =
@@ -32,10 +43,9 @@ pub enum MenuItem {
     Item {
         label: SharedString,
         icon: Option<IconName>,
-        /// `Rc`, not `Box`: `AppRoot` keeps the open `MenuRequest` in its own
-        /// state and re-renders it (by reference) on every notify, so the
-        /// handler has to be cloneable into each render's `'static` click
-        /// closure rather than moved out once.
+        /// `Rc`, not `Box`: `ContextMenu` keeps the request in its own state
+        /// and re-renders it on every notify, so the handler has to be
+        /// cloneable into each render's click/keydown closures.
         on_select: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
         danger: bool,
         disabled: bool,
@@ -86,6 +96,10 @@ impl MenuItem {
             *slot = Some(shortcut.into());
         }
         self
+    }
+
+    fn is_selectable(&self) -> bool {
+        matches!(self, MenuItem::Item { .. })
     }
 }
 
@@ -143,36 +157,126 @@ impl MenuRequest {
     }
 }
 
-/// Renders a `MenuRequest`. The caller keeps `request` in its own state and
-/// re-renders this (by reference) on every notify; `on_close` runs on
-/// Escape, a click outside, or after an item activates.
-pub fn context_menu(request: &MenuRequest, cx: &App, on_close: impl Fn(&mut Window, &mut App) + Clone + 'static) -> impl IntoElement {
-    let pointer_only = request.items.len() == 1 && matches!(request.items[0], MenuItem::Tapbacks { .. });
-    let palette = Theme::get(cx);
-    let close_for_outside = on_close.clone();
-
-    anchored()
-        .position(request.position)
-        .anchor(request.anchor())
-        .snap_to_window_with_margin(spacing::X2)
-        .child(deferred(
-            div()
-                .id("context-menu")
-                .flex()
-                .flex_col()
-                .when(!pointer_only, |el| el.min_w(request.min_width.unwrap_or(px(196.))))
-                .p(spacing::X1)
-                .rounded(if pointer_only { radius::PILL } else { radius::MENU })
-                .bg(palette.overlay)
-                .border_1()
-                .border_color(palette.overlay_border)
-                .shadow(vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))])
-                .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
-                .children(request.items.iter().map(|item| render_item(item, palette, on_close.clone()))),
-        ))
+/// The rendered menu. Port of `ContextMenu` in menus.tsx: focused on open,
+/// Escape closes, Down/Up wrap through the selectable items, Home/End jump to
+/// the ends, Enter/Space activates. TS has no typeahead (menus.tsx has no key
+/// handling beyond those), so none is added here either.
+pub struct ContextMenu {
+    request: MenuRequest,
+    highlighted: Option<usize>,
+    focus_handle: FocusHandle,
+    on_close: std::rc::Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
-fn render_item(item: &MenuItem, palette: crate::theme::Palette, on_close: impl Fn(&mut Window, &mut App) + Clone + 'static) -> AnyElement {
+impl ContextMenu {
+    pub fn open(request: MenuRequest, on_close: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut App) -> Entity<Self> {
+        cx.new(|cx| Self::new(request, on_close, window, cx))
+    }
+
+    fn new(request: MenuRequest, on_close: impl Fn(&mut Window, &mut App) + 'static, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+        Self { request, highlighted: None, focus_handle, on_close: std::rc::Rc::new(on_close) }
+    }
+
+    fn selectable(&self) -> Vec<usize> {
+        self.request.items.iter().enumerate().filter(|(_, item)| item.is_selectable()).map(|(index, _)| index).collect()
+    }
+
+    fn step(&mut self, delta: i32) {
+        let selectable = self.selectable();
+        if selectable.is_empty() {
+            return;
+        }
+        let len = selectable.len() as i32;
+        let current = match self.highlighted.and_then(|h| selectable.iter().position(|&index| index == h)) {
+            Some(position) => position as i32,
+            None => if delta > 0 { -1 } else { 0 },
+        };
+        let next = (current + delta).rem_euclid(len);
+        self.highlighted = Some(selectable[next as usize]);
+    }
+
+    fn jump_start(&mut self) {
+        self.highlighted = self.selectable().first().copied();
+    }
+
+    fn jump_end(&mut self) {
+        self.highlighted = self.selectable().last().copied();
+    }
+
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(MenuItem::Item { on_select, disabled, .. }) = self.request.items.get(index) else { return };
+        if *disabled {
+            return;
+        }
+        let on_select = on_select.clone();
+        let on_close = self.on_close.clone();
+        on_select(window, cx);
+        on_close(window, cx);
+    }
+
+    fn activate_highlighted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(index) = self.highlighted {
+            self.activate(index, window, cx);
+        }
+    }
+}
+
+impl Render for ContextMenu {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pointer_only = self.request.items.len() == 1 && matches!(self.request.items[0], MenuItem::Tapbacks { .. });
+        let palette = Theme::get(cx);
+        let highlighted = self.highlighted;
+        let on_close = self.on_close.clone();
+        let close_for_outside = on_close.clone();
+        let close_for_escape = on_close.clone();
+
+        anchored()
+            .position(self.request.position)
+            .anchor(self.request.anchor())
+            .snap_to_window_with_margin(spacing::X2)
+            .child(deferred(
+                div()
+                    .id("context-menu")
+                    .track_focus(&self.focus_handle)
+                    .flex()
+                    .flex_col()
+                    .when(!pointer_only, |el| el.min_w(self.request.min_width.unwrap_or(px(196.))))
+                    .p(spacing::X1)
+                    .rounded(if pointer_only { radius::PILL } else { radius::MENU })
+                    .bg(palette.overlay)
+                    .border_1()
+                    .border_color(palette.overlay_border)
+                    .shadow(vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))])
+                    .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
+                        "escape" => close_for_escape(window, cx),
+                        "down" => {
+                            this.step(1);
+                            cx.notify();
+                        }
+                        "up" => {
+                            this.step(-1);
+                            cx.notify();
+                        }
+                        "home" => {
+                            this.jump_start();
+                            cx.notify();
+                        }
+                        "end" => {
+                            this.jump_end();
+                            cx.notify();
+                        }
+                        "enter" | "space" => this.activate_highlighted(window, cx),
+                        _ => {}
+                    }))
+                    .children((0..self.request.items.len()).map(|index| render_item(index, &self.request.items[index], palette, highlighted, cx))),
+            ))
+    }
+}
+
+fn render_item(index: usize, item: &MenuItem, palette: Palette, highlighted: Option<usize>, cx: &Context<ContextMenu>) -> AnyElement {
     match item {
         MenuItem::Separator => div().h(px(1.)).bg(palette.separator).mt(spacing::X1).mb(spacing::X1).mx(spacing::X2).into_any_element(),
         MenuItem::Header(label) => div()
@@ -192,12 +296,16 @@ fn render_item(item: &MenuItem, palette: crate::theme::Palette, on_close: impl F
             .child(label.clone())
             .into_any_element(),
         MenuItem::Tapbacks { chat_guid, message_guid, mine, on_select } => {
-            tapback_row(chat_guid.clone(), message_guid.clone(), *mine, on_select.clone(), palette, false, on_close).into_any_element()
+            let on_close = cx.entity().downgrade();
+            tapback_row(chat_guid.clone(), message_guid.clone(), *mine, on_select.clone(), palette, false, move |window, cx| {
+                let _ = on_close.update(cx, |this: &mut ContextMenu, cx| (this.on_close.clone())(window, cx));
+            })
+            .into_any_element()
         }
-        MenuItem::Item { label, icon, on_select, danger, disabled, shortcut } => {
+        MenuItem::Item { label, icon, danger, disabled, shortcut, .. } => {
             let (label, icon, danger, disabled, shortcut) = (label.clone(), *icon, *danger, *disabled, shortcut.clone());
-            let on_select = on_select.clone();
-            let fg = if disabled { palette.secondary } else if danger { palette.danger } else { palette.text };
+            let active = highlighted == Some(index) && !disabled;
+            let fg = if disabled { palette.secondary } else if danger && !active { palette.danger } else if active { palette.on_accent } else { palette.text };
             let id = ElementId::Name(format!("menu-{label}").into());
             div()
                 .id(id)
@@ -208,17 +316,22 @@ fn render_item(item: &MenuItem, palette: crate::theme::Palette, on_close: impl F
                 .h(px(28.))
                 .px(spacing::X2)
                 .rounded(radius::MENU_ITEM)
+                .when(active, |el| el.bg(palette.accent))
                 .when(disabled, |el| el.opacity(0.4))
                 .when(!disabled, |el| {
-                    el.hover(|style| style.bg(palette.accent)).on_click(move |_, window, cx| {
-                        on_select(window, cx);
-                        on_close(window, cx);
-                    })
+                    el.on_click(cx.listener(move |this, _, window, cx| this.activate(index, window, cx))).on_hover(cx.listener(move |this, hovered, _window, cx| {
+                        if *hovered {
+                            this.highlighted = Some(index);
+                        } else if this.highlighted == Some(index) {
+                            this.highlighted = None;
+                        }
+                        cx.notify();
+                    }))
                 })
                 .child(div().w(px(14.)).flex().items_center().justify_center().flex_shrink_0().when_some(icon, |el, icon| el.child(Icon::new(icon).size(px(14.)).color(fg))))
                 .child(div().flex_grow(1.).min_w(px(0.)).text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(fg).child(label))
                 .when_some(shortcut, |el, shortcut| {
-                    el.child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.tertiary).pl(spacing::X3).child(shortcut))
+                    el.child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(if active { palette.on_accent_soft } else { palette.tertiary }).pl(spacing::X3).child(shortcut))
                 })
                 .into_any_element()
         }
@@ -230,7 +343,7 @@ fn tapback_row(
     message_guid: String,
     mine: Option<TapbackKind>,
     on_select: std::rc::Rc<dyn Fn(TapbackKind, &mut Window, &mut App)>,
-    palette: crate::theme::Palette,
+    palette: Palette,
     bare: bool,
     on_close: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
@@ -265,7 +378,7 @@ fn tapback_row(
                     on_select(kind, window, cx);
                     on_close(window, cx);
                 })
-                .tooltip(move |window, cx| Tooltip::new(format!("{}  {}", tapback_label(kind), index + 1)).build(window, cx))
+                .tooltip(move |window, cx| Tooltip::new(format!("{}  {}", tapback_label(kind), shortcut(&(index + 1).to_string(), false, false))).build(window, cx))
                 .child(div().text_size(px(16.)).line_height(px(20.)).text_color(palette.text).child(messages_core::tapback_glyph(kind, None).to_owned()))
         }))
 }

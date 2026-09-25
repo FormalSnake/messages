@@ -57,6 +57,9 @@ fn window_options(cx: &App) -> WindowOptions {
     options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1120.), px(760.)), cx)));
     options.window_min_size = Some(size(px(720.), px(480.)));
     options.app_id = Some(APP_ID.into());
+    // Same name as the TS app's `GPUIX_BACKGROUND` so existing screenshot/test
+    // scripts keep working unchanged.
+    options.focus = std::env::var("GPUIX_BACKGROUND").ok().as_deref() != Some("1");
     options
 }
 
@@ -73,7 +76,7 @@ fn main() {
     // never meant to shut down before the process does.
     let runtime_handle = Box::leak(Box::new(runtime)).handle().clone();
 
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(move |cx| {
         gpui_kit::init(cx);
         app::init(cx);
         theme::Theme::install(cx);
