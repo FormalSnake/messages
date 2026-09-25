@@ -31,7 +31,7 @@
         in
         {
           default = pkgs.mkShell {
-            packages = [ pkgs.bun ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux ([ pkgs.cargo pkgs.rustc pkgs.grim pkgs.wl-clipboard pkgs.libnotify pkgs.pkg-config ] ++ linuxLibs);
+            packages = [ pkgs.bun ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux ([ pkgs.cargo pkgs.rustc pkgs.fontconfig.dev pkgs.grim pkgs.wl-clipboard pkgs.libnotify pkgs.pkg-config ] ++ linuxLibs);
             # `cargo build -p messages` needs pkg-config to find libxkbcommon's and
             # freetype's headers; mkShell's setup hooks pick those up from the
             # packages above automatically once pkg-config is present.
