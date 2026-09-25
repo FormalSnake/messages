@@ -3952,6 +3952,7 @@ dependencies = [
  "fastrand",
  "futures-util",
  "image",
+ "mime_guess",
  "open",
  "parking_lot",
  "percent-encoding",

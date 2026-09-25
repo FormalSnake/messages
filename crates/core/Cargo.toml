@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_json.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
@@ -28,3 +28,7 @@ base64 = "0.22"
 open = "5"
 which = "8"
 fastrand = "2"
+mime_guess = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
