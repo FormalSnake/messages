@@ -106,7 +106,7 @@ impl Render for LocationCard {
             .flex_shrink_0()
             .child(
                 div().relative().w(px(TILE_SIZE)).h(px(TILE_SIZE)).rounded(radius::BUBBLE).overflow_hidden().flex_shrink_0().bg(palette.raised).when_some(self.tile.as_ref(), |el, tile| {
-                    el.child(img(tile.path.to_string_lossy().into_owned()).w(px(TILE_SIZE)).h(px(TILE_SIZE)).object_fit(ObjectFit::Cover)).child(
+                    el.child(img(crate::attachments::image_source(&tile.path)).w(px(TILE_SIZE)).h(px(TILE_SIZE)).object_fit(ObjectFit::Cover)).child(
                         div()
                             .absolute()
                             .left(px(tile.px as f32 - PIN_SIZE / 2.))

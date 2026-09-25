@@ -223,7 +223,7 @@ fn gif_cell(palette: &Palette, item: &Gif, preview: Option<String>, favorited: b
         .justify_center()
         .flex_shrink_0()
         .on_click(cx.listener(move |this, _, window, cx| this.pick(for_pick.clone(), window, cx)))
-        .when_some(preview, |el, preview| el.child(img(preview).w_full().h_full().object_fit(ObjectFit::Contain)))
+        .when_some(preview, |el, preview| el.child(img(crate::attachments::image_source(std::path::Path::new(&preview))).w_full().h_full().object_fit(ObjectFit::Contain)))
         .child(
             div()
                 .id(ElementId::Name(format!("gif-favorite-{}", item.id).into()))

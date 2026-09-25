@@ -522,7 +522,7 @@ impl Render for Composer {
                             )),
                         )
                     })
-                    .child(div().flex_grow(1.).min_w(px(0.)).child(Textarea::new(&self.input).bordered(true).h(px(120.))))
+                    .child(div().flex_grow(1.).min_w(px(0.)).child(Textarea::new(&self.input).bordered(true)))
                     .child(
                         div()
                             .id("send")
@@ -605,7 +605,7 @@ fn staged_chip(palette: &Palette, item: &StagedAttachment, on_remove: impl Fn(&C
         .overflow_hidden()
         .bg(palette.raised)
         .flex_shrink_0()
-        .when(item.is_image, |el| el.child(img(item.path.clone()).w(px(56.)).h(px(56.)).object_fit(ObjectFit::Cover)))
+        .when(item.is_image, |el| el.child(img(crate::attachments::image_source(&item.path)).w(px(56.)).h(px(56.)).object_fit(ObjectFit::Cover)))
         .when(!item.is_image, |el| {
             el.flex().items_center().justify_center().p(spacing::X1).child(
                 div().flex().flex_col().items_center().gap(px(2.)).child(Icon::new(IconName::File).size(px(16.)).color(palette.secondary)).child(
