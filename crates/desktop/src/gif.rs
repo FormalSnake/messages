@@ -97,6 +97,9 @@ fn finish_decode(path: Arc<Path>, image: Option<Arc<RenderImage>>, cx: &mut App)
     let registry = registry(cx);
     let Some(entry) = registry.entries.get_mut(&path) else { return };
     let viewers = std::mem::take(&mut entry.viewers);
+    if crate::trace::enabled() {
+        crate::trace::log(&format!("gif {} decoded: {} frames, {} viewers", path.display(), image.as_ref().map_or(0, |image| image.frame_count()), viewers.len()));
+    }
     match image {
         Some(image) => {
             let count = image.frame_count();
@@ -163,6 +166,7 @@ fn tick(path: Arc<Path>, cx: &mut App) {
     // window went inactive. The clock stops until a paint starts it again.
     if entry.viewers.is_empty() {
         entry.ticking = false;
+        crate::trace::log_if_enabled("gif clock stopped: nothing painted it since the last frame");
         return;
     }
     entry.frame = (entry.frame + 1) % image.frame_count().max(1);

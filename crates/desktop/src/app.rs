@@ -6,21 +6,25 @@
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use messages_core::config::Config;
+use messages_core::notify::{NotifyAction, NotifyOptions, notify_incoming};
 use messages_core::store::Incoming;
+use messages_core::transport::{ConnectionStatus, TransportKind};
 use messages_core::{MessagesStore, StoreOptions};
 
-use crate::bridge::Bridge;
+use crate::bridge::{Bridge, ConfigHandle, Topic};
 use crate::confirm::{ConfirmRequest, confirm_dialog};
 use crate::connect::ConnectScreen;
-use crate::menus::{ContextMenu, MenuRequest};
-use crate::theme::Theme;
-use crate::toast;
-use crate::{composer, details, facetime, header, lightbox, new_chat, sidebar, switcher, thread};
+use crate::icons::{Icon, IconName};
+use crate::menus::{ContextMenu, MenuRequest, shortcut};
+use crate::motion::{DURATION_BASE, DURATION_FAST, DURATION_PANEL, Presence};
+use crate::primitives::{Button, ButtonKind};
+use crate::theme::{INFO_WIDTH, SIDEBAR_WIDTH, SIDEBAR_WIDTH_COMPACT, TITLEBAR_HEIGHT, Theme, spacing, type_scale};
+use crate::{composer, details, facetime, header, motion, new_chat, sidebar, switcher, thread, toast};
 
 const CONTEXT: &str = "App";
 
 actions!(app, [NewChat, OpenSwitcher, FocusSearch, ToggleInfo, OpenSettings, MarkUnread, NextConversation, PrevConversation, Dismiss]);
-actions!(app, [Tapback1, Tapback2, Tapback3, Tapback4, Tapback5, Tapback6]);
+actions!(app, [Tapback1, Tapback2, Tapback3, Tapback4, Tapback5, Tapback6, ToggleFrameOverlay]);
 
 /// Registers key bindings. Call once at startup, before any window opens.
 pub fn init(cx: &mut App) {
@@ -66,6 +70,8 @@ pub fn init(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-up", PrevConversation, Some(CONTEXT)),
         KeyBinding::new("escape", Dismiss, Some(CONTEXT)),
+        #[cfg(feature = "frame-overlay")]
+        KeyBinding::new("f12", ToggleFrameOverlay, Some(CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-1", Tapback1, Some(CONTEXT)),
         #[cfg(not(target_os = "macos"))]
@@ -93,13 +99,35 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+/// The error toast stays up this long, then `clear_error` (app.tsx:217-225).
+const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+
 enum StoreStatus {
+    /// `config.json` has not been read yet.
     Loading,
-    /// No server configured, a bad config, or a core stub that still panics
-    /// (`unimplemented!()`) under C1/C2/C3; the message goes in the connect
-    /// screen's error banner either way.
-    Failed(SharedString),
-    Ready(MessagesStore),
+    /// No server configured and not in demo mode: only the connect screen shows.
+    Unconfigured,
+    Ready { store: MessagesStore, key: String },
+}
+
+/// `connectionKey` in app.tsx: a new key means a new store, anything else
+/// (pins, mutes, notifications) edits the live one.
+fn connection_key(config: &Config) -> Option<String> {
+    if config.demo {
+        return Some("demo".to_owned());
+    }
+    let server = config.server.as_ref()?;
+    Some(format!("{}\u{0}{}\u{0}{}", server.url, server.password, config.agent.as_ref().map(|agent| agent.url.as_str()).unwrap_or("")))
+}
+
+/// Weak handle to the window's root, for screens that open a menu or a
+/// confirm without being handed the root at construction.
+pub struct RootHandle(pub WeakEntity<AppRoot>);
+
+impl Global for RootHandle {}
+
+pub fn root(cx: &App) -> Option<Entity<AppRoot>> {
+    cx.try_global::<RootHandle>().and_then(|handle| handle.0.upgrade())
 }
 
 /// The root view. `apps/desktop/src/ui/app.tsx` splits this into `MessagesApp`
@@ -108,6 +136,7 @@ enum StoreStatus {
 /// down without threading it.
 pub struct AppRoot {
     runtime: tokio::runtime::Handle,
+    window: AnyWindowHandle,
     store: StoreStatus,
     config: Config,
     settings_open: bool,
@@ -115,9 +144,17 @@ pub struct AppRoot {
     new_chat: bool,
     menu: Option<Entity<ContextMenu>>,
     confirm: Option<ConfirmRequest>,
+    confirm_shown: Presence<ConfirmRequest>,
+    focus_confirm: bool,
     confirm_focus: FocusHandle,
     root_focus: FocusHandle,
+    /// The error being shown, and which timer owns its dismissal.
     toast: Option<SharedString>,
+    toast_epoch: u64,
+    toast_shown: Presence<SharedString>,
+    info_shown: Presence<()>,
+    details_open: bool,
+    connect_shown: Presence<()>,
 
     sidebar: Entity<sidebar::Sidebar>,
     header: Entity<header::ConversationHeader>,
@@ -125,63 +162,51 @@ pub struct AppRoot {
     composer: Entity<composer::Composer>,
     details: Entity<details::InfoPanel>,
     facetime: Entity<facetime::FaceTimeBanner>,
-    connect: Entity<ConnectScreen>,
+    connect: Option<Entity<ConnectScreen>>,
     new_chat_view: Option<Entity<new_chat::NewChat>>,
     switcher: Option<Entity<switcher::Switcher>>,
-    lightbox: Option<Entity<lightbox::Lightbox>>,
 }
 
 impl AppRoot {
     pub fn new(runtime: tokio::runtime::Handle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_config(runtime, None, window, cx)
+    }
+
+    /// `config: None` reads `config.json`; the tests hand one in.
+    pub fn with_config(runtime: tokio::runtime::Handle, config: Option<Config>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
+        cx.set_global(RootHandle(weak.clone()));
+        motion::install(cx);
+        #[cfg(feature = "frame-overlay")]
+        match std::env::var("MESSAGES_FRAME_OVERLAY").ok().as_deref() {
+            Some("full") => window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Full),
+            Some("minimal") => window.set_debug_frame_overlay_mode(DebugFrameOverlayMode::Minimal),
+            _ => {}
+        }
+        Bridge::watch(cx, Topic::Error, weak.clone().into());
+        Bridge::watch(cx, Topic::Selection, weak.clone().into());
+        Bridge::watch(cx, Topic::Connection, weak.clone().into());
+        Bridge::watch(cx, Topic::ChatList, weak.clone().into());
+        {
+            let weak = weak.clone();
+            Bridge::on_incoming(cx, move |incoming, cx| {
+                let _ = weak.update(cx, |this, cx| this.notify_incoming(incoming, cx));
+            });
+        }
+
         let sidebar = cx.new(|cx| sidebar::Sidebar::new(window, weak.clone(), cx));
         let header = cx.new(|cx| header::ConversationHeader::new(window, cx));
         let thread = cx.new(|cx| thread::Thread::new(window, cx));
         let composer = cx.new(|cx| composer::Composer::new(window, cx));
         let details = cx.new(|cx| details::InfoPanel::new(window, cx));
         let facetime = cx.new(|cx| facetime::FaceTimeBanner::new(window, cx));
-
-        // `connect.tsx`'s `onConnect`/`onDemo`: persist the choice (so a
-        // relaunch keeps it) and reconnect. Preference edits on a live store
-        // never go through here.
-        let runtime_for_save = runtime.clone();
-        let on_connect = {
-            let weak = weak.clone();
-            let runtime = runtime_for_save.clone();
-            move |url: String, password: String, _window: &mut Window, cx: &mut App| {
-                let server = messages_core::config::ServerConfig { url, password };
-                let to_save = server.clone();
-                runtime.spawn(messages_core::config::save_config(move |config| {
-                    config.server = Some(to_save);
-                    config.demo = false;
-                }));
-                let _ = weak.update(cx, |this, cx| {
-                    this.settings_open = false;
-                    this.config.server = Some(server);
-                    this.config.demo = false;
-                    this.reconnect(cx);
-                });
-            }
-        };
-        let on_demo = {
-            let weak = weak.clone();
-            let runtime = runtime_for_save;
-            move |_window: &mut Window, cx: &mut App| {
-                runtime.spawn(messages_core::config::save_config(|config| config.demo = true));
-                let _ = weak.update(cx, |this, cx| {
-                    this.settings_open = false;
-                    this.config.demo = true;
-                    this.reconnect(cx);
-                });
-            }
-        };
-        let connect = cx.new(|cx| ConnectScreen::new(String::new(), String::new(), on_connect, on_demo, window, cx));
         let confirm_focus = cx.focus_handle();
         let root_focus = cx.focus_handle();
         root_focus.focus(window, cx);
 
         let mut this = Self {
-            runtime: runtime.clone(),
+            runtime,
+            window: window.window_handle(),
             store: StoreStatus::Loading,
             config: Config::default(),
             settings_open: false,
@@ -189,21 +214,34 @@ impl AppRoot {
             new_chat: false,
             menu: None,
             confirm: None,
+            confirm_shown: Presence::new(DURATION_FAST),
+            focus_confirm: false,
             confirm_focus,
             root_focus,
             toast: None,
+            toast_epoch: 0,
+            toast_shown: Presence::new(DURATION_FAST),
+            info_shown: Presence::new(DURATION_PANEL),
+            details_open: false,
+            connect_shown: Presence::new(DURATION_FAST),
             sidebar,
             header,
             thread,
             composer,
             details,
             facetime,
-            connect,
+            connect: None,
             new_chat_view: None,
             switcher: None,
-            lightbox: None,
         };
-        this.load_config_and_connect(cx);
+        match config {
+            Some(config) => this.apply_config(config, cx),
+            None => this.load_config_and_connect(cx),
+        }
+        #[cfg(feature = "screenshot")]
+        if let Ok(out) = std::env::var("MESSAGES_SCREENSHOT") {
+            screenshot(out.into(), window, cx);
+        }
         this
     }
 
@@ -214,53 +252,109 @@ impl AppRoot {
         let task = self.runtime.spawn(messages_core::config::load_config());
         cx.spawn(async move |this, cx| {
             let config = task.await.unwrap_or_default();
-            let _ = this.update(cx, |this, cx| {
-                this.config = config;
-                this.reconnect(cx);
-            });
+            let _ = this.update(cx, |this, cx| this.apply_config(config, cx));
         })
         .detach();
     }
 
-    /// Builds the transport (demo, real, or none) from `self.config` and
-    /// starts the store on the tokio runtime. A fresh connection (demo
-    /// toggled, or a new server saved) calls this again; editing a
-    /// preference on a live store never does.
-    fn reconnect(&mut self, cx: &mut Context<Self>) {
-        self.store = StoreStatus::Loading;
-        let runtime = self.runtime.clone();
-        let config = self.config.clone();
-        let task = self.runtime.spawn(async move { bootstrap(config, runtime).await });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |this, cx| {
-                match result {
-                    Ok(Ok(store)) => {
-                        Bridge::drain(cx, store.clone());
-                        // So the toast wiring in `render` notices a new
-                        // `state.error` without polling for one.
-                        let weak = cx.entity().downgrade();
-                        Bridge::watch(cx, crate::bridge::Topic::Error, weak.into());
-                        this.store = StoreStatus::Ready(store);
-                    }
-                    Ok(Err(message)) => this.store = StoreStatus::Failed(message.into()),
-                    Err(join_error) => this.store = StoreStatus::Failed(format!("core not ready yet: {join_error}").into()),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+    /// Takes a new config. A new connection key builds a new store (and stops
+    /// the old one); the same key only updates what views read from it.
+    pub fn apply_config(&mut self, config: Config, cx: &mut Context<Self>) {
+        cx.set_global(ConfigHandle(config.clone()));
+        // Both read the optional integrations (CanaryLLM, Klipy) from it.
+        self.header.update(cx, |_, cx| cx.notify());
+        self.composer.update(cx, |_, cx| cx.notify());
+        let key = connection_key(&config);
+        self.config = config;
+        let current = match &self.store {
+            StoreStatus::Ready { key, .. } => Some(key.clone()),
+            _ => None,
+        };
+        if key != current || matches!(self.store, StoreStatus::Loading) {
+            self.connect_store(key, cx);
+        }
+        cx.notify();
+    }
+
+    fn connect_store(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        if let StoreStatus::Ready { store, .. } = &self.store {
+            let old = store.clone();
+            self.runtime.spawn(async move { old.stop().await });
+        }
+        let Some(key) = key else {
+            self.store = StoreStatus::Unconfigured;
+            cx.set_global(crate::bridge::StoreHandle(None));
+            return;
+        };
+        let store = {
+            let _guard = self.runtime.enter();
+            build_store(&self.config, self.runtime.clone())
+        };
+        Bridge::drain(cx, store.clone());
+        let starting = store.clone();
+        store.spawn(async move { starting.start().await });
+        self.store = StoreStatus::Ready { store, key };
+        cx.notify();
     }
 
     fn store(&self) -> Option<&MessagesStore> {
         match &self.store {
-            StoreStatus::Ready(store) => Some(store),
+            StoreStatus::Ready { store, .. } => Some(store),
             _ => None,
         }
     }
 
+    /// `onIncoming` in app.tsx: a desktop notification while the window is
+    /// not focused; clicking it selects the conversation (the store folds a
+    /// member chat into its primary) and raises the window.
+    fn notify_incoming(&mut self, incoming: &Incoming, cx: &mut Context<Self>) {
+        if !self.config.notifications {
+            return;
+        }
+        let Some(store) = self.store().cloned() else { return };
+        let window = self.window;
+        if window.update(cx, |_, window, _| window.is_window_active()).unwrap_or(false) {
+            return;
+        }
+        let chat = incoming.chat.clone();
+        let message = incoming.message.clone();
+        let options = NotifyOptions { target: incoming.target.as_deref().cloned(), icon: Some(crate::assets::icon_svg_path()) };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.runtime.spawn(async move {
+            let _ = tx.send(notify_incoming(&chat, &message, options).await);
+        });
+        let chat_guid = incoming.chat.guid.clone();
+        cx.spawn(async move |_, cx| {
+            if let Ok(Some(NotifyAction::Open)) = rx.await {
+                let selecting = store.clone();
+                store.spawn(async move { selecting.select_chat(Some(&chat_guid)).await });
+                let _ = window.update(cx, |_, window, _| window.activate_window());
+            }
+        })
+        .detach();
+    }
+
+    /// Hands focus back to the composer when a chat is open, else the root,
+    /// once an overlay that held it goes away.
+    fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_chat_shown(cx) && !self.new_chat {
+            self.composer.update(cx, |composer, cx| composer.focus(window, cx));
+        } else {
+            self.root_focus.focus(window, cx);
+        }
+    }
+
+    fn selected_chat_shown(&self, _cx: &App) -> bool {
+        self.store().is_some_and(|store| {
+            let state = store.state();
+            state.selected_chat.as_deref().is_some_and(|guid| state.chat(guid).is_some())
+        })
+    }
+
     /// Escape closes the topmost overlay, in this order (app.tsx:316-323).
-    fn on_dismiss(&mut self, _: &Dismiss, _window: &mut Window, cx: &mut Context<Self>) {
+    /// With nothing to close the key goes on to whoever has focus (the
+    /// composer's reply banner, the search field, the lightbox).
+    fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
         } else if self.confirm.take().is_some() {
         } else if self.switcher.take().is_some() {
@@ -268,24 +362,37 @@ impl AppRoot {
             self.new_chat = false;
             self.new_chat_view = None;
         } else if self.info_open {
-            self.info_open = false;
+            self.set_info(false, cx);
         } else if self.settings_open {
             self.settings_open = false;
         } else {
+            cx.propagate();
             return;
         }
+        self.restore_focus(window, cx);
         cx.notify();
     }
 
+    #[cfg(feature = "frame-overlay")]
+    fn on_toggle_frame_overlay(&mut self, _: &ToggleFrameOverlay, window: &mut Window, _cx: &mut Context<Self>) {
+        window.cycle_debug_frame_overlay_mode();
+        window.refresh();
+    }
+
     fn on_new_chat(&mut self, _: &NewChat, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_new_chat(window, cx);
+    }
+
+    pub fn start_new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         self.new_chat = true;
-        self.info_open = false;
+        self.set_info(false, cx);
         let weak = cx.entity().downgrade();
-        let close = move |_window: &mut Window, cx: &mut App| {
+        let close = move |window: &mut Window, cx: &mut App| {
             let _ = weak.update(cx, |this, cx| {
                 this.new_chat = false;
                 this.new_chat_view = None;
+                this.restore_focus(window, cx);
                 cx.notify();
             });
         };
@@ -296,9 +403,10 @@ impl AppRoot {
     fn on_open_switcher(&mut self, _: &OpenSwitcher, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         let weak = cx.entity().downgrade();
-        let close = move |_window: &mut Window, cx: &mut App| {
+        let close = move |window: &mut Window, cx: &mut App| {
             let _ = weak.update(cx, |this, cx| {
                 this.switcher = None;
+                this.restore_focus(window, cx);
                 cx.notify();
             });
         };
@@ -312,7 +420,7 @@ impl AppRoot {
 
     fn on_toggle_info(&mut self, _: &ToggleInfo, _window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
-        self.info_open = !self.info_open;
+        self.set_info(!self.info_open, cx);
         cx.notify();
     }
 
@@ -328,11 +436,11 @@ impl AppRoot {
         store.clone().spawn(async move { store.mark_unread(&guid).await });
     }
 
-    fn on_next_conversation(&mut self, _: &NextConversation, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.step_conversation(1);
+    fn on_next_conversation(&mut self, _: &NextConversation, _window: &mut Window, cx: &mut Context<Self>) {
+        self.step_conversation(1, cx);
     }
-    fn on_prev_conversation(&mut self, _: &PrevConversation, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.step_conversation(-1);
+    fn on_prev_conversation(&mut self, _: &PrevConversation, _window: &mut Window, cx: &mut Context<Self>) {
+        self.step_conversation(-1, cx);
     }
 
     fn on_tapback_1(&mut self, _: &Tapback1, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -379,41 +487,38 @@ impl AppRoot {
 
     /// Cmd/Ctrl+]/[ and their Shift+arrow twins: selects the next or previous
     /// row the sidebar shows, wrapping at either end (app.tsx:282-291).
-    fn step_conversation(&self, delta: i32) {
+    fn step_conversation(&mut self, delta: i32, cx: &mut Context<Self>) {
         let Some(store) = self.store() else { return };
-        let (guid, chats_empty) = {
+        let guid = {
             let state = store.state();
             let chats = messages_core::conversations::conversation_chats(&state);
             if chats.is_empty() {
-                (None, true)
-            } else {
-                let current = state.selected_chat.clone();
-                let index = current.as_deref().and_then(|guid| chats.iter().position(|chat| chat.guid == guid));
-                let next = match index {
-                    Some(index) => ((index as i32 + delta).rem_euclid(chats.len() as i32)) as usize,
-                    None => 0,
-                };
-                (Some(chats[next].guid.clone()), false)
+                return;
             }
+            let current = state.selected_chat.clone();
+            let index = current.as_deref().and_then(|guid| chats.iter().position(|chat| chat.guid == guid));
+            let next = match index {
+                Some(index) => ((index as i32 + delta).rem_euclid(chats.len() as i32)) as usize,
+                None => ((delta.rem_euclid(chats.len() as i32) + chats.len() as i32 - 1) % chats.len() as i32) as usize,
+            };
+            chats[next].guid.clone()
         };
-        if chats_empty {
-            return;
-        }
-        let Some(guid) = guid else { return };
         let store = store.clone();
+        self.new_chat = false;
+        self.new_chat_view = None;
+        cx.notify();
         store.clone().spawn(async move { store.select_chat(Some(&guid)).await });
     }
 
-    /// `Shell::openMenu`/`closeMenu` in context.ts: any screen can call this
-    /// through `bridge`-style plumbing once D1/D2/D3 wire their menus.
+    /// `Shell::openMenu`/`closeMenu` in context.ts.
     pub fn open_menu(this: &Entity<Self>, request: MenuRequest, window: &mut Window, cx: &mut App) {
         let weak = this.downgrade();
         let close = move |window: &mut Window, cx: &mut App| {
             let _ = weak.update(cx, |this, cx| {
                 this.menu = None;
+                this.restore_focus(window, cx);
                 cx.notify();
             });
-            let _ = window;
         };
         let menu = ContextMenu::open(request, close, window, cx);
         let _ = this.update(cx, |this, cx| {
@@ -422,11 +527,19 @@ impl AppRoot {
         });
     }
 
+    /// Which menu is up, so a container can tell whether a child already
+    /// answered the click it is looking at.
+    pub fn menu_id(&self) -> Option<EntityId> {
+        self.menu.as_ref().map(|menu| menu.entity_id())
+    }
+
     /// `Shell::confirm` in context.ts: opens the yes/no dialog `AppRoot`
     /// itself renders in its overlay stack (see `confirm.rs`).
     pub fn open_confirm(this: &Entity<Self>, request: ConfirmRequest, cx: &mut App) {
         let _ = this.update(cx, |this, cx| {
+            this.menu = None;
             this.confirm = Some(request);
+            this.focus_confirm = true;
             cx.notify();
         });
     }
@@ -437,90 +550,313 @@ impl AppRoot {
     pub fn open_info(this: &Entity<Self>, cx: &mut App) {
         let _ = this.update(cx, |this, cx| {
             this.menu = None;
-            this.info_open = true;
+            this.set_info(true, cx);
             cx.notify();
         });
     }
+
+    pub fn info_open(&self) -> bool {
+        self.info_open
+    }
+
+    /// The header is a cached view that reads `info_open` for its button,
+    /// so every change has to reach it too.
+    fn set_info(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.info_open != open {
+            self.info_open = open;
+            self.header.update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    /// The toast timer: `state.error` shows for six seconds, then clears.
+    fn sync_toast(&mut self, show_connect: bool, cx: &mut Context<Self>) {
+        let error = self.store().and_then(|store| store.state().error.clone());
+        if !self.settings_open {
+            if let Some(message) = error {
+                if self.toast.as_deref() != Some(message.as_str()) {
+                    self.toast = Some(message.into());
+                    self.toast_epoch += 1;
+                    let epoch = self.toast_epoch;
+                    let store = self.store().cloned();
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(TOAST_FOR).await;
+                        let _ = this.update(cx, |this, cx| {
+                            if this.toast_epoch != epoch {
+                                return;
+                            }
+                            if let Some(store) = store {
+                                store.clear_error();
+                            }
+                            this.toast = None;
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+            }
+        }
+        let notice = self.toast.clone().filter(|_| !show_connect);
+        self.toast_shown.set(notice, |this: &mut Self| &mut this.toast_shown, cx);
+    }
+
+    fn connect_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<ConnectScreen> {
+        if let Some(screen) = &self.connect {
+            return screen.clone();
+        }
+        let weak = cx.entity().downgrade();
+        let runtime = self.runtime.clone();
+        let on_connect = {
+            let weak = weak.clone();
+            let runtime = runtime.clone();
+            move |url: String, password: String, _window: &mut Window, cx: &mut App| {
+                let server = messages_core::config::ServerConfig { url, password };
+                let to_save = server.clone();
+                runtime.spawn(messages_core::config::save_config(move |config| {
+                    config.server = Some(to_save);
+                    config.demo = false;
+                }));
+                let _ = weak.update(cx, |this, cx| {
+                    this.settings_open = false;
+                    let mut config = this.config.clone();
+                    config.server = Some(server);
+                    config.demo = false;
+                    this.apply_config(config, cx);
+                });
+            }
+        };
+        let on_demo = move |_window: &mut Window, cx: &mut App| {
+            runtime.spawn(messages_core::config::save_config(|config| config.demo = true));
+            let _ = weak.update(cx, |this, cx| {
+                this.settings_open = false;
+                let mut config = this.config.clone();
+                config.demo = true;
+                this.apply_config(config, cx);
+            });
+        };
+        let (url, password) = self.config.server.as_ref().map(|server| (server.url.clone(), server.password.clone())).unwrap_or_default();
+        let screen = cx.new(|cx| ConnectScreen::new(url, password, on_connect, on_demo, window, cx));
+        self.connect = Some(screen.clone());
+        screen
+    }
+}
+
+/// `bun run screenshot`: once the demo has a conversation open, give the
+/// images a moment to decode, render the frame offscreen (animations jumped to
+/// their end) and write it as a PNG, then quit.
+#[cfg(feature = "screenshot")]
+fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<AppRoot>) {
+    cx.set_reduce_motion(true);
+    cx.spawn_in(window, async move |_, cx| {
+        let started = std::time::Instant::now();
+        loop {
+            cx.background_executor().timer(std::time::Duration::from_millis(100)).await;
+            let ready = cx.update(|_, cx| crate::bridge::store(cx).is_some_and(|store| store.state().selected_chat.is_some())).unwrap_or(false);
+            if ready || started.elapsed() > std::time::Duration::from_secs(30) {
+                break;
+            }
+        }
+        cx.background_executor().timer(std::time::Duration::from_millis(2500)).await;
+        let _ = cx.update(|window, cx| {
+            window.refresh();
+            let _ = cx;
+        });
+        cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+        let _ = cx.update(|window, cx| {
+            match window.render_to_image() {
+                Ok(image) => {
+                    if let Some(parent) = out.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match image.save(&out) {
+                        Ok(()) => println!("[screenshot] wrote {}", out.display()),
+                        Err(error) => eprintln!("[screenshot] {error}"),
+                    }
+                }
+                Err(error) => eprintln!("[screenshot] {error}"),
+            }
+            cx.quit();
+        });
+    })
+    .detach();
+}
+
+fn build_store(config: &Config, runtime: tokio::runtime::Handle) -> MessagesStore {
+    let http = reqwest::Client::new();
+    let transport: std::sync::Arc<dyn messages_core::Transport> = if config.demo {
+        std::sync::Arc::new(messages_core::demo::DemoTransport::new())
+    } else {
+        let (url, password) = config.server.as_ref().map(|server| (server.url.clone(), server.password.clone())).unwrap_or_default();
+        std::sync::Arc::new(messages_core::bluebubbles::BlueBubblesTransport::new(
+            messages_core::bluebubbles::BlueBubblesOptions { url, password, attachments_dir: messages_core::config::attachments_dir() },
+            http,
+        ))
+    };
+    let cache = if config.demo { None } else { Some(std::sync::Arc::new(messages_core::cache::StateCache::new(&messages_core::config::cache_dir()))) };
+    let on_prefs_change: Option<messages_core::store::PrefsCallback> = Some(std::sync::Arc::new(|chats: &std::collections::HashMap<String, messages_core::agent::ChatPrefs>| {
+        let chats = chats.clone();
+        tokio::spawn(messages_core::config::save_config(move |config| config.chats = chats));
+    }));
+    let on_gif_favorites_change: Option<messages_core::store::GifFavoritesCallback> = Some(std::sync::Arc::new(|favorites: &std::collections::HashMap<String, messages_core::gifs::GifFavorite>| {
+        let favorites = favorites.clone();
+        tokio::spawn(messages_core::config::save_config(move |config| config.gif_favorites = Some(favorites)));
+    }));
+    let options = StoreOptions {
+        prefs: config.chats.clone(),
+        on_prefs_change,
+        gif_favorites: config.gif_favorites.clone().unwrap_or_default(),
+        on_gif_favorites_change,
+        agent: config.agent.clone(),
+        cache,
+        ..Default::default()
+    };
+    MessagesStore::new(transport, options, runtime)
+}
+
+fn empty_state(status: ConnectionStatus, reason: Option<String>, cx: &mut Context<AppRoot>) -> impl IntoElement {
+    let palette = Theme::get(cx);
+    let online = status == ConnectionStatus::Online;
+    let title = match status {
+        ConnectionStatus::Online => "No conversation selected",
+        ConnectionStatus::Connecting => "Connecting to your Mac\u{2026}",
+        ConnectionStatus::Offline => "Your Mac is not answering",
+    };
+    let body = match status {
+        ConnectionStatus::Online => "Pick one on the left, or start a new one.".to_owned(),
+        ConnectionStatus::Connecting => "Conversations appear once the server answers.".to_owned(),
+        ConnectionStatus::Offline => match reason {
+            Some(reason) => format!("Retrying. Last attempt: {reason}."),
+            None => "Retrying. Check that BlueBubbles is running and reachable.".to_owned(),
+        },
+    };
+    div()
+        .id("empty-state")
+        .flex_grow(1.)
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(spacing::X2)
+        .px(spacing::X6)
+        .child(Icon::new(IconName::Conversation).size(px(30.)).color(palette.tertiary))
+        .child(div().text_size(px(15.)).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_align(TextAlign::Center).child(title))
+        .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child(body))
+        .when(online, |el| {
+            el.child(div().pt(spacing::X2).child(Button::new("empty-new-message", format!("New message  {}", shortcut("N", false, false))).kind(ButtonKind::Primary).on_click(
+                cx.listener(|this, _, window, cx| this.start_new_chat(window, cx)),
+            )))
+        })
 }
 
 impl Render for AppRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::trace::render("AppRoot");
         let palette = Theme::get(cx);
         let bounds = window.viewport_size();
-        let online = self.store().is_some();
-        let show_connect = self.settings_open || !online;
         let weak = cx.entity().downgrade();
 
-        // Keeps the connect screen's read-only fields in sync with the
-        // store's own state each render (connect.tsx reads `state` and
-        // `store.transport.kind` as props; there is no props channel here,
-        // so the parent pushes them into the child instead).
-        let connecting = matches!(self.store, StoreStatus::Loading);
-        let error = match &self.store {
-            StoreStatus::Failed(message) => Some(message.clone()),
-            _ => None,
+        let (status, connection_error, server, has_chats, selected, demo) = match self.store() {
+            Some(store) => {
+                let state = store.state();
+                let selected = state.selected_chat.as_deref().is_some_and(|guid| state.chat(guid).is_some());
+                (state.status, state.connection_error.clone(), state.server.clone(), !state.chats.is_empty(), selected, store.transport().kind() == TransportKind::Demo)
+            }
+            None => (ConnectionStatus::Connecting, None, None, false, false, false),
         };
-        let (server, has_chats) = self.store().map(|store| {
-            let state = store.state();
-            (state.server.clone(), !state.chats.is_empty())
-        }).unwrap_or((None, false));
-        let can_close = self.settings_open && (has_chats || self.config.demo);
-        let close_connect = can_close.then(|| {
-            let weak = weak.clone();
-            move |_window: &mut Window, cx: &mut App| {
-                let _ = weak.update(cx, |this, cx| {
-                    this.settings_open = false;
-                    cx.notify();
-                });
-            }
-        });
-        // Error toast for 6s after `state.error` appears, then `clear_error`;
-        // suppressed while settings are open (app.tsx:217-225, 308). Guarded
-        // by a string compare so a render that changes nothing about the
-        // error does not restart the timer.
-        let store_error = self.store().and_then(|store| store.state().error.clone());
-        if !self.settings_open {
-            if let Some(message) = store_error {
-                if self.toast.as_deref() != Some(message.as_str()) {
-                    self.toast = Some(message.into());
-                    if let Some(store) = self.store().cloned() {
-                        let weak = weak.clone();
-                        cx.spawn(async move |_, cx| {
-                            cx.background_executor().timer(std::time::Duration::from_secs(6)).await;
-                            store.clear_error();
-                            let _ = cx.update(|cx| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.toast = None;
-                                    cx.notify();
-                                });
-                            });
-                        })
-                        .detach();
-                    }
+        let unconfigured = matches!(self.store, StoreStatus::Unconfigured);
+        let show_connect = self.settings_open || unconfigured || (status == ConnectionStatus::Offline && !has_chats && !demo && self.store().is_some());
+
+        self.sync_toast(show_connect, cx);
+
+        let was_shown = self.connect_shown.is_open();
+        self.connect_shown.set(show_connect.then_some(()), |this: &mut Self| &mut this.connect_shown, cx);
+        if show_connect {
+            let screen = self.connect_screen(window, cx);
+            let error = if status == ConnectionStatus::Offline { connection_error.clone().map(SharedString::from) } else { None };
+            let can_close = self.settings_open && (has_chats || demo);
+            let close = can_close.then(|| {
+                let weak = weak.clone();
+                move |window: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |this, cx| {
+                        this.settings_open = false;
+                        this.restore_focus(window, cx);
+                        cx.notify();
+                    });
                 }
-            }
+            });
+            screen.update(cx, |screen, _| {
+                screen.error(error).connecting(status == ConnectionStatus::Connecting && self.store().is_some()).server(server).on_close(close);
+            });
+        } else if !self.connect_shown.is_mounted() {
+            self.connect = None;
+        }
+        if was_shown && !show_connect {
+            self.restore_focus(window, cx);
         }
 
-        self.connect.update(cx, |screen, cx| {
-            screen.error(error).connecting(connecting).server(server).on_close(close_connect);
-            cx.notify();
-        });
+        let info_wanted = self.info_open && selected && !self.new_chat;
+        self.info_shown.set(info_wanted.then_some(()), |this: &mut Self| &mut this.info_shown, cx);
+        let details_open = self.info_shown.is_mounted();
+        if details_open != self.details_open {
+            self.details_open = details_open;
+            self.details.update(cx, |details, cx| details.set_open(details_open, cx));
+        }
+
+        self.confirm_shown.set(self.confirm.clone(), |this: &mut Self| &mut this.confirm_shown, cx);
+        if self.focus_confirm && self.confirm.is_some() {
+            self.focus_confirm = false;
+            window.focus(&self.confirm_focus, cx);
+        }
+
+        let info_open = self.info_shown.is_open();
+        self.facetime.update(cx, |banner, cx| banner.set_offset(if info_open { INFO_WIDTH + spacing::X3 } else { spacing::X3 }, cx));
 
         let close_confirm = {
             let weak = weak.clone();
-            move |_window: &mut Window, cx: &mut App| {
+            move |window: &mut Window, cx: &mut App| {
                 let _ = weak.update(cx, |this, cx| {
                     this.confirm = None;
+                    this.restore_focus(window, cx);
                     cx.notify();
                 });
             }
         };
 
+        let main_pane = div().flex().flex_col().flex_grow(1.).min_w(px(0.)).h_full().bg(palette.canvas);
         let main_pane = if self.new_chat {
-            div().flex().flex_col().flex_grow(1.).min_w(px(0.)).h_full().bg(palette.canvas).when_some(self.new_chat_view.clone(), |el, view| el.child(view))
+            main_pane.when_some(self.new_chat_view.clone(), |el, view| el.child(view))
+        } else if selected {
+            main_pane
+                .child(AnyView::from(self.header.clone()).cached(StyleRefinement::default().w_full().h(TITLEBAR_HEIGHT).flex_shrink_0()))
+                .child(self.thread.clone())
+                .child(self.composer.clone())
         } else {
-            div().flex().flex_col().flex_grow(1.).min_w(px(0.)).h_full().bg(palette.canvas).child(self.header.clone()).child(self.thread.clone()).child(self.composer.clone())
+            main_pane.child(empty_state(status, connection_error, cx))
         };
+
+        // A column of its own, never a sheet over the thread, so a trackpad
+        // scroll over the panel stops at the panel. The clip box animates and
+        // the panel inside keeps its width, so nothing in it reflows mid-slide.
+        let info = self.info_shown.is_mounted().then(|| {
+            let clip = div().h_full().flex_shrink_0().overflow_hidden().flex().flex_row().justify_end().child(div().w(INFO_WIDTH).h_full().flex_shrink_0().child(self.details.clone()));
+            motion::slide_width(clip, self.info_shown.id("info-slide"), info_open, INFO_WIDTH)
+        });
+
+        let dialog = self.confirm_shown.current().cloned().map(|request| {
+            let open = self.confirm_shown.is_open();
+            confirm_dialog(&request, bounds, &self.confirm_focus, close_confirm.clone(), open, self.confirm_shown.id("confirm-fade"), cx)
+        });
+
+        let notice = self.toast_shown.current().cloned().map(|message| {
+            let open = self.toast_shown.is_open();
+            let pill = toast::toast(&message, cx);
+            motion::toward(pill, self.toast_shown.id("toast"), open, DURATION_BASE, DURATION_FAST, |el, t| el.pb(toast::BOTTOM - toast::RISE * (1. - t)).opacity(t))
+        });
+
+        let connect = self.connect.clone().filter(|_| self.connect_shown.is_mounted()).map(|screen| {
+            let open = self.connect_shown.is_open();
+            let layer = div().absolute().inset_0().flex().bg(palette.canvas).child(div().flex_grow(1.).flex().child(screen));
+            motion::fade(layer, self.connect_shown.id("connect-fade"), open, DURATION_BASE, DURATION_FAST)
+        });
 
         div()
             .key_context(CONTEXT)
@@ -533,6 +869,11 @@ impl Render for AppRoot {
             .bg(palette.canvas)
             .text_color(palette.text)
             .on_action(cx.listener(Self::on_dismiss))
+            .when(cfg!(feature = "frame-overlay"), |el| {
+                #[cfg(feature = "frame-overlay")]
+                let el = el.on_action(cx.listener(Self::on_toggle_frame_overlay));
+                el
+            })
             .on_action(cx.listener(Self::on_new_chat))
             .on_action(cx.listener(Self::on_open_switcher))
             .on_action(cx.listener(Self::on_focus_search))
@@ -547,53 +888,20 @@ impl Render for AppRoot {
             .on_action(cx.listener(Self::on_tapback_4))
             .on_action(cx.listener(Self::on_tapback_5))
             .on_action(cx.listener(Self::on_tapback_6))
-            .child(self.sidebar.clone())
+            .child(AnyView::from(self.sidebar.clone()).cached(StyleRefinement::default().w(if bounds.width < px(900.) { SIDEBAR_WIDTH_COMPACT } else { SIDEBAR_WIDTH }).h_full().flex_shrink_0()))
             .child(div().w(px(1.)).h_full().flex_shrink_0().bg(palette.sidebar_border))
             .child(main_pane)
-            .when(self.info_open, |el| el.child(div().h_full().flex_shrink_0().child(self.details.clone())))
+            .children(info)
             .when_some(self.menu.clone(), |el, menu| el.child(menu))
-            .when_some(self.confirm.as_ref(), |el, request| el.child(confirm_dialog(request, bounds, &self.confirm_focus, close_confirm.clone(), cx)))
+            .children(dialog)
             .when_some(self.switcher.clone(), |el, view| el.child(view))
-            .when_some(self.lightbox.clone(), |el, view| el.child(view))
             .child(self.facetime.clone())
-            .when_some(self.toast.clone(), |el, message| el.child(toast::toast(&message, true, cx)))
-            .when(show_connect, |el| el.child(self.connect.clone()))
+            .children(notice)
+            .children(connect)
+            .children(crate::trace::probe())
     }
 }
 
-/// Builds the transport for `config` and starts the store. Runs entirely on
-/// the tokio runtime; a panic inside (any of `DemoTransport::new`,
-/// `MessagesStore::new`, `store.start()` while C1/C2/C3 still stub their
-/// bodies with `unimplemented!()`) is isolated by `tokio::spawn` to that
-/// task rather than this function, so `reconnect`'s `Err(join_error)` arm is
-/// what actually reports it.
-async fn bootstrap(config: Config, runtime: tokio::runtime::Handle) -> Result<MessagesStore, String> {
-    let transport: std::sync::Arc<dyn messages_core::Transport> = if config.demo {
-        std::sync::Arc::new(messages_core::demo::DemoTransport::new())
-    } else if let Some(server) = &config.server {
-        std::sync::Arc::new(messages_core::bluebubbles::BlueBubblesTransport::new(
-            messages_core::bluebubbles::BlueBubblesOptions {
-                url: server.url.clone(),
-                password: server.password.clone(),
-                attachments_dir: messages_core::config::attachments_dir(),
-            },
-            reqwest::Client::new(),
-        ))
-    } else {
-        return Err("no server configured".into());
-    };
-
-    let cache = if config.demo { None } else { Some(std::sync::Arc::new(messages_core::cache::StateCache::new(&messages_core::config::cache_dir()))) };
-    let options = StoreOptions { prefs: config.chats.clone(), gif_favorites: config.gif_favorites.clone().unwrap_or_default(), agent: config.agent.clone(), cache, ..Default::default() };
-    let store = MessagesStore::new(transport, options, runtime);
-    store.start().await;
-    Ok(store)
-}
-
-/// Registered by `bridge::Bridge::on_incoming`: posts the desktop
-/// notification when the window is not focused (app.tsx:81-88).
-pub fn handle_incoming(_incoming: &Incoming, _cx: &mut App) {
-    // `messages_core::notify::notify_incoming` is still an unimplemented
-    // core stub (C3); wiring the window-focus check and the click-to-select
-    // callback belongs with that landing.
-}
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;

@@ -1,11 +1,18 @@
-//! Durations and easing curves, ported from `apps/desktop/src/ui/motion.tsx`.
+//! Durations, easing curves and the presence helpers, ported from
+//! `apps/desktop/src/ui/motion.tsx`.
 //!
 //! gpui-pre's `Animation` (`elements/animation.rs`) only ships linear, quadratic,
 //! ease-in-out and a quint ease-out; it has no cubic-bezier curve, which is what
 //! the TS app's easings are. `cubic_bezier` below solves one, the same curve CSS
 //! `cubic-bezier()` and gpuix's `MotionEase` describe.
+//!
+//! GPUI animations are one-shot and keyed by element id, so `Presence` bumps a
+//! generation on every open/close flip and the helpers fold it into the id:
+//! each flip replays from its start, and nothing animates while idle.
 
 use std::time::Duration;
+
+use gpui_kit::{Animation, AnimationExt as _, AnyElement, App, Context, ElementId, IntoElement, Pixels, SharedString, Styled, px};
 
 /// Everything stays under 300ms: in a chat client motion is feedback, never a show.
 pub const DURATION_FAST: Duration = Duration::from_millis(120);
@@ -46,5 +53,141 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
             t = (lo + hi) / 2.0;
         }
         bezier(t, y1, y2)
+    }
+}
+
+fn curve((x1, y1, x2, y2): (f32, f32, f32, f32)) -> impl Fn(f32) -> f32 {
+    cubic_bezier(x1, y1, x2, y2)
+}
+
+/// `usePresence` plus `useHeld`: whether something is shown, whether it is
+/// still mounted while it animates out, and the last value it showed, so
+/// content on its way out keeps painting instead of blanking.
+pub struct Presence<T> {
+    held: Option<T>,
+    open: bool,
+    mounted: bool,
+    generation: u64,
+    exit: Duration,
+}
+
+impl<T: Clone + 'static> Presence<T> {
+    pub fn new(exit: Duration) -> Self {
+        Self { held: None, open: false, mounted: false, generation: 0, exit }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    pub fn is_mounted(&self) -> bool {
+        self.mounted
+    }
+
+    /// What to paint: the live value while open, the last one while leaving.
+    pub fn current(&self) -> Option<&T> {
+        if self.mounted { self.held.as_ref() } else { None }
+    }
+
+    pub fn id(&self, name: &'static str) -> ElementId {
+        ElementId::NamedInteger(SharedString::new_static(name), self.generation)
+    }
+
+    /// Feeds the value the owner wants shown (`None` to hide). `field` finds
+    /// this presence again inside the owner when the exit timer fires.
+    pub fn set<V: 'static>(&mut self, value: Option<T>, field: fn(&mut V) -> &mut Presence<T>, cx: &mut Context<V>) {
+        let open = value.is_some();
+        if let Some(value) = value {
+            self.held = Some(value);
+        }
+        if open == self.open {
+            return;
+        }
+        self.open = open;
+        self.generation += 1;
+        if open {
+            self.mounted = true;
+            return;
+        }
+        let generation = self.generation;
+        let exit = self.exit;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(exit).await;
+            let _ = this.update(cx, |view, cx| {
+                let presence = field(view);
+                if presence.generation == generation {
+                    presence.mounted = false;
+                    presence.held = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// `Fade`: opacity in over `enter`, out over `exit`.
+pub fn fade<E: IntoElement + Styled + 'static>(element: E, id: ElementId, open: bool, enter: Duration, exit: Duration) -> AnyElement {
+    let duration = if open { enter } else { exit };
+    element
+        .with_animation(id, Animation::new(duration).with_easing(curve(EASE_OUT)), move |element, t| element.opacity(if open { t } else { 1. - t }))
+        .into_any_element()
+}
+
+/// `Reveal`: grows to `height` and fades in, collapses back on the way out.
+/// The child has to be exactly `height` tall: the box clips, it does not measure.
+pub fn reveal<E: IntoElement + Styled + 'static>(element: E, id: ElementId, open: bool, height: Pixels) -> AnyElement {
+    let full: f32 = height.into();
+    element
+        .with_animation(id, Animation::new(DURATION_BASE).with_easing(curve(EASE_OUT)), move |element, t| {
+            let amount = if open { t } else { 1. - t };
+            element.h(px(full * amount)).opacity(amount)
+        })
+        .into_any_element()
+}
+
+/// The details panel's clip box: width 0 to `width` on EASE_DRAWER.
+pub fn slide_width<E: IntoElement + Styled + 'static>(element: E, id: ElementId, open: bool, width: Pixels) -> AnyElement {
+    let full: f32 = width.into();
+    element
+        .with_animation(id, Animation::new(DURATION_PANEL).with_easing(curve(EASE_DRAWER)), move |element, t| {
+            element.w(px(full * if open { t } else { 1. - t }))
+        })
+        .into_any_element()
+}
+
+/// Anything else that moves between two states: `t` runs 0 to 1 towards
+/// `open`, on EASE_OUT, `enter` long opening and `exit` long closing.
+pub fn toward<E: IntoElement + 'static>(
+    element: E,
+    id: ElementId,
+    open: bool,
+    enter: Duration,
+    exit: Duration,
+    animator: impl Fn(E, f32) -> E + 'static,
+) -> AnyElement {
+    let duration = if open { enter } else { exit };
+    element
+        .with_animation(id, Animation::new(duration).with_easing(curve(EASE_OUT)), move |element, t| animator(element, if open { t } else { 1. - t }))
+        .into_any_element()
+}
+
+/// `MESSAGES_STILL=1` (the screenshot run) jumps every animation to its end.
+pub fn install(cx: &mut App) {
+    if std::env::var("MESSAGES_STILL").ok().as_deref() == Some("1") {
+        cx.set_reduce_motion(true);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn bezier_hits_both_ends() {
+        let ease = curve(EASE_DRAWER);
+        assert!(ease(0.).abs() < 0.01);
+        assert!((ease(1.) - 1.).abs() < 0.01);
+        assert!(ease(0.5) > 0.5);
     }
 }

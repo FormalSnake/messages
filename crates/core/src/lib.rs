@@ -23,6 +23,8 @@ pub mod open;
 pub mod search;
 pub mod store;
 pub mod transport;
+#[cfg(test)]
+mod testing;
 #[cfg(windows)]
 pub mod windows;
 

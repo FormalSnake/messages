@@ -112,6 +112,16 @@ pub fn format_scheduled_for(ms: Millis, now: Millis) -> String {
     }
 }
 
+/// A wall-clock time in the local zone the way JS `new Date(y, m, d, h, mi)` reads it:
+/// the earlier instant when a fall-back hour repeats, an hour later when a spring-forward skips it.
+pub(crate) fn local_datetime(naive: chrono::NaiveDateTime) -> DateTime<Local> {
+    naive
+        .and_local_timezone(Local)
+        .earliest()
+        .or_else(|| (naive + chrono::Duration::hours(1)).and_local_timezone(Local).earliest())
+        .unwrap_or_else(|| naive.and_utc().with_timezone(&Local))
+}
+
 fn valid_clock(hour: u32, minute: u32) -> bool {
     hour <= 23 && minute <= 59
 }
@@ -137,27 +147,21 @@ pub fn parse_schedule_time(input: &str, now: Millis) -> Result<Millis, String> {
         }
         let naive_date = chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or_else(|| "That date does not exist".to_owned())?;
         let naive_time = NaiveTime::from_hms_opt(hour, minute, 0).ok_or_else(|| BAD_TIME.to_owned())?;
-        naive_date
-            .and_time(naive_time)
-            .and_local_timezone(Local)
-            .single()
-            .unwrap_or_else(|| naive_date.and_time(naive_time).and_utc().with_timezone(&Local))
+        local_datetime(naive_date.and_time(naive_time))
     } else if let Some(caps) = regex_tomorrow().captures(trimmed) {
         let hour: u32 = caps[1].parse().unwrap();
         let minute: u32 = caps[2].parse().unwrap();
         if !valid_clock(hour, minute) {
             return Err(BAD_TIME.to_owned());
         }
-        let naive_date = (now_local.date_naive() + chrono::Duration::days(1)).and_hms_opt(hour, minute, 0).unwrap();
-        naive_date.and_local_timezone(Local).single().unwrap_or_else(|| naive_date.and_utc().with_timezone(&Local))
+        local_datetime((now_local.date_naive() + chrono::Duration::days(1)).and_hms_opt(hour, minute, 0).unwrap())
     } else if let Some(caps) = regex_time_only().captures(trimmed) {
         let hour: u32 = caps[1].parse().unwrap();
         let minute: u32 = caps[2].parse().unwrap();
         if !valid_clock(hour, minute) {
             return Err(BAD_TIME.to_owned());
         }
-        let naive_date = now_local.date_naive().and_hms_opt(hour, minute, 0).unwrap();
-        naive_date.and_local_timezone(Local).single().unwrap_or_else(|| naive_date.and_utc().with_timezone(&Local))
+        local_datetime(now_local.date_naive().and_hms_opt(hour, minute, 0).unwrap())
     } else {
         return Err("Use HH:MM, \"tomorrow HH:MM\" or YYYY-MM-DD HH:MM".to_owned());
     };
@@ -170,17 +174,17 @@ pub fn parse_schedule_time(input: &str, now: Millis) -> Result<Millis, String> {
 
 fn regex_time_only() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"^(\d{1,2}):(\d{2})$").unwrap())
+    RE.get_or_init(|| regex::Regex::new(r"^([0-9]{1,2}):([0-9]{2})$").unwrap())
 }
 
 fn regex_tomorrow() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"(?i)^tomorrow\s+(\d{1,2}):(\d{2})$").unwrap())
+    RE.get_or_init(|| regex::Regex::new(r"(?i)^tomorrow\s+([0-9]{1,2}):([0-9]{2})$").unwrap())
 }
 
 fn regex_date_time() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})$").unwrap())
+    RE.get_or_init(|| regex::Regex::new(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})\s+([0-9]{1,2}):([0-9]{2})$").unwrap())
 }
 
 pub fn format_address(address: &str) -> String {
@@ -204,7 +208,7 @@ pub fn format_address(address: &str) -> String {
 
 fn regex_us_phone() -> &'static regex::Regex {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| regex::Regex::new(r"^\+1(\d{3})(\d{3})(\d{4})$").unwrap())
+    RE.get_or_init(|| regex::Regex::new(r"^\+1([0-9]{3})([0-9]{3})([0-9]{4})$").unwrap())
 }
 
 /// First user-perceived character. Indexing a string would split a surrogate pair, which the native JSON parser rejects.
@@ -252,74 +256,19 @@ pub fn pluralize(count: usize, singular: &str, plural: Option<&str>) -> String {
     format!("{count} {word}")
 }
 
-fn is_extended_pictographic(c: char) -> bool {
-    matches!(c,
-        '\u{00A9}' | '\u{00AE}' |
-        '\u{203C}' | '\u{2049}' |
-        '\u{2122}' | '\u{2139}' |
-        '\u{2194}'..='\u{21AA}' |
-        '\u{231A}'..='\u{231B}' |
-        '\u{2328}' | '\u{23CF}' |
-        '\u{23E9}'..='\u{23FA}' |
-        '\u{24C2}' |
-        '\u{25AA}'..='\u{25FE}' |
-        '\u{2600}'..='\u{27BF}' |
-        '\u{2934}'..='\u{2935}' |
-        '\u{2B00}'..='\u{2BFF}' |
-        '\u{3030}' | '\u{303D}' |
-        '\u{3297}' | '\u{3299}' |
-        '\u{1F000}'..='\u{1FFFF}'
-    )
-}
-
-fn is_emoji_modifier(c: char) -> bool {
-    matches!(c, '\u{1F3FB}'..='\u{1F3FF}')
-}
-
-fn is_regional_indicator(c: char) -> bool {
-    matches!(c, '\u{1F1E6}'..='\u{1F1FF}')
-}
-
-fn is_tag_char(c: char) -> bool {
-    matches!(c, '\u{E0020}'..='\u{E007F}')
-}
-
 /// One grapheme cluster that is a single emoji: a country flag (two regional
 /// indicators), a keycap, or a pictograph with its modifiers, variation
-/// selectors, ZWJ parts and tag characters.
+/// selectors, ZWJ parts and tag characters. The properties come from the
+/// regex crate's Unicode tables, the same ones the TS pattern names.
 fn is_emoji_cluster(segment: &str) -> bool {
-    let chars: Vec<char> = segment.chars().collect();
-    if chars.len() == 2 && is_regional_indicator(chars[0]) && is_regional_indicator(chars[1]) {
-        return true;
-    }
-    if chars.is_empty() {
-        return false;
-    }
-    let mut i;
-    if is_extended_pictographic(chars[0]) {
-        i = 1;
-    } else if matches!(chars[0], '0'..='9' | '#' | '*') {
-        i = 1;
-        if chars.get(i) == Some(&'\u{FE0F}') {
-            i += 1;
-        }
-        if chars.get(i) == Some(&'\u{20E3}') {
-            i += 1;
-        } else {
-            return false;
-        }
-    } else {
-        return false;
-    }
-    while i < chars.len() {
-        let c = chars[i];
-        if is_extended_pictographic(c) || is_emoji_modifier(c) || c == '\u{200D}' || c == '\u{FE0F}' || c == '\u{20E3}' || is_tag_char(c) {
-            i += 1;
-        } else {
-            return false;
-        }
-    }
-    true
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        regex::Regex::new(
+            r"^(?:\p{Regional_Indicator}{2}|(?:\p{Extended_Pictographic}|[0-9#*]\x{FE0F}?\x{20E3})[\p{Extended_Pictographic}\p{Emoji_Modifier}\x{200D}\x{FE0F}\x{20E3}\x{E0020}-\x{E007F}]*)$",
+        )
+        .unwrap()
+    })
+    .is_match(segment)
 }
 
 /// At most `max` emoji graphemes and nothing else. A flag counts as one.
@@ -406,6 +355,22 @@ mod tests {
     #[test]
     fn rejects_a_date_that_does_not_exist() {
         assert!(parse_schedule_time("2026-02-30 08:00", now()).is_err());
+    }
+
+    #[test]
+    fn rejects_non_ascii_digits_instead_of_panicking() {
+        assert!(parse_schedule_time("\u{0661}\u{0662}:\u{0660}\u{0660}", now()).is_err());
+        assert!(parse_schedule_time("tomorrow \u{0969}:\u{0966}\u{0966}", now()).is_err());
+    }
+
+    #[test]
+    fn keeps_emoji_presentation_sequences_and_rejects_bare_symbols_and_digits() {
+        assert!(is_emoji_only("\u{2764}\u{FE0F}", 3));
+        assert!(is_emoji_only("\u{1F9D1}\u{200D}\u{1F4BB}", 3));
+        assert!(is_emoji_only("#\u{20E3}", 3));
+        assert!(!is_emoji_only("\u{0661}", 3));
+        assert!(!is_emoji_only("\u{1F1F9}", 3));
+        assert!(!is_emoji_only("a\u{FE0F}", 3));
     }
 
     #[test]

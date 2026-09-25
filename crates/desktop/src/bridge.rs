@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use gpui_kit::{AnyWeakEntity, App, Global};
+use messages_core::config::Config;
 use messages_core::conversations::conversation_guid;
 use messages_core::store::Incoming;
 use messages_core::{MessagesStore, StoreEvent};
@@ -43,6 +44,8 @@ pub struct Bridge {
     /// `StoreEvent::Incoming` has no per-view watcher; app.rs registers one
     /// handler here to post the desktop notification.
     on_incoming: Option<Box<dyn Fn(&Incoming, &mut App)>>,
+    /// Bumped by every `drain`, so the task of a store that was replaced stops.
+    epoch: u64,
 }
 
 impl Global for Bridge {}
@@ -126,10 +129,20 @@ impl Bridge {
     /// receiver and turning each event into `cx.notify()` calls.
     pub fn drain(cx: &mut App, store: MessagesStore) {
         cx.set_global(StoreHandle(Some(store.clone())));
+        let epoch = {
+            let bridge = cx.global_mut::<Bridge>();
+            bridge.epoch += 1;
+            bridge.epoch
+        };
         cx.spawn(async move |cx| {
             let mut events = store.events();
+            drop(store);
             loop {
-                match events.recv().await {
+                let event = events.recv().await;
+                if cx.update(|cx| cx.global::<Bridge>().epoch != epoch) {
+                    break;
+                }
+                match event {
                     Ok(StoreEvent::Incoming(incoming)) => {
                         let _ = cx.update(|cx| Bridge::dispatch_incoming(cx, &incoming));
                     }
@@ -160,3 +173,18 @@ impl Bridge {
 pub struct StoreHandle(pub Option<MessagesStore>);
 
 impl Global for StoreHandle {}
+
+/// The loaded `config.json` (plus env overrides). Views read the optional
+/// integrations (Klipy, CanaryLLM) from here rather than loading it again.
+#[derive(Clone, Default)]
+pub struct ConfigHandle(pub Config);
+
+impl Global for ConfigHandle {}
+
+pub fn config(cx: &App) -> Option<&Config> {
+    cx.try_global::<ConfigHandle>().map(|handle| &handle.0)
+}
+
+pub fn store(cx: &App) -> Option<MessagesStore> {
+    cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone())
+}

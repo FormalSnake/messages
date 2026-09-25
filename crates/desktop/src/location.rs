@@ -106,7 +106,7 @@ impl Render for LocationCard {
             .flex_shrink_0()
             .child(
                 div().relative().w(px(TILE_SIZE)).h(px(TILE_SIZE)).rounded(radius::BUBBLE).overflow_hidden().flex_shrink_0().bg(palette.raised).when_some(self.tile.as_ref(), |el, tile| {
-                    el.child(img(crate::attachments::image_source(&tile.path)).w(px(TILE_SIZE)).h(px(TILE_SIZE)).object_fit(ObjectFit::Cover)).child(
+                    el.child(img(crate::attachments::sized_image_source(&tile.path, px(TILE_SIZE), px(TILE_SIZE), ObjectFit::Cover)).w(px(TILE_SIZE)).h(px(TILE_SIZE)).object_fit(ObjectFit::Cover)).child(
                         div()
                             .absolute()
                             .left(px(tile.px as f32 - PIN_SIZE / 2.))
@@ -146,6 +146,15 @@ impl Render for LocationCard {
                             .border_color(palette.accent)
                             .child("Open in maps"),
                     )
+                    .tab_index(0)
+                    .on_key_down({
+                        let location = location.clone();
+                        move |event: &KeyDownEvent, _window, _cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                open_in_maps(&location);
+                            }
+                        }
+                    })
                     .on_click(move |_, _window, _cx| open_in_maps(&location)),
             )
     }

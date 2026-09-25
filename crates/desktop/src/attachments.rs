@@ -18,6 +18,7 @@ use messages_core::media::MediaWorker;
 use messages_core::{Attachment, Message, MessagesStore};
 
 use crate::bubble::MessageRow;
+pub use crate::stills::sized_image_source;
 use crate::icons::{Icon, IconName};
 use crate::theme::{Palette, radius, type_scale};
 
@@ -105,7 +106,7 @@ fn percent_decode(input: &str) -> Vec<u8> {
     out
 }
 
-fn decode_data_url(url: &str) -> Option<(ImageFormat, Vec<u8>)> {
+pub(crate) fn decode_data_url(url: &str) -> Option<(ImageFormat, Vec<u8>)> {
     let (meta, payload) = url.strip_prefix("data:")?.split_once(',')?;
     let mime = meta.split(';').next().unwrap_or("");
     let format = match mime {
@@ -343,7 +344,10 @@ impl Media {
                 }
                 let (name, mime) = if is_preview_image { ("preview.jpg".to_owned(), Some("image/jpeg".to_owned())) } else { (attachment.name.clone(), Some(attachment.mime.clone())) };
                 fetch(row, &chat_guid, &message_guid, &attachment.guid, name, mime, cx);
-                continue;
+                // A file already on disk paints now; the fetch only re-reads its header.
+                if attachment.local_path.is_none() {
+                    continue;
+                }
             }
             let Some(path) = attachment.local_path.clone() else { continue };
             let state = row.media.states.entry(attachment.guid.clone()).or_default();
@@ -560,7 +564,7 @@ pub fn image(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         if attachment.mime == "image/gif" && !is_data_url(&path) {
             crate::gif::gif_image(Arc::from(path.as_path()), crate::gif::Fit::Fill, radii).into_any_element()
         } else {
-            img(image_source(&path)).w(px(width)).h(px(height)).rounded(radius::BUBBLE).object_fit(ObjectFit::Contain).into_any_element()
+            img(sized_image_source(&path, px(width), px(height), ObjectFit::Contain)).w(px(width)).h(px(height)).rounded(radius::BUBBLE).object_fit(ObjectFit::Contain).into_any_element()
         }
     });
     let body = div()
@@ -608,7 +612,7 @@ pub fn photo_grid(row: &MessageRow, photos: &[Attachment], tail: Option<TailFill
                     if attachment.mime == "image/gif" && !is_data_url(&path) {
                         crate::gif::gif_image(Arc::from(path.as_path()), crate::gif::Fit::Cover, radii).into_any_element()
                     } else {
-                        img(image_source(&path)).w(px(tile.width)).h(px(tile.height)).object_fit(ObjectFit::Cover).rounded_tl(radii.top_left).rounded_tr(radii.top_right).rounded_bl(radii.bottom_left).rounded_br(radii.bottom_right).into_any_element()
+                        img(sized_image_source(&path, px(tile.width), px(tile.height), ObjectFit::Cover)).w(px(tile.width)).h(px(tile.height)).object_fit(ObjectFit::Cover).rounded_tl(radii.top_left).rounded_tr(radii.top_right).rounded_bl(radii.bottom_left).rounded_br(radii.bottom_right).into_any_element()
                     }
                 });
                 let label = (tile.index == shown.len() - 1 && more > 0).then(|| {
@@ -684,7 +688,7 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .on_click(cx.listener(move |row, _, _, cx| {
             open_attachment(row, &attachment_for_open, cx);
         }))
-        .when_some(poster.clone(), |el, (path, _, _)| el.child(img(image_source(&path)).w(px(width)).h(px(height)).rounded(radius::BUBBLE).object_fit(ObjectFit::Contain)))
+        .when_some(poster.clone(), |el, (path, _, _)| el.child(img(sized_image_source(&path, px(width), px(height), ObjectFit::Contain)).w(px(width)).h(px(height)).rounded(radius::BUBBLE).object_fit(ObjectFit::Contain)))
         .child(
             div()
                 .absolute()
@@ -889,7 +893,7 @@ pub fn sticker(attachment: &Attachment) -> AnyElement {
     };
     match &attachment.local_path {
         None => div().w(px(STICKER_WIDTH)).h(px(height)).into_any_element(),
-        Some(path) => img(image_source(path)).w(px(STICKER_WIDTH)).h(px(height)).object_fit(ObjectFit::Contain).into_any_element(),
+        Some(path) => img(sized_image_source(path, px(STICKER_WIDTH), px(height), ObjectFit::Contain)).w(px(STICKER_WIDTH)).h(px(height)).object_fit(ObjectFit::Contain).into_any_element(),
     }
 }
 
@@ -949,7 +953,7 @@ pub fn link_preview(row: &MessageRow, id: usize, palette: &Palette) -> AnyElemen
         .when(has_picture, |el| {
             el.child(
                 div().w(px(PREVIEW_WIDTH)).h(px(PREVIEW_IMAGE_HEIGHT)).bg(palette.raised).rounded_tl(radius::BUBBLE).rounded_tr(radius::BUBBLE).when_some(src, |el, src| {
-                    el.child(img(image_source(&src)).w(px(PREVIEW_WIDTH)).h(px(PREVIEW_IMAGE_HEIGHT)).object_fit(ObjectFit::Cover).rounded_tl(top.top_left).rounded_tr(top.top_right))
+                    el.child(img(sized_image_source(&src, px(PREVIEW_WIDTH), px(PREVIEW_IMAGE_HEIGHT), ObjectFit::Cover)).w(px(PREVIEW_WIDTH)).h(px(PREVIEW_IMAGE_HEIGHT)).object_fit(ObjectFit::Cover).rounded_tl(top.top_left).rounded_tr(top.top_right))
                 }),
             )
         })

@@ -179,6 +179,11 @@ impl ContextMenu {
         Self { request, highlighted: None, focus_handle, on_close: std::rc::Rc::new(on_close) }
     }
 
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.request.items.len()
+    }
+
     fn selectable(&self) -> Vec<usize> {
         self.request.items.iter().enumerate().filter(|(_, item)| item.is_selectable()).map(|(index, _)| index).collect()
     }
@@ -379,6 +384,7 @@ fn tapback_row(
                     on_close(window, cx);
                 })
                 .tooltip(move |window, cx| Tooltip::new(format!("{}  {}", tapback_label(kind), shortcut(&(index + 1).to_string(), false, false))).build(window, cx))
+                .tooltip_show_delay(crate::primitives::TOOLTIP_DELAY)
                 .child(div().text_size(px(16.)).line_height(px(20.)).text_color(palette.text).child(messages_core::tapback_glyph(kind, None).to_owned()))
         }))
 }

@@ -121,6 +121,52 @@ fn attachment(guid: &str, name: &str, width: u32, height: u32) -> Attachment {
     }
 }
 
+/// A 12-frame looping GIF written once into the cache, so the demo shows an
+/// animated attachment without shipping a binary fixture.
+fn wave_gif() -> Option<PathBuf> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame, Rgba, RgbaImage};
+
+    let path = crate::config::cache_dir().join("demo").join("wave.gif");
+    if path.exists() {
+        return Some(path);
+    }
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let tmp = path.with_extension("gif.tmp");
+    let file = std::fs::File::create(&tmp).ok()?;
+    let mut encoder = GifEncoder::new(file);
+    encoder.set_repeat(Repeat::Infinite).ok()?;
+    let (size, frames) = (120u32, 12u32);
+    for index in 0..frames {
+        let angle = index as f32 / frames as f32 * std::f32::consts::TAU;
+        let (cx, cy) = (60.0 + 34.0 * angle.cos(), 60.0 + 34.0 * angle.sin());
+        let image = RgbaImage::from_fn(size, size, |x, y| {
+            let (dx, dy) = (x as f32 - cx, y as f32 - cy);
+            if dx * dx + dy * dy <= 18.0 * 18.0 { Rgba([255, 204, 0, 255]) } else { Rgba([40, 44, 52, 255]) }
+        });
+        encoder.encode_frame(Frame::from_parts(image, 0, 0, Delay::from_numer_denom_ms(100, 1))).ok()?;
+    }
+    drop(encoder);
+    std::fs::rename(&tmp, &path).ok()?;
+    Some(path)
+}
+
+fn wave(guid: &str) -> Attachment {
+    Attachment {
+        guid: guid.into(),
+        name: "wave.gif".into(),
+        mime: "image/gif".into(),
+        bytes: 9_600,
+        width: Some(120),
+        height: Some(120),
+        measured: false,
+        is_sticker: false,
+        local_path: wave_gif(),
+        hidden: false,
+        duration_ms: None,
+    }
+}
+
 fn sticker(guid: &str) -> Attachment {
     Attachment { name: "sticker.png".into(), bytes: 24_110, width: Some(240), height: Some(200), is_sticker: true, ..attachment(guid, "", 0, 0) }
 }
@@ -206,6 +252,7 @@ fn seeds(p: &People, now: Millis) -> Vec<Seed> {
                     m.date_read = Some(now - 38 * MIN);
                 }),
                 row("bring the charger this time 🔌", 12 * MIN, alex).with(|m| m.reply_to = Some("demo-msg-0006".into())),
+                row("", 11 * MIN, alex).with(|m| m.attachments = vec![wave("demo-gif-1")]),
             ],
         },
         Seed {
@@ -1000,7 +1047,8 @@ mod tests {
         assert_eq!(chats.len(), 9);
         assert_eq!(chats[0].guid, "iMessage;-;+14155550134");
         let alex = demo.load_messages("iMessage;-;+14155550134", LoadMessagesOptions { limit: 50, before: None }).await.unwrap();
-        assert_eq!(alex.items.len(), 7);
+        assert_eq!(alex.items.len(), 8);
+        assert_eq!(alex.items[7].attachments[0].mime, "image/gif");
         assert_eq!(alex.items[6].reply_to.as_deref(), Some("demo-msg-0006"));
         assert_eq!(alex.items[5].guid, "demo-msg-0006");
         assert!(chats.iter().find(|chat| chat.guid.ends_with("0199")).unwrap().unread);
@@ -1034,6 +1082,6 @@ mod tests {
         let now = now_ms();
         let recent = demo.search_messages("", &SearchFilters { after: Some(now - 30 * MIN), ..SearchFilters::default() }).await.unwrap();
         assert!(recent.iter().all(|message| message.date > now - 30 * MIN));
-        assert_eq!(recent.len(), 2);
+        assert_eq!(recent.len(), 3);
     }
 }

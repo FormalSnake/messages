@@ -435,16 +435,17 @@ impl Render for SidebarRow {
                                         .child(if chat.last_activity > 0 { messages_core::format::format_list_date(chat.last_activity, now_ms()) } else { String::new() }),
                                 ),
                         )
-                        .child(
+                        .child({
+                            let color = if typing && !selected { palette.accent } else { muted_color };
                             div()
                                 .text_size(type_scale::PREVIEW.font_size)
                                 .line_height(type_scale::PREVIEW.line_height)
-                                .text_color(if typing && !selected { palette.accent } else { muted_color })
+                                .text_color(color)
                                 .line_clamp(2)
                                 .w_full()
                                 .min_w(px(0.))
-                                .child(preview),
-                        ),
+                                .child(crate::emoji_font::styled_text(preview.into(), Vec::new(), color))
+                        }),
                 )
                 .into_any_element()
         }

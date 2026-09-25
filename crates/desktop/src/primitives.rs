@@ -30,16 +30,20 @@ pub struct IconButton {
     label: SharedString,
     size: Pixels,
     hit: Pixels,
-    color: Hsla,
+    color: Option<Hsla>,
     active: bool,
     disabled: bool,
     strong: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
+
+/// IconButton and tapback tooltips wait a beat longer than the app-wide
+/// 500 ms default (primitives.tsx:77, menus.tsx:192).
+pub const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 
 impl IconButton {
     pub fn new(id: impl Into<ElementId>, icon: IconName, label: impl Into<SharedString>) -> Self {
-        Self { id: id.into(), icon, label: label.into(), size: px(16.), hit: px(28.), color: gpui_kit::black(), active: false, disabled: false, strong: false, on_click: None }
+        Self { id: id.into(), icon, label: label.into(), size: px(16.), hit: px(28.), color: None, active: false, disabled: false, strong: false, on_click: None }
     }
 
     pub fn size(mut self, size: Pixels) -> Self {
@@ -53,7 +57,7 @@ impl IconButton {
     }
 
     pub fn color(mut self, color: Hsla) -> Self {
-        self.color = color;
+        self.color = Some(color);
         self
     }
 
@@ -73,7 +77,7 @@ impl IconButton {
     }
 
     pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(std::rc::Rc::new(handler));
         self
     }
 }
@@ -81,12 +85,14 @@ impl IconButton {
 impl RenderOnce for IconButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let palette = Theme::get(cx);
-        let fg = if self.active { palette.accent } else { self.color };
+        let fg = if self.active { palette.accent } else { self.color.unwrap_or(palette.secondary) };
         let disabled = self.disabled;
         let label = self.label.clone();
+        let selector = self.id.to_string();
 
         div()
             .id(self.id)
+            .debug_selector(|| selector)
             .w(self.hit)
             .h(self.hit)
             .rounded(radius::CONTROL)
@@ -99,9 +105,17 @@ impl RenderOnce for IconButton {
             .when(!disabled, |el| {
                 el.hover(move |style| style.bg(if self.active { palette.selected_soft } else { palette.hover_wash }))
                     .active(move |style| style.bg(if self.active { palette.selected_soft } else { palette.press_wash }))
-                    .when_some(self.on_click, |el, handler| el.on_click(handler))
+                    .when_some(self.on_click, |el, handler| {
+                        let on_key = handler.clone();
+                        el.tab_index(0).on_click(move |event, window, cx| handler(event, window, cx)).on_key_down(move |event: &KeyDownEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                on_key(&ClickEvent::default(), window, cx);
+                            }
+                        })
+                    })
             })
             .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+            .tooltip_show_delay(TOOLTIP_DELAY)
             .child(Icon::new(self.icon).size(self.size).color(fg).strong(self.strong))
     }
 }
@@ -119,7 +133,7 @@ pub struct Button {
     label: SharedString,
     kind: ButtonKind,
     disabled: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 impl Button {
@@ -138,7 +152,7 @@ impl Button {
     }
 
     pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
-        self.on_click = Some(Box::new(handler));
+        self.on_click = Some(std::rc::Rc::new(handler));
         self
     }
 }
@@ -152,9 +166,11 @@ impl RenderOnce for Button {
             ButtonKind::Secondary => (palette.raised, palette.text),
         };
         let disabled = self.disabled;
+        let selector = self.id.to_string();
 
         div()
             .id(self.id)
+            .debug_selector(|| selector)
             .h(px(30.))
             .px(spacing::X3)
             .rounded(radius::CONTROL)
@@ -165,9 +181,16 @@ impl RenderOnce for Button {
             .flex_shrink_0()
             .when(disabled, |el| el.opacity(0.4))
             .when(!disabled, |el| {
-                el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)).when_some(self.on_click, |el, handler| el.on_click(handler))
+                el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)).when_some(self.on_click, |el, handler| {
+                    let on_key = handler.clone();
+                    el.tab_index(0).on_click(move |event, window, cx| handler(event, window, cx)).on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            on_key(&ClickEvent::default(), window, cx);
+                        }
+                    })
+                })
             })
-            .child(div().text_color(fg).text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).child(self.label))
+            .child(div().text_color(fg).font_weight(FontWeight::SEMIBOLD).text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).child(self.label))
     }
 }
 
@@ -188,7 +211,7 @@ fn photo_avatar(src: &str, size: Pixels) -> impl IntoElement {
         .overflow_hidden()
         .border_1()
         .border_color(hsla(0., 0., 1., 0.1))
-        .child(img(crate::attachments::image_source(std::path::Path::new(src))).w(inner).h(inner).rounded(inner / 2.).object_fit(ObjectFit::Cover))
+        .child(img(crate::attachments::sized_image_source(std::path::Path::new(src), inner, inner, ObjectFit::Cover)).w(inner).h(inner).rounded(inner / 2.).object_fit(ObjectFit::Cover))
 }
 
 fn monogram_avatar(label: &str, size: Pixels) -> impl IntoElement {

@@ -446,3 +446,32 @@ pub fn tapback_glyph(kind: TapbackKind, emoji: Option<&str>) -> &str {
         TapbackKind::Emoji => emoji.unwrap_or("\u{2764}\u{FE0F}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(macos: &str, private_api: bool, helper_connected: bool) -> ServerInfo {
+        ServerInfo { version: "1.9.9".into(), macos_version: Some(macos.into()), private_api, helper_connected, icloud_account: None }
+    }
+
+    #[test]
+    fn private_api_features_need_the_api_and_the_helper() {
+        let off = capabilities_for(Some(&info("15.1", true, false)));
+        assert!(!off.reactions && !off.typing && !off.read_receipts && !off.edit && !off.focus_status);
+        assert!(off.scheduled_messages);
+        let on = capabilities_for(Some(&info("15.1", true, true)));
+        assert!(on.reactions && on.typing && on.read_receipts && on.edit && on.unsend && on.facetime && on.focus_status && on.mark_unread);
+    }
+
+    #[test]
+    fn edit_and_facetime_are_off_on_macos_26_and_focus_needs_monterey() {
+        let tahoe = capabilities_for(Some(&info("26.0.1", true, true)));
+        assert!(!tahoe.edit && !tahoe.facetime);
+        assert!(tahoe.unsend && tahoe.focus_status);
+        let big_sur = capabilities_for(Some(&info("11.7", true, true)));
+        assert!(!big_sur.focus_status && big_sur.edit);
+        let none = capabilities_for(None);
+        assert!(!none.scheduled_messages && !none.reactions);
+    }
+}

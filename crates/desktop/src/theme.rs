@@ -22,13 +22,17 @@ pub fn font_sans() -> SharedString {
     if cfg!(target_os = "macos") { "SF Pro Text".into() } else { "Noto Sans".into() }
 }
 
-/// Only macOS gets a named emoji family. cosmic-text, the Linux text stack
-/// under GPUI, has a hardcoded font-fallback list with no notion of emoji
-/// presentation: naming an emoji family there, even the name the installed
-/// font carries, resolves to a monochrome text face, while an unnamed run
-/// reaches the colour font through the per-glyph fallback (see CLAUDE.md).
+/// The family emoji-only text names. On Linux that is the renamed copy
+/// `emoji_font` registers, once it has loaded; naming the system emoji
+/// family itself there resolves to a monochrome face (see `emoji_font.rs`).
 pub fn font_emoji() -> Option<SharedString> {
-    if cfg!(target_os = "macos") { Some("Apple Color Emoji".into()) } else { None }
+    if cfg!(target_os = "macos") {
+        Some("Apple Color Emoji".into())
+    } else if crate::emoji_font::loaded() {
+        Some(crate::emoji_font::FAMILY.into())
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

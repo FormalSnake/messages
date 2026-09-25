@@ -240,9 +240,190 @@ impl CanaryLlmClient {
     }
 }
 
+/// English name of an ISO 639-1 code, for the translate prompt.
+fn language_name(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "ar" => "Arabic",
+        "bg" => "Bulgarian",
+        "ca" => "Catalan",
+        "cs" => "Czech",
+        "da" => "Danish",
+        "de" => "German",
+        "el" => "Greek",
+        "en" => "English",
+        "es" => "Spanish",
+        "et" => "Estonian",
+        "eu" => "Basque",
+        "fa" => "Persian",
+        "fi" => "Finnish",
+        "fr" => "French",
+        "ga" => "Irish",
+        "gl" => "Galician",
+        "he" | "iw" => "Hebrew",
+        "hi" => "Hindi",
+        "hr" => "Croatian",
+        "hu" => "Hungarian",
+        "id" => "Indonesian",
+        "is" => "Icelandic",
+        "it" => "Italian",
+        "ja" => "Japanese",
+        "ko" => "Korean",
+        "lt" => "Lithuanian",
+        "lv" => "Latvian",
+        "ms" => "Malay",
+        "nb" | "no" => "Norwegian Bokmål",
+        "nl" => "Dutch",
+        "pl" => "Polish",
+        "pt" => "Portuguese",
+        "ro" => "Romanian",
+        "ru" => "Russian",
+        "sk" => "Slovak",
+        "sl" => "Slovenian",
+        "sr" => "Serbian",
+        "sv" => "Swedish",
+        "th" => "Thai",
+        "tr" => "Turkish",
+        "uk" => "Ukrainian",
+        "vi" => "Vietnamese",
+        "zh" => "Chinese",
+        _ => return None,
+    })
+}
+
+/// The language part of a POSIX or BCP 47 locale: `nl_BE.UTF-8`, `nl-BE`, `en_US@rg=eszzzz` all give the first subtag.
+fn locale_language(locale: &str) -> Option<String> {
+    let code = locale.split(['_', '-', '.', '@']).next()?.trim().to_lowercase();
+    (!code.is_empty() && code != "c" && code != "posix").then_some(code)
+}
+
+async fn system_locale() -> Option<String> {
+    for name in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Some(language) = std::env::var(name).ok().as_deref().and_then(locale_language) {
+            return Some(language);
+        }
+    }
+    // A macOS app started from the Dock has no LANG; the system language list is in the global defaults.
+    #[cfg(target_os = "macos")]
+    {
+        let output = tokio::process::Command::new("defaults").args(["read", "-g", "AppleLanguages"]).output().await.ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let first = text.split(['(', ')', ',', '\n']).map(|item| item.trim().trim_matches('"')).find(|item| !item.is_empty())?;
+        return locale_language(first);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+fn translation_language_from(configured: Option<&str>, locale: Option<&str>) -> String {
+    if let Some(configured) = configured.map(str::trim).filter(|value| !value.is_empty()) {
+        return configured.to_owned();
+    }
+    locale.and_then(language_name).unwrap_or("English").to_owned()
+}
+
+/// Target language for the translate button: `config.canaryllm.language`, else the system locale's language written out in English, else English.
+pub async fn translation_language(configured: Option<&str>) -> String {
+    if configured.is_some_and(|value| !value.trim().is_empty()) {
+        return translation_language_from(configured, None);
+    }
+    translation_language_from(None, system_locale().await.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{Response, serve};
+
+    fn one(sender: &str, text: &str) -> Vec<SummarizeMessage> {
+        vec![SummarizeMessage { sender: sender.to_owned(), text: text.to_owned(), date: 1, from_me: false }]
+    }
+
+    #[tokio::test]
+    async fn sends_a_system_and_user_message_and_returns_the_completion_text() {
+        let server = serve(|_| Response::json(200, serde_json::json!({ "choices": [{ "message": { "content": "  They agreed on Friday.  " } }] }))).await;
+        let client = CanaryLlmClient::new("test-key".into(), None, Some(server.url.clone()), reqwest::Client::new());
+        let result = client.summarize(&one("Alice", "Still on for Friday?")).await.unwrap();
+        assert_eq!(result, "They agreed on Friday.");
+        let requests = server.requests.lock();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "POST");
+        assert_eq!(requests[0].path(), "/v1/chat/completions");
+        assert_eq!(requests[0].header("authorization"), Some("Bearer test-key"));
+        let body = requests[0].json();
+        assert_eq!(body["model"], DEFAULT_CANARYLLM_MODEL);
+        assert_eq!(body["max_tokens"], 500);
+        assert_eq!(body["temperature"], 0.3);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(body["messages"][1]["content"].as_str().unwrap().contains("Still on for Friday?"));
+    }
+
+    #[tokio::test]
+    async fn never_sends_more_than_the_last_200_messages_and_uses_the_configured_model() {
+        let server = serve(|_| Response::json(200, serde_json::json!({ "choices": [{ "message": { "content": "ok" } }] }))).await;
+        let client = CanaryLlmClient::new("k".into(), Some("gemini/gemini-2.5-flash".into()), Some(server.url.clone()), reqwest::Client::new());
+        let messages: Vec<SummarizeMessage> = (0..250).map(|i| SummarizeMessage { sender: "Alice".into(), text: format!("message {i}"), date: i, from_me: false }).collect();
+        client.summarize(&messages).await.unwrap();
+        let body = server.requests.lock()[0].json();
+        assert_eq!(body["model"], "gemini/gemini-2.5-flash");
+        let transcript = body["messages"][1]["content"].as_str().unwrap().to_owned();
+        assert!(!transcript.contains("message 0\n"));
+        assert!(transcript.contains("message 249"));
+        assert_eq!(transcript.lines().count(), 200);
+    }
+
+    #[tokio::test]
+    async fn errors_on_an_error_status_and_on_a_completion_with_no_content() {
+        let failing = serve(|_| Response::json(500, serde_json::json!({ "error": "boom" }))).await;
+        let client = CanaryLlmClient::new("k".into(), None, Some(failing.url.clone()), reqwest::Client::new());
+        assert!(client.summarize(&one("A", "hi")).await.unwrap_err().to_string().contains("500"));
+        let empty = serve(|_| Response::json(200, serde_json::json!({ "choices": [] }))).await;
+        let client = CanaryLlmClient::new("k".into(), None, Some(empty.url.clone()), reqwest::Client::new());
+        assert!(client.summarize(&one("A", "hi")).await.unwrap_err().to_string().contains("no content"));
+    }
+
+    #[tokio::test]
+    async fn sends_the_target_language_in_the_system_prompt_and_the_text_as_the_user_message() {
+        let server = serve(|_| Response::json(200, serde_json::json!({ "choices": [{ "message": { "content": "Hola" } }] }))).await;
+        let client = CanaryLlmClient::new("k".into(), None, Some(server.url.clone()), reqwest::Client::new());
+        assert_eq!(client.translate("Hello", "Spanish").await.unwrap(), "Hola");
+        let body = server.requests.lock()[0].json();
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("Spanish"));
+        assert_eq!(body["messages"][1]["content"], "Hello");
+    }
+
+    #[tokio::test]
+    async fn transcribes_through_the_queue_polling_past_a_202() {
+        let polls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let seen = polls.clone();
+        let server = serve(move |request| match request.path() {
+            "/api/llm/transcribe" => Response::json(200, serde_json::json!({ "data": { "queueId": "q1" } })),
+            _ if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 => Response::json(202, serde_json::json!({})),
+            _ => Response::json(200, serde_json::json!({ "data": { "status": "completed", "result": { "text": "hello there" } } })),
+        })
+        .await;
+        let dir = crate::testing::temp_dir("transcribe");
+        let audio = dir.join("note.caf");
+        std::fs::write(&audio, b"abc").unwrap();
+        let client = CanaryLlmClient::new("k".into(), None, Some(server.url.clone()), reqwest::Client::new());
+        assert_eq!(client.transcribe(&audio).await.unwrap(), "hello there");
+        let requests = server.requests.lock();
+        let submit = requests[0].json();
+        assert_eq!(submit["provider"], "elevenlabs");
+        assert_eq!(submit["model"], "scribe_v2");
+        assert_eq!(submit["mimeType"], "audio/x-caf");
+        assert_eq!(submit["audio"], "YWJj");
+        assert_eq!(requests[2].json()["queueId"], "q1");
+        assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn translation_language_prefers_the_config_then_the_locale_then_english() {
+        assert_eq!(translation_language_from(Some(" Dutch "), Some("fr")), "Dutch");
+        assert_eq!(translation_language_from(None, locale_language("nl_BE.UTF-8").as_deref()), "Dutch");
+        assert_eq!(translation_language_from(None, locale_language("en_US@rg=eszzzz").as_deref()), "English");
+        assert_eq!(translation_language_from(Some(""), locale_language("C").as_deref()), "English");
+        assert_eq!(translation_language_from(None, Some("xx")), "English");
+    }
 
     #[test]
     fn mime_is_derived_from_the_file_extension() {

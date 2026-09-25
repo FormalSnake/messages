@@ -78,6 +78,11 @@ impl NewChat {
         Self { on_close, to_field, draft, recipients: Vec::new(), busy: false, error: false, _subscriptions: vec![to_sub, draft_sub] }
     }
 
+    #[cfg(test)]
+    pub(crate) fn focus_draft(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.draft.focus_handle(cx), cx);
+    }
+
     fn add(&mut self, address: String, name: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if !self.recipients.iter().any(|item| item.address == address) {
             self.recipients.push(Recipient { address, name });

@@ -60,8 +60,24 @@ pub fn favorite_gifs(favorites: &HashMap<String, GifFavorite>) -> Vec<Gif> {
 #[derive(Deserialize)]
 struct KlipyFile {
     url: String,
+    #[serde(default, deserialize_with = "dimension")]
     width: u32,
+    #[serde(default, deserialize_with = "dimension")]
     height: u32,
+}
+
+/// Any JSON number, or nothing; one odd size must not cost the whole page.
+fn dimension<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| value.as_f64()).filter(|number| number.is_finite() && *number >= 0.0).map_or(0, |number| number.round() as u32))
+}
+
+/// `String(item.id)`: Klipy sends a number, but a string id is taken as it is.
+fn item_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(id) => id,
+        other => other.to_string(),
+    })
 }
 
 /// Klipy serves every item at four sizes; each size may carry gif/webp/mp4 variants.
@@ -80,7 +96,8 @@ struct KlipyFileSizes {
 
 #[derive(Deserialize)]
 struct KlipyItem {
-    id: u64,
+    #[serde(deserialize_with = "item_id")]
+    id: String,
     #[serde(default)]
     file: KlipyFileSizes,
 }
@@ -107,7 +124,7 @@ fn to_gif(item: &KlipyItem) -> Option<Gif> {
         .or_else(|| item.file.sm.as_ref().and_then(|s| s.gif.as_ref()))
         .or_else(|| item.file.xs.as_ref().and_then(|s| s.gif.as_ref()))?;
     let preview = item.file.sm.as_ref().and_then(|s| s.gif.as_ref()).or_else(|| item.file.md.as_ref().and_then(|s| s.gif.as_ref())).unwrap_or(full);
-    Some(Gif { id: item.id.to_string(), preview_url: preview.url.clone(), gif_url: full.url.clone(), width: full.width, height: full.height })
+    Some(Gif { id: item.id.clone(), preview_url: preview.url.clone(), gif_url: full.url.clone(), width: full.width, height: full.height })
 }
 
 const BASE_URL: &str = "https://api.klipy.com/api/v1";
@@ -170,7 +187,14 @@ async fn download_to(http: &reqwest::Client, url: &str, file_path: &Path) -> any
         anyhow::bail!("klipy: download returned {}", response.status().as_u16());
     }
     let bytes = response.bytes().await?;
-    tokio::fs::write(file_path, &bytes).await?;
+    if let Some(dir) = file_path.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    // Written aside and renamed, so a download cut short is never taken for the file next time.
+    let mut part = file_path.as_os_str().to_owned();
+    part.push(".part");
+    tokio::fs::write(&part, &bytes).await?;
+    tokio::fs::rename(&part, file_path).await?;
     Ok(file_path.to_path_buf())
 }
 
@@ -272,6 +296,40 @@ mod tests {
         let saved = download_gif(&http, &gif, &dir).await.unwrap();
         assert_eq!(saved, target);
         assert_eq!(tokio::fs::read_to_string(&saved).await.unwrap(), "already here");
+    }
+
+    #[tokio::test]
+    async fn downloads_the_full_gif_and_the_preview_separately_into_the_cache() {
+        let server = crate::testing::serve(|request| crate::testing::Response::bytes(200, request.path().as_bytes())).await;
+        let dir = tempdir().join("attachments");
+        let gif = Gif { id: "7".into(), preview_url: format!("{}/7/sm.gif", server.url), gif_url: format!("{}/7/hd.gif", server.url), width: 1, height: 1 };
+        let http = reqwest::Client::new();
+        let full = download_gif(&http, &gif, &dir).await.unwrap();
+        let preview = download_gif_preview(&http, &gif, &dir).await.unwrap();
+        assert_eq!(full, dir.join("klipy-7.gif"));
+        assert_eq!(preview, dir.join("klipy-7-preview.gif"));
+        assert_eq!(std::fs::read(&full).unwrap(), b"/7/hd.gif");
+        assert_eq!(std::fs::read(&preview).unwrap(), b"/7/sm.gif");
+        assert!(!dir.join("klipy-7.gif.part").exists());
+    }
+
+    #[tokio::test]
+    async fn errors_when_the_download_response_is_not_ok_and_leaves_nothing_behind() {
+        let server = crate::testing::serve(|_| crate::testing::Response::bytes(404, b"")).await;
+        let dir = tempdir();
+        let gif = Gif { id: "8".into(), preview_url: String::new(), gif_url: format!("{}/8.gif", server.url), width: 1, height: 1 };
+        let error = download_gif(&reqwest::Client::new(), &gif, &dir).await.unwrap_err();
+        assert!(error.to_string().contains("404"));
+        assert!(!dir.join("klipy-8.gif").exists());
+    }
+
+    #[test]
+    fn takes_a_string_id_and_a_fractional_size() {
+        let item = serde_json::json!({ "id": "abc", "file": { "hd": { "gif": { "url": "u", "width": 200.4, "height": null } } } });
+        let body = klipy_response_json(vec![item], false);
+        let page = parse_klipy_response("trending", 200, &body).unwrap();
+        assert_eq!(page.items[0].id, "abc");
+        assert_eq!((page.items[0].width, page.items[0].height), (200, 0));
     }
 
     fn tempdir() -> PathBuf {

@@ -4,8 +4,10 @@
 //! text spans, labels, tapback groups) is derived in `Model::new` when the
 //! message's `Arc` changes; render lays out what is already there.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -348,7 +350,22 @@ fn eased(started: Instant, duration: Duration) -> Option<f32> {
     Some(cubic_bezier(x1, y1, x2, y2)(elapsed.as_secs_f32() / duration.as_secs_f32()))
 }
 
+/// What the thread's list needs to lay a row out without rendering it. A
+/// cached view takes its size from outside and lays its content out inside
+/// that box, so the list hands a settled row its last natural height.
+#[derive(Default)]
+pub(crate) struct RowLayout {
+    /// Width and natural height from the row's last fresh layout.
+    pub(crate) measured: Cell<Option<Size<Pixels>>>,
+    /// Height the list gave the cached row this frame; None when uncached.
+    pub(crate) given: Cell<Option<Pixels>>,
+    /// Set when the row's content may have changed height; the next layout
+    /// measures the content instead of trusting `measured`.
+    pub(crate) stale: Cell<bool>,
+}
+
 pub struct MessageRow {
+    pub(crate) layout: Rc<RowLayout>,
     pub(crate) store: MessagesStore,
     thread: WeakEntity<Thread>,
     pub(crate) data: MessageRowData,
@@ -368,6 +385,7 @@ impl MessageRow {
         let model = Model::new(data.message.clone());
         let tapback_seen = model.tapbacks.iter().map(|group| (group.glyph.clone(), None)).collect();
         let mut row = MessageRow {
+            layout: Rc::default(),
             store,
             thread,
             data,
@@ -392,6 +410,7 @@ impl MessageRow {
         }
         self.data = data;
         self.props = props;
+        self.layout.stale.set(true);
         if changed {
             self.model = Model::new(self.data.message.clone());
             Media::sync(self, cx);
@@ -575,9 +594,9 @@ impl MessageRow {
         let accent = if from_me { palette.on_accent } else { palette.accent };
         match body {
             TextBody::Empty => div().into_any_element(),
-            TextBody::Plain(text) => div().child(text.clone()).into_any_element(),
+            TextBody::Plain(text) => div().child(crate::emoji_font::styled_text(text.clone(), Vec::new(), color)).into_any_element(),
             TextBody::Rich { text, spans, size } => {
-                let styled = StyledText::new(text.clone()).with_highlights(spans.iter().map(|(range, span)| (range.clone(), span.highlight(accent, color))));
+                let styled = crate::emoji_font::styled_text(text.clone(), spans.iter().map(|(range, span)| (range.clone(), span.highlight(accent, color))).collect(), color);
                 div().when_some(*size, |el, (size, line)| el.text_size(size).line_height(line)).child(styled).into_any_element()
             }
             TextBody::Chunks(lines) => div()
@@ -588,7 +607,7 @@ impl MessageRow {
                         let range = 0..word.len();
                         div()
                             .when_some(*size, |el, (size, line)| el.text_size(size).line_height(line))
-                            .child(StyledText::new(word.clone()).with_highlights([(range, span.highlight(accent, color))]))
+                            .child(crate::emoji_font::styled_text(word.clone(), vec![(range, span.highlight(accent, color))], color))
                     }))
                 }))
                 .into_any_element(),
@@ -731,6 +750,7 @@ impl MessageRow {
 
 impl Render for MessageRow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::trace::render("MessageRow");
         let palette = Theme::get(cx);
         let message = self.model.message.clone();
         let from_me = message.from_me;
@@ -885,9 +905,30 @@ impl Render for MessageRow {
                 .when(position.ends_run(), |el| el.child(crate::primitives::avatar(message.sender.as_ref(), None, px(AVATAR_COLUMN), cx)))
         });
 
+        let layout = self.layout.clone();
+        let measure = canvas(
+            move |bounds, window, _| {
+                if let Some(given) = layout.given.get() {
+                    if (given - bounds.size.height).abs() > px(0.5) {
+                        // The content outgrew the cached box: repaint with the new height.
+                        layout.stale.set(true);
+                        window.request_animation_frame();
+                    }
+                }
+                layout.measured.set(Some(bounds.size));
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
+
         div()
             .id("message-row")
             .group(ROW_GROUP)
+            .relative()
+            .child(measure)
             .flex()
             .flex_col()
             .w_full()

@@ -14,13 +14,24 @@ use crate::icons::{Icon, IconName};
 use crate::primitives::{Button, ButtonKind, IconButton};
 use crate::theme::{Theme, spacing, type_scale};
 
-pub struct FaceTimeBanner;
+/// Sits `offset` in from the right edge: 12 px, or clear of the details
+/// panel while it is open (app.tsx:386).
+pub struct FaceTimeBanner {
+    offset: Pixels,
+}
 
 impl FaceTimeBanner {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade().into();
         Bridge::watch(cx, Topic::FaceTime, weak);
-        Self
+        Self { offset: px(12.) }
+    }
+
+    pub fn set_offset(&mut self, offset: Pixels, cx: &mut Context<Self>) {
+        if self.offset != offset {
+            self.offset = offset;
+            cx.notify();
+        }
     }
 
     fn answer(&self, cx: &mut Context<Self>) {
@@ -75,7 +86,7 @@ impl Render for FaceTimeBanner {
             .id("facetime-banner")
             .absolute()
             .top(px(12.))
-            .right(px(12.))
+            .right(self.offset)
             .flex()
             .flex_row()
             .items_center()

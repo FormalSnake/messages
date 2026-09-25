@@ -17,8 +17,12 @@ pub fn open_external(target: &str) {
     } else {
         Command::new("xdg-open").arg(target).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
     };
-    if let Err(error) = result {
-        tracing::error!("open: {error}");
+    match result {
+        // Waited on a thread of its own, or every link opened leaves a zombie until the app exits.
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(error) => tracing::error!("open: {error}"),
     }
 }
 
@@ -102,6 +106,7 @@ pub fn play_audio(path: &Path) -> bool {
 pub fn stop_audio() {
     if let Some(mut child) = player().lock().take() {
         let _ = child.kill();
+        let _ = child.wait();
     }
 }
 

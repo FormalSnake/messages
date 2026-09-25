@@ -205,7 +205,8 @@ impl Render for Lightbox {
                 .gap(spacing::X2)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(match &src {
-                    Some(path) => img(image_source(path)).w(px(display_w)).h(px(display_h)).object_fit(ObjectFit::Contain).into_any_element(),
+                    Some(path) if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif")) => img(image_source(path)).w(px(display_w)).h(px(display_h)).object_fit(ObjectFit::Contain).into_any_element(),
+                    Some(path) => img(crate::attachments::sized_image_source(path, px(display_w), px(display_h), ObjectFit::Contain)).w(px(display_w)).h(px(display_h)).object_fit(ObjectFit::Contain).into_any_element(),
                     None => div()
                         .w(px(display_w))
                         .h(px(display_h))

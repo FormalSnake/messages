@@ -42,6 +42,7 @@ pub struct AgentHealth {
 pub struct FindMySnapshot {
     pub friends: Option<Vec<FriendLocation>>,
     pub devices: Option<Vec<DeviceLocation>>,
+    #[serde(default, deserialize_with = "crate::findmy::millis")]
     pub updated_at: Millis,
 }
 
@@ -49,6 +50,7 @@ pub struct FindMySnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct FriendsResponse {
     pub friends: Vec<FriendLocation>,
+    #[serde(default, deserialize_with = "crate::findmy::millis")]
     pub updated_at: Millis,
 }
 
@@ -56,6 +58,7 @@ pub struct FriendsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct DevicesResponse {
     pub devices: Vec<DeviceLocation>,
+    #[serde(default, deserialize_with = "crate::findmy::millis")]
     pub updated_at: Millis,
 }
 
@@ -87,12 +90,15 @@ pub struct ChatPrefs {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedPrefs {
+    #[serde(default)]
     pub chats: HashMap<String, ChatPrefs>,
     /// Absent from agents that predate GIF favorites.
     #[serde(default)]
     pub gifs: Option<HashMap<String, GifFavorite>>,
     /// Pinned in Messages.app: an address for a one-to-one chat, a group id or chat guid for a group.
+    #[serde(default)]
     pub mac_pinned: Vec<String>,
+    #[serde(default, deserialize_with = "crate::findmy::opt_millis")]
     pub mac_pinned_at: Option<Millis>,
 }
 
@@ -344,6 +350,15 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
         let error = client(base).stream_findmy(tx).await.unwrap_err();
         assert!(error.to_string().contains("503"));
+    }
+
+    #[test]
+    fn reads_an_agent_answer_that_predates_mac_pins_and_gifs() {
+        let shared: SharedPrefs = serde_json::from_str(r#"{"chats":{"c":{"pinned":true,"updatedAt":5}}}"#).unwrap();
+        assert_eq!(shared.chats["c"].updated_at, Some(5));
+        assert!(shared.mac_pinned.is_empty());
+        assert_eq!(shared.mac_pinned_at, None);
+        assert_eq!(shared.gifs, None);
     }
 
     #[test]

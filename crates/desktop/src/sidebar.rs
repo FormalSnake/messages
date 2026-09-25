@@ -21,7 +21,8 @@ use messages_core::search::{SearchContext, parse_search_query, resolve_search_qu
 use messages_core::transport::{ConnectionStatus, TransportKind};
 use messages_core::{Chat, Message, chat_title};
 
-use crate::app::AppRoot;
+use crate::app::{AppRoot, root};
+use crate::menus::{MenuItem, MenuRequest, shortcut};
 use crate::bridge::{Bridge, StoreHandle, Topic};
 use crate::icons::IconName;
 use crate::primitives::IconButton;
@@ -60,6 +61,9 @@ pub struct Sidebar {
     items: Vec<Row>,
     on_select: Rc<dyn Fn(&str, &mut Window, &mut App)>,
     on_arrow: Rc<dyn Fn(&str, i32, &mut Window, &mut App)>,
+    /// Set by the list area's capture pass for a right-click: the menu that
+    /// was up before any row saw the click.
+    menu_before_click: Option<Option<EntityId>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -107,6 +111,7 @@ impl Sidebar {
             items: Vec::new(),
             on_select,
             on_arrow,
+            menu_before_click: None,
             _subscriptions: vec![sub],
         }
     }
@@ -257,6 +262,7 @@ impl Sidebar {
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::trace::render("Sidebar");
         let palette = Theme::get(cx);
         let store = current_store(cx);
         let query = self.query(cx);
@@ -370,16 +376,23 @@ impl Render for Sidebar {
                     .bg(palette.canvas)
                     .border_1()
                     .border_color(palette.separator)
-                    .on_key_down(cx.listener({
+                    .on_action(cx.listener({
                         let close_search = close_search.clone();
-                        move |this, event: &KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
-                            "escape" => close_search(window, cx),
-                            "down" => this.focus_first(window, cx),
-                            _ => {}
+                        move |this, _: &crate::app::Dismiss, window, cx| {
+                            if this.query(cx).is_empty() {
+                                cx.propagate();
+                            } else {
+                                close_search(window, cx);
+                            }
+                        }
+                    }))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "down" {
+                            this.focus_first(window, cx);
                         }
                     }))
                     .child(crate::icons::Icon::new(IconName::Search).size(px(13.)).color(palette.tertiary))
-                    .child(Input::new(&self.search_state))
+                    .child(Input::new(&self.search_state).bordered(false))
                     .when(has_query, |el| el.child(IconButton::new("clear-search", IconName::Close, "Clear search").size(px(12.)).hit(px(20.)).on_click(move |_, window, cx| close_search(window, cx)))),
             )
             .child(IconButton::new("new-message", IconName::Compose, "New message").size(px(17.)).on_click(|_, window, cx| {
@@ -401,7 +414,13 @@ impl Render for Sidebar {
         });
 
         let pinned_strip = (!pinned.is_empty()).then(|| {
-            let cells = pinned.iter().map(|chat| self.row_for(&chat.guid, true, window, cx)).collect::<Vec<_>>();
+            let cells = pinned
+                .iter()
+                .map(|chat| {
+                    let guid = chat.guid.clone();
+                    div().debug_selector(move || format!("pinned-{guid}")).child(self.row_for(&chat.guid, true, window, cx))
+                })
+                .collect::<Vec<_>>();
             div().flex().flex_col().px(spacing::X2).flex_shrink_0().child(div().flex().flex_row().flex_wrap().pt(spacing::X1).pb(spacing::X2).children(cells)).when(!rest.is_empty() && !has_query, |el| {
                 el.child(div().h(px(1.)).bg(palette.sidebar_border).mb(spacing::X2).mx(ROW_INSET).flex_shrink_0())
             })
@@ -415,15 +434,44 @@ impl Render for Sidebar {
             column.into_any_element()
         } else {
             let count = self.items.len();
-            uniform_list("sidebar-list", count, cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
+            let list = uniform_list("sidebar-list", count, cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
                 range.map(|index| render_row(this, index, window, cx)).collect::<Vec<_>>()
             }))
             .track_scroll(&self.list_scroll)
             .flex_grow(1.)
             .min_h(px(0.))
             .w_full()
-            .pb(spacing::X2)
-            .into_any_element()
+            .pb(spacing::X2);
+            // Right-click on the list's empty space offers "New message"
+            // (sidebar.tsx:436-443). A row opens its own menu on the same
+            // mouse-up, so the capture pass notes which menu was up and the
+            // bubble pass only acts when no row replaced it.
+            div()
+                .id("sidebar-list-area")
+                .debug_selector(|| "sidebar-list-area".into())
+                .flex()
+                .flex_col()
+                .flex_grow(1.)
+                .min_h(px(0.))
+                .w_full()
+                .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                    if event.button == MouseButton::Right {
+                        this.menu_before_click = Some(root(cx).and_then(|app| app.read(cx).menu_id()));
+                    }
+                }))
+                .on_mouse_up(MouseButton::Right, cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    let Some(before) = this.menu_before_click.take() else { return };
+                    let Some(app) = root(cx) else { return };
+                    if app.read(cx).menu_id() != before {
+                        return;
+                    }
+                    let item = MenuItem::item("New message", |window, cx| window.dispatch_action(Box::new(crate::app::NewChat), cx))
+                        .icon(IconName::Compose)
+                        .shortcut(shortcut("N", false, false));
+                    AppRoot::open_menu(&app, MenuRequest::at(event.position, vec![item]), window, cx);
+                }))
+                .child(list)
+                .into_any_element()
         };
 
         let (status_color, status_label) = {
@@ -482,7 +530,8 @@ fn render_row(sidebar: &mut Sidebar, index: usize, window: &mut Window, cx: &mut
     match item {
         Row::Chat(chat) => {
             let guid = chat.guid.clone();
-            div().px(spacing::X2).child(sidebar.row_for(&guid, false, window, cx)).into_any_element()
+            let selector = format!("chat-{guid}");
+            div().px(spacing::X2).debug_selector(move || selector).child(sidebar.row_for(&guid, false, window, cx)).into_any_element()
         }
         Row::ResultsHeader => {
             let palette = Theme::get(cx);

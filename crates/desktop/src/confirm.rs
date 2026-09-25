@@ -8,6 +8,7 @@ use gpui_kit::*;
 use crate::primitives::{Button, ButtonKind};
 use crate::theme::{Theme, radius, spacing, type_scale};
 
+#[derive(Clone)]
 pub struct ConfirmRequest {
     pub title: SharedString,
     pub body: Option<SharedString>,
@@ -33,23 +34,24 @@ impl ConfirmRequest {
     }
 }
 
-/// `open=false` while it fades out; the caller unmounts it once that finishes
-/// (see `motion::Presence` and `app.rs`'s overlay stack).
+/// `open=false` while it fades out (0.18 s in, 0.12 s out); the caller keeps
+/// it mounted with the last request until that finishes (`motion::Presence`).
+/// Escape is `app::Dismiss`, handled by the root in its overlay order.
 pub fn confirm_dialog(
     request: &ConfirmRequest,
     bounds: Size<Pixels>,
     focus_handle: &FocusHandle,
     on_close: impl Fn(&mut Window, &mut App) + Clone + 'static,
+    open: bool,
+    fade_id: ElementId,
     cx: &App,
-) -> impl IntoElement {
+) -> AnyElement {
     let palette = Theme::get(cx);
     let confirm_action = request.on_confirm.clone();
     let close_for_confirm = on_close.clone();
-    let close_for_escape = on_close.clone();
     let close_for_outside = on_close.clone();
 
-    anchored().position(point(px(0.), px(0.))).child(deferred(
-        div()
+    let scrim = div()
             .id("confirm-scrim")
             .track_focus(focus_handle)
             .w(bounds.width)
@@ -59,9 +61,7 @@ pub fn confirm_dialog(
             .items_center()
             .justify_center()
             .on_key_down(move |event, window, cx| {
-                if event.keystroke.key == "escape" {
-                    close_for_escape(window, cx);
-                } else if event.keystroke.key == "enter" {
+                if open && event.keystroke.key == "enter" {
                     close_for_confirm(window, cx);
                     confirm_action(window, cx);
                 }
@@ -96,6 +96,6 @@ pub fn confirm_dialog(
                             }
                         })),
                     ),
-            ),
-    ))
+            );
+    anchored().position(point(px(0.), px(0.))).child(deferred(crate::motion::fade(scrim, fade_id, open, crate::motion::DURATION_BASE, crate::motion::DURATION_FAST))).into_any_element()
 }

@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use chrono::{Local, NaiveDate, TimeZone};
+use chrono::NaiveDate;
 
 use crate::model::{chat_title, Chat, Contact, Millis};
 use crate::transport::{AttachmentFilter, SearchFilters};
@@ -25,14 +25,18 @@ pub struct ParsedSearchQuery {
 }
 
 fn parse_local_date(value: &str) -> Option<Millis> {
+    // Exactly YYYY-MM-DD, as the TS pattern; chrono alone would take `2026-9-3`.
+    if value.len() != 10 || !value.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() }) {
+        return None;
+    }
     let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()?;
-    let dt = date.and_hms_opt(0, 0, 0)?;
-    Local.from_local_datetime(&dt).single().map(|d| d.timestamp_millis())
+    Some(crate::format::local_datetime(date.and_hms_opt(0, 0, 0)?).timestamp_millis())
 }
 
 /// Splits on whitespace, keeping `key:value` together and letting the value be quoted for a multi-word name.
 fn tokenize(raw: &str) -> Vec<String> {
-    let re = regex::Regex::new(r#"([a-zA-Z]+):"([^"]*)"|(\S+)"#).unwrap();
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r#"([a-zA-Z]+):"([^"]*)"|(\S+)"#).unwrap());
     let mut tokens = Vec::new();
     for caps in re.captures_iter(raw) {
         if let (Some(key), Some(value)) = (caps.get(1), caps.get(2)) {

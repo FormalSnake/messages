@@ -2,6 +2,7 @@ mod app;
 mod assets;
 mod bridge;
 mod confirm;
+mod emoji_font;
 mod connect;
 mod icons;
 mod live_theme;
@@ -10,6 +11,7 @@ mod motion;
 mod primitives;
 mod theme;
 mod toast;
+mod trace;
 
 // D1 sidebar
 mod new_chat;
@@ -24,6 +26,7 @@ mod bubble;
 mod gif;
 mod lightbox;
 mod reply_thread;
+mod stills;
 mod thread;
 mod thread_rows;
 
@@ -64,6 +67,7 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 fn main() {
+    trace::init();
     // Every network call, timer, file read or write, JSON parse, image decode
     // and ffmpeg run happens here, never on the GPUI foreground thread.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -76,12 +80,14 @@ fn main() {
     // never meant to shut down before the process does.
     let runtime_handle = Box::leak(Box::new(runtime)).handle().clone();
 
-    gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(move |cx| {
+    gpui_kit::application().with_assets(icons::IconAssets).run(move |cx| {
         gpui_kit::init(cx);
         app::init(cx);
         theme::Theme::install(cx);
         live_theme::watch(cx);
+        emoji_font::install(cx);
         bridge::Bridge::install(cx);
+        trace::watch_keys(cx);
 
         let runtime_handle = runtime_handle.clone();
         cx.spawn(async move |cx| {

@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use tokio::process::Command;
 
@@ -26,6 +27,7 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 async fn command_output(cmd: &str, args: &[&str]) -> Vec<u8> {
     match Command::new(cmd).args(args).stdout(Stdio::piped()).stderr(Stdio::null()).output().await {
         Ok(out) => out.stdout,
@@ -33,11 +35,13 @@ async fn command_output(cmd: &str, args: &[&str]) -> Vec<u8> {
     }
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 async fn command_lines(cmd: &str, args: &[&str]) -> Vec<String> {
     let bytes = command_output(cmd, args).await;
     String::from_utf8_lossy(&bytes).lines().map(|line| line.trim().to_owned()).collect()
 }
 
+#[cfg(all(unix, not(target_os = "macos")))]
 async fn save_clipboard_image(mime: &str, bytes: &[u8]) -> Vec<PathBuf> {
     if bytes.is_empty() {
         return vec![];
@@ -47,7 +51,9 @@ async fn save_clipboard_image(mime: &str, bytes: &[u8]) -> Vec<PathBuf> {
         Some(other) => other.to_owned(),
         None => "png".to_owned(),
     };
-    let target = attachments_dir().join(format!("paste-{}.{ext}", now_ms()));
+    let dir = attachments_dir();
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let target = dir.join(format!("paste-{}.{ext}", now_ms()));
     match tokio::fs::write(&target, bytes).await {
         Ok(()) => vec![target],
         Err(_) => vec![],
@@ -94,7 +100,9 @@ async fn mac_clipboard_attachments() -> Vec<PathBuf> {
         }
     }
 
-    let target = attachments_dir().join(format!("paste-{}.png", now_ms()));
+    let dir = attachments_dir();
+    let _ = tokio::fs::create_dir_all(&dir).await;
+    let target = dir.join(format!("paste-{}.png", now_ms()));
     let script = format!(
         "set d to the clipboard as \u{ab}class PNGf\u{bb}\nset f to open for access POSIX file \"{}\" with write permission\nwrite d to f\nclose access f",
         target.display()
@@ -111,6 +119,7 @@ async fn mac_clipboard_attachments() -> Vec<PathBuf> {
 
 #[cfg(windows)]
 async fn windows_clipboard_attachments() -> Vec<PathBuf> {
+    let _ = tokio::fs::create_dir_all(attachments_dir()).await;
     let target = attachments_dir().join(format!("paste-{}.png", now_ms()));
     let script = "Add-Type -AssemblyName System.Windows.Forms, System.Drawing\n\
 if ([Windows.Forms.Clipboard]::ContainsFileDropList()) { [Windows.Forms.Clipboard]::GetFileDropList() }\n\
@@ -179,6 +188,10 @@ pub async fn copy_text(text: &str) {
 
 /// A JPEG re-encoded once to `clip-<name>.png` beside the cache; PNG passes through; anything else is None.
 pub async fn png_for(source: &Path, mime: &str) -> Option<PathBuf> {
+    png_for_in(&attachments_dir(), source, mime).await
+}
+
+async fn png_for_in(dir: &Path, source: &Path, mime: &str) -> Option<PathBuf> {
     if mime == "image/png" {
         return Some(source.to_path_buf());
     }
@@ -186,7 +199,7 @@ pub async fn png_for(source: &Path, mime: &str) -> Option<PathBuf> {
         return None;
     }
     let stem = source.file_stem()?.to_string_lossy().into_owned();
-    let target = attachments_dir().join(format!("clip-{stem}.png"));
+    let target = dir.join(format!("clip-{stem}.png"));
     if target.exists() {
         return Some(target);
     }
@@ -204,6 +217,7 @@ pub async fn png_for(source: &Path, mime: &str) -> Option<PathBuf> {
 }
 
 /// encodeURI's safe set: unreserved plus the small set of reserved characters it leaves alone.
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
 const ENCODE_URI_SAFE: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'_')
@@ -340,6 +354,29 @@ mod tests {
         let uri = format!("file://{}", utf8_percent_encode(&existing.to_string_lossy(), ENCODE_URI_SAFE));
         let text = format!("# a comment\n\n{uri}\n");
         assert_eq!(parse_uri_list(&text), vec![existing]);
+    }
+
+    #[tokio::test]
+    async fn hands_a_png_straight_back_and_leaves_formats_it_cannot_decode_alone() {
+        let dir = crate::testing::temp_dir("clip");
+        let png = dir.join("a.png");
+        assert_eq!(png_for_in(&dir, &png, "image/png").await, Some(png));
+        assert_eq!(png_for_in(&dir, &dir.join("a.heic"), "image/heic").await, None);
+        assert_eq!(png_for_in(&dir, &dir.join("a.gif"), "image/gif").await, None);
+    }
+
+    #[tokio::test]
+    async fn re_encodes_a_jpeg_as_png_once() {
+        let dir = crate::testing::temp_dir("clip");
+        let jpeg = dir.join("photo.jpg");
+        image::RgbImage::from_pixel(4, 3, image::Rgb([200, 10, 10])).save(&jpeg).unwrap();
+        let png = png_for_in(&dir, &jpeg, "image/jpeg").await.unwrap();
+        assert_eq!(png, dir.join("clip-photo.png"));
+        assert_eq!(image::image_dimensions(&png).unwrap(), (4, 3));
+        assert_eq!(&std::fs::read(&png).unwrap()[..4], b"\x89PNG");
+        std::fs::write(&png, b"kept").unwrap();
+        assert_eq!(png_for_in(&dir, &jpeg, "image/jpeg").await, Some(png.clone()));
+        assert_eq!(std::fs::read(&png).unwrap(), b"kept");
     }
 
     #[test]

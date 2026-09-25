@@ -7,20 +7,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::Millis;
 
+/// Epoch milliseconds from any JSON number. The agent computes some of them
+/// from Apple-epoch seconds with a fraction, so they can arrive as `1.7e12`-style floats.
+pub(crate) fn millis<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Millis, D::Error> {
+    Ok(opt_millis(deserializer)?.unwrap_or(0))
+}
+
+pub(crate) fn opt_millis<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Millis>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| value.as_i64().or_else(|| value.as_f64().filter(|number| number.is_finite()).map(|number| number as Millis))))
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FriendLocation {
     pub id: String,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
     pub addresses: Vec<String>,
     pub latitude: f64,
     pub longitude: f64,
     #[serde(default)]
     pub accuracy: Option<f64>,
+    #[serde(default, deserialize_with = "millis")]
     pub timestamp: Millis,
     #[serde(default)]
     pub label: Option<String>,
+    #[serde(default = "sharing")]
     pub is_sharing: bool,
 }
 
@@ -36,8 +50,13 @@ pub struct DeviceLocation {
     /// 0 to 1 charge level, when Apple reports one.
     #[serde(default)]
     pub battery: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_millis")]
     pub timestamp: Option<Millis>,
+}
+
+/// Every row the agent serves is an active share; a missing flag reads as one.
+fn sharing() -> bool {
+    true
 }
 
 /// Emails compare case-insensitively; phone numbers on their last 9 digits.
@@ -74,6 +93,7 @@ pub struct MapTile {
 
 const TILE_SIZE: f64 = 256.0;
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+const TILE_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct TileCoord {
     x: u32,
@@ -100,23 +120,34 @@ pub async fn tile_for(http: &reqwest::Client, lat: f64, lon: f64, zoom: u8, cach
     tokio::fs::create_dir_all(&tiles_dir).await?;
     let tile_path = tiles_dir.join(format!("{zoom}-{}-{}.png", coord.x, coord.y));
 
-    let fresh = tokio::fs::metadata(&tile_path)
-        .await
-        .ok()
-        .and_then(|meta| meta.modified().ok())
-        .is_some_and(|modified| SystemTime::now().duration_since(modified).map(|age| age < DAY).unwrap_or(false));
+    let modified = tokio::fs::metadata(&tile_path).await.ok().and_then(|meta| meta.modified().ok());
+    let fresh = modified.is_some_and(|modified| SystemTime::now().duration_since(modified).map(|age| age < DAY).unwrap_or(false));
 
     if !fresh {
         let url = format!("https://tile.openstreetmap.org/{zoom}/{}/{}.png", coord.x, coord.y);
-        let response = http.get(&url).header(reqwest::header::USER_AGENT, "messages-linux/0.1 (github.com/FormalSnake/messages)").send().await?;
-        if !response.status().is_success() {
-            anyhow::bail!("findmy: tile fetch for {zoom}/{}/{} returned {}", coord.x, coord.y, response.status().as_u16());
+        if let Err(error) = fetch_tile(http, &url, &tile_path).await {
+            // A day-old tile still shows the right streets; only a missing one is an error.
+            if modified.is_none() {
+                return Err(error.context(format!("findmy: tile fetch for {zoom}/{}/{}", coord.x, coord.y)));
+            }
+            tracing::warn!("findmy: keeping a stale tile: {error}");
         }
-        let bytes = response.bytes().await?;
-        tokio::fs::write(&tile_path, &bytes).await?;
     }
 
     Ok(MapTile { path: tile_path, px: coord.px, py: coord.py })
+}
+
+async fn fetch_tile(http: &reqwest::Client, url: &str, target: &Path) -> anyhow::Result<()> {
+    let response = http.get(url).timeout(TILE_TIMEOUT).header(reqwest::header::USER_AGENT, "messages-linux/0.1 (github.com/FormalSnake/messages)").send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("returned {}", response.status().as_u16());
+    }
+    let bytes = response.bytes().await?;
+    let mut part = target.as_os_str().to_owned();
+    part.push(".part");
+    tokio::fs::write(&part, &bytes).await?;
+    tokio::fs::rename(&part, target).await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -156,6 +187,20 @@ mod tests {
         }];
         assert!(match_friend(&friends, &["600111222".to_owned()]).is_some());
         assert!(match_friend(&friends, &["nomatch".to_owned()]).is_none());
+    }
+
+    #[test]
+    fn reads_fractional_and_missing_timestamps_instead_of_dropping_the_whole_list() {
+        let friends: Vec<FriendLocation> = serde_json::from_value(serde_json::json!([
+            { "id": "a", "addresses": ["+34600111222"], "latitude": 28.1, "longitude": -15.4, "timestamp": 1_720_471_200_123.456_f64, "isSharing": true },
+            { "id": "b", "latitude": 28.1, "longitude": -15.4 },
+        ]))
+        .unwrap();
+        assert_eq!(friends[0].timestamp, 1_720_471_200_123);
+        assert_eq!(friends[1].timestamp, 0);
+        assert!(friends[1].is_sharing);
+        let device: DeviceLocation = serde_json::from_value(serde_json::json!({ "id": "d", "name": "Mac", "latitude": 1.0, "longitude": 2.0, "timestamp": 5.5 })).unwrap();
+        assert_eq!(device.timestamp, Some(5));
     }
 
     #[test]

@@ -239,7 +239,7 @@ fn gif_cell(palette: &Palette, item: &Gif, preview: Option<String>, favorited: b
                 .items_center()
                 .justify_center()
                 .on_click(cx.listener(move |this, _, _window, cx| this.toggle_favorite(&for_fav, cx)))
-                .child(Icon::new(IconName::Heart).size(px(11.)).color(if favorited { palette.danger } else { palette.on_accent_soft })),
+                .child(Icon::new(IconName::Heart).filled(favorited).size(px(11.)).color(if favorited { palette.danger } else { palette.on_accent_soft })),
         )
 }
 
@@ -253,12 +253,11 @@ impl Render for GifPicker {
         let favorite_ids: HashSet<String> = favorites.iter().map(|item| item.id.clone()).collect();
         let show_favorites = self.committed.trim().is_empty();
         let on_close_outside = self.on_close.clone();
-        let on_close_key = self.on_close.clone();
 
 
-        anchored().position(self.anchor).anchor(Anchor::BottomLeft).snap_to_window_with_margin(spacing::X2).child(deferred(
-            div()
+        let panel = div()
                 .id("gif-picker")
+                .occlude()
                 .track_focus(&self.focus_handle)
                 .flex()
                 .flex_col()
@@ -271,11 +270,6 @@ impl Render for GifPicker {
                 .border_1()
                 .border_color(palette.overlay_border)
                 .on_mouse_down_out(move |_, window, cx| on_close_outside(window, cx))
-                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        on_close_key(window, cx);
-                    }
-                })
                 .child(
                     div()
                         .flex()
@@ -353,7 +347,9 @@ impl Render for GifPicker {
                                 })))
                                 .into_any_element()
                         }),
-                ),
-        )).into_any_element()
+                );
+        // Escape reaches the composer that owns this picker, which closes it.
+        let panel = crate::motion::fade(panel, ElementId::Name("gif-fade".into()), true, crate::motion::DURATION_FAST, crate::motion::DURATION_FAST);
+        anchored().position(self.anchor).anchor(Anchor::BottomLeft).snap_to_window_with_margin(spacing::X2).child(deferred(panel).with_priority(3)).into_any_element()
     }
 }

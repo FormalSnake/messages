@@ -6,7 +6,7 @@
 //! and those are kept across rebuilds by key, so a chat switch paints from
 //! memory in the frame it happens.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -119,6 +119,9 @@ pub(crate) struct RowList {
     slots: Rc<RefCell<Slots>>,
     pub(crate) state: ListState,
     follow: bool,
+    /// The list's width this frame, written by `width_probe` before the list
+    /// lays its rows out.
+    width: Rc<Cell<Pixels>>,
 }
 
 impl RowList {
@@ -128,7 +131,7 @@ impl RowList {
             state.set_follow_mode(FollowMode::Tail);
         }
         let follow = alignment == ListAlignment::Bottom;
-        RowList { slots: Rc::new(RefCell::new(Slots { slots: Vec::new(), rows: HashMap::new(), typing: None, typing_who: None, is_group: false, store, thread })), state, follow }
+        RowList { slots: Rc::new(RefCell::new(Slots { slots: Vec::new(), rows: HashMap::new(), typing: None, typing_who: None, is_group: false, store, thread })), state, follow, width: Rc::default() }
     }
 
     fn state_follows(&self) -> bool {
@@ -193,8 +196,17 @@ impl RowList {
         slots.slots = next;
     }
 
+    /// Zero-height element spanning the list's width. It must come before the
+    /// list in the same parent, so it prepaints first and the list's rows see
+    /// this frame's width.
+    pub(crate) fn width_probe(&self) -> impl IntoElement + use<> {
+        let width = self.width.clone();
+        canvas(move |bounds, _, _| width.set(bounds.size.width), |_, _, _, _| {}).absolute().top_0().left_0().w_full().h(px(0.))
+    }
+
     pub(crate) fn element(&self) -> List {
         let slots = self.slots.clone();
+        let width = self.width.clone();
         list(self.state.clone(), move |index, _window, cx| {
             let mut guard = slots.borrow_mut();
             let Slots { slots, rows, typing, typing_who, is_group, store, thread } = &mut *guard;
@@ -205,14 +217,29 @@ impl RowList {
                     let (who, group) = (typing_who.clone(), *is_group);
                     typing.get_or_insert_with(|| cx.new(|_| TypingRow::new(who, group))).clone().into_any_element()
                 }
-                Some(Slot::Message { data, props, entering }) => rows
-                    .entry(data.key.clone())
-                    .or_insert_with(|| {
-                        let (store, thread, data, props, entering) = (store.clone(), thread.clone(), data.clone(), props.clone(), *entering);
-                        cx.new(|cx| MessageRow::new(store, thread, data, props, entering, cx))
-                    })
-                    .clone()
-                    .into_any_element(),
+                Some(Slot::Message { data, props, entering }) => {
+                    let row = rows
+                        .entry(data.key.clone())
+                        .or_insert_with(|| {
+                            let (store, thread, data, props, entering) = (store.clone(), thread.clone(), data.clone(), props.clone(), *entering);
+                            cx.new(|cx| MessageRow::new(store, thread, data, props, entering, cx))
+                        })
+                        .clone();
+                    // A settled row is a cached view at its measured height, so a
+                    // GIF frame or a hover in one row repaints that row alone.
+                    let layout = row.read(cx).layout.clone();
+                    let settled = !layout.stale.replace(false);
+                    match layout.measured.get() {
+                        Some(size) if settled && size.width == width.get() => {
+                            layout.given.set(Some(size.height));
+                            AnyView::from(row).cached(StyleRefinement::default().w_full().h(size.height)).into_any_element()
+                        }
+                        _ => {
+                            layout.given.set(None);
+                            row.into_any_element()
+                        }
+                    }
+                }
             }
         })
     }
@@ -404,10 +431,15 @@ impl Thread {
 
     fn load_assistant(&mut self, store: &MessagesStore, cx: &mut Context<Self>) {
         self.assistant_loaded = true;
-        run_for(store, messages_core::config::load_config(), cx, |this, config, cx| {
+        let load = async {
+            let config = messages_core::config::load_config().await;
+            let language = messages_core::assistant::translation_language(config.canaryllm.as_ref().and_then(|llm| llm.language.as_deref())).await;
+            (config, language)
+        };
+        run_for(store, load, cx, |this, (config, language), cx| {
             let Some(llm) = config.canaryllm.filter(|llm| !llm.api_key.is_empty()) else { return };
             let client = CanaryLlmClient::new(llm.api_key, llm.model, None, reqwest::Client::new());
-            cx.set_global(AssistantSlot(Some(Assistant { client: Arc::new(client), language: llm.language.unwrap_or_else(|| "English".to_owned()) })));
+            cx.set_global(AssistantSlot(Some(Assistant { client: Arc::new(client), language })));
             this.dirty = true;
             cx.notify();
         });
@@ -469,6 +501,7 @@ impl Thread {
 
         let reset = self.list_key.as_deref() != Some(key.as_str());
         if reset {
+            crate::trace::stamp("thread open");
             self.list_key = Some(key);
             self.opened_at = now_ms();
             self.requested_older = false;
@@ -762,6 +795,7 @@ impl Thread {
 
 impl Render for Thread {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::trace::render("Thread");
         if self.store.is_none() {
             if let Some(store) = cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone()) {
                 self.rows = Some(RowList::new(store.clone(), cx.entity().downgrade(), ListAlignment::Bottom));
@@ -798,6 +832,10 @@ impl Render for Thread {
         } else {
             div().flex_grow(1.).into_any_element()
         };
-        div().id("thread").flex_grow(1.).min_h(px(0.)).w_full().flex().flex_col().child(body).children(lightbox)
+        let probe = self.rows.as_ref().map(RowList::width_probe);
+        // Full height as well as flex-grown: as a cached view the root is laid
+        // out on its own inside the box the parent gave it, where only a
+        // percentage height fills that box.
+        div().id("thread").flex_grow(1.).flex_basis(px(0.)).min_h(px(0.)).w_full().h_full().flex().flex_col().children(probe).child(body).children(lightbox)
     }
 }

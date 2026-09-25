@@ -70,6 +70,7 @@ impl Render for ReplyThread {
                     .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).child("Thread"))
                     .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child(self.label.clone())),
             )
+            .child(self.rows.width_probe())
             .child(self.rows.element().flex_grow(1.).w_full().pb(spacing::X2))
     }
 }
