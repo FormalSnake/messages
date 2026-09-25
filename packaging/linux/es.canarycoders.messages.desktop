@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Messages
+Comment=iMessage on Linux
+Exec=messages
+Icon=es.canarycoders.messages
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=iMessage;SMS;chat;
+StartupWMClass=es.canarycoders.messages

@@ -1,0 +1,380 @@
+//! Colour tokens, spacing, radii, type scale and sizes ported from
+//! `apps/desktop/src/ui/theme.ts`, plus the `~/.config/messages/theme.json`
+//! override that drives the app from matugen on Linux.
+//!
+//! The palette lives in a GPUI [`Global`], not a React-style remount: a file
+//! change swaps the colours in place and calls `cx.refresh_windows()` so every
+//! open window repaints with the new values.
+
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
+
+use gpui_kit::{App, Global, Hsla, Pixels, SharedString, px, rgb, rgba};
+use serde::Deserialize;
+
+// ---------------------------------------------------------------------------
+// Fonts
+// ---------------------------------------------------------------------------
+
+/// `MESSAGES_FONT` overrides the body font on any platform; otherwise SF Pro
+/// Text on macOS, Noto Sans elsewhere (see CLAUDE.md's Linux emoji section for
+/// why Noto Sans, not a bundled UI font, is the Linux default).
+pub fn font_sans() -> SharedString {
+    if let Ok(font) = std::env::var("MESSAGES_FONT") {
+        return font.into();
+    }
+    if cfg!(target_os = "macos") { "SF Pro Text".into() } else { "Noto Sans".into() }
+}
+
+/// Only macOS gets a named emoji family. cosmic-text, the Linux text stack
+/// under GPUI, has a hardcoded font-fallback list with no notion of emoji
+/// presentation: naming an emoji family there, even the name the installed
+/// font carries, resolves to a monochrome text face, while an unnamed run
+/// reaches the colour font through the per-glyph fallback (see CLAUDE.md).
+pub fn font_emoji() -> Option<SharedString> {
+    if cfg!(target_os = "macos") { Some("Apple Color Emoji".into()) } else { None }
+}
+
+// ---------------------------------------------------------------------------
+// Spacing, radii, sizes: fixed, so plain constants rather than global state
+// ---------------------------------------------------------------------------
+
+/// One scale, every gap and inset is a step on it. `X1` is 4px. Nothing in
+/// the UI should use a spacing number that is not from here.
+pub mod spacing {
+    use super::{Pixels, px};
+    pub const X1: Pixels = px(4.);
+    pub const X2: Pixels = px(8.);
+    pub const X3: Pixels = px(12.);
+    pub const X4: Pixels = px(16.);
+    pub const X5: Pixels = px(20.);
+    pub const X6: Pixels = px(24.);
+    pub const X8: Pixels = px(32.);
+    pub const X10: Pixels = px(40.);
+}
+
+/// Radii are concentric: an inner radius plus the padding around it equals the
+/// outer one. Menu 10 = item 6 + 4 padding, card 12 = control 6 + 6, and the
+/// bubble keeps Messages' own 18.
+pub mod radius {
+    use super::{Pixels, px};
+    pub const BUBBLE: Pixels = px(18.);
+    /// The clipped corner inside a run of bubbles from the same sender.
+    pub const BUBBLE_TIGHT: Pixels = px(5.);
+    pub const ROW: Pixels = px(8.);
+    pub const CONTROL: Pixels = px(6.);
+    pub const CARD: Pixels = px(12.);
+    pub const MENU: Pixels = px(10.);
+    pub const MENU_ITEM: Pixels = px(6.);
+    pub const PILL: Pixels = px(9999.);
+}
+
+#[derive(Clone, Copy)]
+pub struct TypeStyle {
+    pub font_size: Pixels,
+    /// Line height as an absolute pixel value, matching the TS `lineHeight`.
+    pub line_height: Pixels,
+    pub font_weight: f32,
+}
+
+/// Screen headings, titlebar titles, list rows, bubble copy: the same scale
+/// `apps/desktop/src/ui/theme.ts` exports as `TYPE`.
+pub mod type_scale {
+    use super::TypeStyle;
+    use gpui_kit::px;
+
+    /// Screen headings: the connect card, the details name.
+    pub const LARGE: TypeStyle = TypeStyle { font_size: px(20.), line_height: px(26.), font_weight: 700. };
+    /// Titlebar titles.
+    pub const TITLE: TypeStyle = TypeStyle { font_size: px(14.), line_height: px(18.), font_weight: 600. };
+    /// Every list row, menu item and button label. macOS control size.
+    pub const BODY: TypeStyle = TypeStyle { font_size: px(13.), line_height: px(18.), font_weight: 400. };
+    /// The sidebar's two-line message preview.
+    pub const PREVIEW: TypeStyle = TypeStyle { font_size: px(12.5), line_height: px(16.), font_weight: 400. };
+    /// Bubble copy: the one place that reads as content, not as chrome.
+    pub const BUBBLE: TypeStyle = TypeStyle { font_size: px(14.5), line_height: px(20.), font_weight: 400. };
+    pub const CAPTION: TypeStyle = TypeStyle { font_size: px(12.), line_height: px(16.), font_weight: 400. };
+    pub const MICRO: TypeStyle = TypeStyle { font_size: px(11.), line_height: px(14.), font_weight: 400. };
+}
+
+pub const SIDEBAR_WIDTH: Pixels = px(300.);
+/// Below this the sidebar would leave the thread too narrow to read.
+pub const SIDEBAR_WIDTH_COMPACT: Pixels = px(248.);
+pub const INFO_WIDTH: Pixels = px(280.);
+pub const TITLEBAR_HEIGHT: Pixels = px(52.);
+pub const ROW_HEIGHT: Pixels = px(64.);
+pub const AVATAR_ROW: Pixels = px(44.);
+/// Gutter each side of the thread. Bubbles, separators and receipts share it.
+pub const THREAD_INSET: Pixels = px(16.);
+pub const BUBBLE_MAX_WIDTH: Pixels = px(460.);
+
+/// macOS traffic lights sit inside this clearance; other platforms draw their
+/// own controls flush right, so there is nothing to clear.
+pub fn traffic_light_clearance() -> Pixels {
+    if cfg!(target_os = "macos") { px(78.) } else { px(0.) }
+}
+
+// ---------------------------------------------------------------------------
+// Palette: the part `theme.json` can override, so it lives in a Global
+// ---------------------------------------------------------------------------
+
+/// Apple's dark-appearance system colours: the app should read as Messages,
+/// not as a theme of it. Mirrors the `APPLE` / `Palette` pair in theme.ts:
+/// `theme.json` sets the base tokens, `derived` recomputes the washes and
+/// accent-following tokens below from whichever base tokens it set.
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub canvas: Hsla,
+    pub sidebar: Hsla,
+    pub sidebar_border: Hsla,
+    pub raised: Hsla,
+    pub raised_hover: Hsla,
+    pub overlay: Hsla,
+    pub overlay_border: Hsla,
+    pub separator: Hsla,
+    pub text: Hsla,
+    pub secondary: Hsla,
+    pub tertiary: Hsla,
+    pub ghost: Hsla,
+    pub accent: Hsla,
+    pub on_accent: Hsla,
+    pub on_accent_soft: Hsla,
+    pub selected: Hsla,
+    pub selected_soft: Hsla,
+    pub imessage: Hsla,
+    pub sms: Hsla,
+    pub received: Hsla,
+    pub received_text: Hsla,
+    pub danger: Hsla,
+    pub danger_soft: Hsla,
+    pub warning: Hsla,
+    pub online: Hsla,
+    pub offline: Hsla,
+    pub tapback: Hsla,
+    pub tapback_mine: Hsla,
+    pub unread: Hsla,
+    pub focus_ring: Hsla,
+    /// Washes for hover and press over a dark surface, so one value works on any fill.
+    pub hover_wash: Hsla,
+    pub press_wash: Hsla,
+    pub transparent: Hsla,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        let text = Hsla::from(rgb(0xf2f2f7));
+        let accent = Hsla::from(rgb(0x0a84ff));
+        let on_accent = Hsla::from(rgb(0xffffff));
+        let danger = Hsla::from(rgb(0xff453a));
+        Self {
+            canvas: Hsla::from(rgb(0x1c1c1e)),
+            sidebar: Hsla::from(rgb(0x232325)),
+            sidebar_border: Hsla::from(rgb(0x2c2c2e)),
+            raised: Hsla::from(rgb(0x2c2c2e)),
+            raised_hover: Hsla::from(rgb(0x3a3a3c)),
+            overlay: Hsla::from(rgb(0x2c2c2e)),
+            overlay_border: Hsla::from(rgb(0x48484a)),
+            separator: Hsla::from(rgb(0x38383a)),
+            text,
+            secondary: Hsla::from(rgb(0x98989f)),
+            tertiary: Hsla::from(rgb(0x6e6e73)),
+            ghost: Hsla::from(rgb(0x48484a)),
+            accent,
+            on_accent,
+            on_accent_soft: with_alpha(on_accent, 0xb8),
+            selected: accent,
+            selected_soft: with_alpha(accent, 0x33),
+            imessage: accent,
+            sms: Hsla::from(rgb(0x30d158)),
+            received: Hsla::from(rgb(0x3a3a3c)),
+            received_text: text,
+            danger,
+            danger_soft: with_alpha(danger, 0x26),
+            warning: Hsla::from(rgb(0xffd60a)),
+            online: Hsla::from(rgb(0x30d158)),
+            offline: danger,
+            tapback: Hsla::from(rgb(0x48484a)),
+            tapback_mine: accent,
+            unread: accent,
+            focus_ring: accent,
+            hover_wash: with_alpha(text, 0x14),
+            press_wash: with_alpha(text, 0x26),
+            transparent: Hsla::transparent_black(),
+        }
+    }
+}
+
+impl Palette {
+    /// Applies a `theme.json` file's base tokens over the Apple defaults, then
+    /// recomputes the derived ones, matching `applyPalette` in theme.ts.
+    /// Unknown keys and anything but `#rrggbb`/`#rrggbbaa` are ignored.
+    fn apply_file(&mut self, file: &PaletteFile) {
+        macro_rules! set {
+            ($field:ident) => {
+                if let Some(color) = file.$field.as_deref().and_then(parse_hex) {
+                    self.$field = color;
+                }
+            };
+        }
+        set!(canvas);
+        set!(sidebar);
+        set!(sidebar_border);
+        set!(raised);
+        set!(raised_hover);
+        set!(overlay);
+        set!(overlay_border);
+        set!(separator);
+        set!(text);
+        set!(secondary);
+        set!(tertiary);
+        set!(ghost);
+        set!(accent);
+        set!(on_accent);
+        set!(danger);
+        set!(warning);
+        set!(tapback);
+        set!(sms);
+        set!(received);
+
+        self.selected = self.accent;
+        self.selected_soft = with_alpha(self.accent, 0x33);
+        self.imessage = self.accent;
+        self.tapback_mine = self.accent;
+        self.unread = self.accent;
+        self.focus_ring = self.accent;
+        self.danger_soft = with_alpha(self.danger, 0x26);
+        self.on_accent_soft = with_alpha(self.on_accent, 0xb8);
+        self.hover_wash = with_alpha(self.text, 0x14);
+        self.press_wash = with_alpha(self.text, 0x26);
+        self.received_text = self.text;
+        self.offline = self.danger;
+    }
+}
+
+/// The subset of `Palette` a theme file sets directly; everything else is
+/// derived from these (see `Palette::apply_file`).
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct PaletteFile {
+    canvas: Option<String>,
+    sidebar: Option<String>,
+    sidebar_border: Option<String>,
+    raised: Option<String>,
+    raised_hover: Option<String>,
+    overlay: Option<String>,
+    overlay_border: Option<String>,
+    separator: Option<String>,
+    text: Option<String>,
+    secondary: Option<String>,
+    tertiary: Option<String>,
+    ghost: Option<String>,
+    accent: Option<String>,
+    on_accent: Option<String>,
+    danger: Option<String>,
+    warning: Option<String>,
+    tapback: Option<String>,
+    sms: Option<String>,
+    received: Option<String>,
+}
+
+fn with_alpha(color: Hsla, alpha_byte: u8) -> Hsla {
+    Hsla { a: alpha_byte as f32 / 255.0, ..color }
+}
+
+fn parse_hex(s: &str) -> Option<Hsla> {
+    let hex = s.strip_prefix('#')?;
+    match hex.len() {
+        6 => u32::from_str_radix(hex, 16).ok().map(|v| Hsla::from(rgb(v))),
+        8 => u32::from_str_radix(hex, 16).ok().map(|v| Hsla::from(rgba(v))),
+        _ => None,
+    }
+}
+
+/// The live theme. A [`Global`] rather than a React-style remount: swap
+/// `palette` in place and call `cx.refresh_windows()`.
+pub struct Theme {
+    pub palette: Palette,
+}
+
+impl Global for Theme {}
+
+impl Theme {
+    pub fn install(cx: &mut App) {
+        cx.set_global(Theme { palette: Palette::default() });
+        sync_component_theme(cx);
+    }
+
+    pub fn get(cx: &App) -> Palette {
+        cx.global::<Theme>().palette
+    }
+}
+
+/// Pushes the base tokens gpui-component's own `Theme` reads for chrome it
+/// draws itself (the title bar and its close/minimize/maximize controls) so
+/// the window border, drag area and control hover colours read as Messages
+/// rather than gpui-component's own defaults.
+fn sync_component_theme(cx: &mut App) {
+    let palette = Theme::get(cx);
+    let theme = gpui_kit::component::Theme::global_mut(cx);
+    theme.background = palette.canvas;
+    theme.foreground = palette.text;
+    theme.title_bar = palette.canvas;
+    theme.title_bar_border = palette.separator;
+    theme.secondary_hover = palette.hover_wash;
+    theme.secondary_active = palette.press_wash;
+    theme.secondary_foreground = palette.text;
+    theme.danger = palette.danger;
+    theme.danger_active = palette.danger;
+    theme.danger_foreground = palette.on_accent;
+    theme.font_family = font_sans();
+}
+
+fn theme_path() -> PathBuf {
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    config_home.join("messages").join("theme.json")
+}
+
+/// Polls `theme.json` every second for matugen on Linux. The poll itself runs
+/// on the background executor and only touches the foreground (a `cx.update`
+/// plus `refresh_windows`) when the file's mtime actually moved, so an
+/// untouched theme file costs one background `stat` a second and nothing on
+/// the window's render loop.
+pub fn watch_theme_file(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let path = theme_path();
+        let mut last_mtime: Option<SystemTime> = None;
+        loop {
+            let poll_path = path.clone();
+            let mtime = cx
+                .background_executor()
+                .spawn(async move { std::fs::metadata(&poll_path).and_then(|m| m.modified()).ok() })
+                .await;
+
+            if let Some(mtime) = mtime {
+                if last_mtime != Some(mtime) {
+                    last_mtime = Some(mtime);
+                    let read_path = path.clone();
+                    let contents = cx
+                        .background_executor()
+                        .spawn(async move { std::fs::read_to_string(&read_path).ok() })
+                        .await;
+                    if let Some(contents) = contents {
+                        if let Ok(file) = serde_json::from_str::<PaletteFile>(&contents) {
+                            cx.update(|cx| {
+                                cx.global_mut::<Theme>().palette.apply_file(&file);
+                                sync_component_theme(cx);
+                                cx.refresh_windows();
+                            });
+                        }
+                    }
+                }
+            }
+
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+        }
+    })
+    .detach();
+}
