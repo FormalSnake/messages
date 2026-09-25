@@ -6,11 +6,7 @@
 //! change swaps the colours in place and calls `cx.refresh_windows()` so every
 //! open window repaints with the new values.
 
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
-
-use gpui_kit::{App, Global, Hsla, Pixels, SharedString, px, rgb, rgba};
-use serde::Deserialize;
+use gpui_kit::{App, Global, Hsla, Pixels, SharedString, px, rgb};
 
 // ---------------------------------------------------------------------------
 // Fonts
@@ -204,90 +200,8 @@ impl Default for Palette {
     }
 }
 
-impl Palette {
-    /// Applies a `theme.json` file's base tokens over the Apple defaults, then
-    /// recomputes the derived ones, matching `applyPalette` in theme.ts.
-    /// Unknown keys and anything but `#rrggbb`/`#rrggbbaa` are ignored.
-    fn apply_file(&mut self, file: &PaletteFile) {
-        macro_rules! set {
-            ($field:ident) => {
-                if let Some(color) = file.$field.as_deref().and_then(parse_hex) {
-                    self.$field = color;
-                }
-            };
-        }
-        set!(canvas);
-        set!(sidebar);
-        set!(sidebar_border);
-        set!(raised);
-        set!(raised_hover);
-        set!(overlay);
-        set!(overlay_border);
-        set!(separator);
-        set!(text);
-        set!(secondary);
-        set!(tertiary);
-        set!(ghost);
-        set!(accent);
-        set!(on_accent);
-        set!(danger);
-        set!(warning);
-        set!(tapback);
-        set!(sms);
-        set!(received);
-
-        self.selected = self.accent;
-        self.selected_soft = with_alpha(self.accent, 0x33);
-        self.imessage = self.accent;
-        self.tapback_mine = self.accent;
-        self.unread = self.accent;
-        self.focus_ring = self.accent;
-        self.danger_soft = with_alpha(self.danger, 0x26);
-        self.on_accent_soft = with_alpha(self.on_accent, 0xb8);
-        self.hover_wash = with_alpha(self.text, 0x14);
-        self.press_wash = with_alpha(self.text, 0x26);
-        self.received_text = self.text;
-        self.offline = self.danger;
-    }
-}
-
-/// The subset of `Palette` a theme file sets directly; everything else is
-/// derived from these (see `Palette::apply_file`).
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct PaletteFile {
-    canvas: Option<String>,
-    sidebar: Option<String>,
-    sidebar_border: Option<String>,
-    raised: Option<String>,
-    raised_hover: Option<String>,
-    overlay: Option<String>,
-    overlay_border: Option<String>,
-    separator: Option<String>,
-    text: Option<String>,
-    secondary: Option<String>,
-    tertiary: Option<String>,
-    ghost: Option<String>,
-    accent: Option<String>,
-    on_accent: Option<String>,
-    danger: Option<String>,
-    warning: Option<String>,
-    tapback: Option<String>,
-    sms: Option<String>,
-    received: Option<String>,
-}
-
-fn with_alpha(color: Hsla, alpha_byte: u8) -> Hsla {
+pub(crate) fn with_alpha(color: Hsla, alpha_byte: u8) -> Hsla {
     Hsla { a: alpha_byte as f32 / 255.0, ..color }
-}
-
-fn parse_hex(s: &str) -> Option<Hsla> {
-    let hex = s.strip_prefix('#')?;
-    match hex.len() {
-        6 => u32::from_str_radix(hex, 16).ok().map(|v| Hsla::from(rgb(v))),
-        8 => u32::from_str_radix(hex, 16).ok().map(|v| Hsla::from(rgba(v))),
-        _ => None,
-    }
 }
 
 /// The live theme. A [`Global`] rather than a React-style remount: swap
@@ -306,6 +220,12 @@ impl Theme {
 
     pub fn get(cx: &App) -> Palette {
         cx.global::<Theme>().palette
+    }
+
+    /// `live_theme.rs` calls this after applying a `theme.json` change.
+    pub(crate) fn set(cx: &mut App, palette: Palette) {
+        cx.global_mut::<Theme>().palette = palette;
+        sync_component_theme(cx);
     }
 }
 
@@ -327,54 +247,4 @@ fn sync_component_theme(cx: &mut App) {
     theme.danger_active = palette.danger;
     theme.danger_foreground = palette.on_accent;
     theme.font_family = font_sans();
-}
-
-fn theme_path() -> PathBuf {
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    config_home.join("messages").join("theme.json")
-}
-
-/// Polls `theme.json` every second for matugen on Linux. The poll itself runs
-/// on the background executor and only touches the foreground (a `cx.update`
-/// plus `refresh_windows`) when the file's mtime actually moved, so an
-/// untouched theme file costs one background `stat` a second and nothing on
-/// the window's render loop.
-pub fn watch_theme_file(cx: &mut App) {
-    cx.spawn(async move |cx| {
-        let path = theme_path();
-        let mut last_mtime: Option<SystemTime> = None;
-        loop {
-            let poll_path = path.clone();
-            let mtime = cx
-                .background_executor()
-                .spawn(async move { std::fs::metadata(&poll_path).and_then(|m| m.modified()).ok() })
-                .await;
-
-            if let Some(mtime) = mtime {
-                if last_mtime != Some(mtime) {
-                    last_mtime = Some(mtime);
-                    let read_path = path.clone();
-                    let contents = cx
-                        .background_executor()
-                        .spawn(async move { std::fs::read_to_string(&read_path).ok() })
-                        .await;
-                    if let Some(contents) = contents {
-                        if let Ok(file) = serde_json::from_str::<PaletteFile>(&contents) {
-                            cx.update(|cx| {
-                                cx.global_mut::<Theme>().palette.apply_file(&file);
-                                sync_component_theme(cx);
-                                cx.refresh_windows();
-                            });
-                        }
-                    }
-                }
-            }
-
-            cx.background_executor().timer(Duration::from_secs(1)).await;
-        }
-    })
-    .detach();
 }

@@ -1,27 +1,50 @@
+mod app;
+mod assets;
+mod bridge;
+mod confirm;
+mod connect;
 mod icons;
+mod live_theme;
+mod menus;
 mod motion;
+mod primitives;
 mod theme;
+mod toast;
+
+// D1 sidebar
+mod new_chat;
+mod search_results;
+mod sidebar;
+mod sidebar_row;
+mod switcher;
+
+// D2 thread
+mod attachments;
+mod bubble;
+mod gif;
+mod lightbox;
+mod reply_thread;
+mod thread;
+mod thread_rows;
+
+// D3 header and composer
+mod composer;
+mod details;
+mod facetime;
+mod gif_picker;
+mod header;
+mod location;
+mod scheduled;
 
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::*;
+
+use app::AppRoot;
 
 /// GTK/Wayland and X11 window manager application id (`WM_CLASS` on X11), used
 /// to group and identify the window; matches the `.desktop` file's own name so
 /// the shell can find the app's icon by id.
 const APP_ID: &str = "es.canarycoders.messages";
-
-struct Shell;
-
-impl Render for Shell {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = theme::Theme::get(cx);
-        component::v_flex()
-            .size_full()
-            .bg(palette.canvas)
-            .child(TitleBar::new().child(div().text_color(palette.text).child("Messages")))
-            .child(div().flex_1())
-    }
-}
 
 fn window_options(cx: &App) -> WindowOptions {
     let mut options = TitleBar::window_options();
@@ -38,15 +61,30 @@ fn window_options(cx: &App) -> WindowOptions {
 }
 
 fn main() {
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
-        gpui_kit::init(cx);
-        theme::Theme::install(cx);
-        theme::watch_theme_file(cx);
+    // Every network call, timer, file read or write, JSON parse, image decode
+    // and ffmpeg run happens here, never on the GPUI foreground thread.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("messages-rt")
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    // Leaked so its Handle stays valid for the process; the runtime itself is
+    // never meant to shut down before the process does.
+    let runtime_handle = Box::leak(Box::new(runtime)).handle().clone();
 
+    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+        gpui_kit::init(cx);
+        app::init(cx);
+        theme::Theme::install(cx);
+        live_theme::watch(cx);
+        bridge::Bridge::install(cx);
+
+        let runtime_handle = runtime_handle.clone();
         cx.spawn(async move |cx| {
             let options = cx.update(|cx| window_options(cx));
             cx.open_window(options, |window, cx| {
-                let view = cx.new(|_| Shell);
+                let view = cx.new(|cx| AppRoot::new(runtime_handle, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("open window");

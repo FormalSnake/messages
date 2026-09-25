@@ -5,6 +5,7 @@
 //! curated set gpui-component's own widgets use internally (window controls,
 //! chevrons). The full bundled Lucide set lives in `gpui_kit::assets` instead.
 
+use gpui_kit::{App, Hsla, IntoElement, Pixels, RenderOnce, Styled, Window, px, svg};
 use gpui_kit::assets::IconName as Glyph;
 
 /// Names the rest of the UI asks for, independent of which glyph backs them.
@@ -121,5 +122,44 @@ pub fn glyph(name: IconName) -> Glyph {
         Schedule => Glyph::Clock,
         Heart => Glyph::Heart,
         Silenced => Glyph::Moon,
+    }
+}
+
+/// Port of `apps/desktop/src/ui/icons.tsx`'s `<Icon>`. TS bakes a stroke
+/// weight into the SVG source at 1.5 (2.0 for `strong`); the bundled glyphs
+/// here ship at a single fixed stroke, so `strong` is accepted for call-site
+/// parity but does not yet change the rendered weight.
+#[derive(IntoElement)]
+pub struct Icon {
+    name: IconName,
+    size: Pixels,
+    color: Hsla,
+    strong: bool,
+}
+
+impl Icon {
+    pub fn new(name: IconName) -> Self {
+        Self { name, size: px(16.), color: Hsla::transparent_black(), strong: false }
+    }
+
+    pub fn size(mut self, size: Pixels) -> Self {
+        self.size = size;
+        self
+    }
+
+    pub fn color(mut self, color: Hsla) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn strong(mut self, strong: bool) -> Self {
+        self.strong = strong;
+        self
+    }
+}
+
+impl RenderOnce for Icon {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        svg().path(glyph(self.name).path()).flex_shrink_0().size(self.size).text_color(self.color)
     }
 }

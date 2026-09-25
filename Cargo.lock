@@ -3936,8 +3936,10 @@ dependencies = [
  "anyhow",
  "gpui-kit",
  "messages-core",
+ "reqwest",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
