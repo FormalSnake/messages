@@ -128,7 +128,12 @@ thread_local! {
 
 fn data_image(url: &str) -> Option<Arc<Image>> {
     DATA_IMAGES.with(|cache| {
-        cache.borrow_mut().entry(url.to_owned()).or_insert_with(|| decode_data_url(url).map(|(format, bytes)| Arc::new(Image::from_bytes(format, bytes)))).clone()
+        if let Some(image) = cache.borrow().get(url) {
+            return image.clone();
+        }
+        let image = decode_data_url(url).map(|(format, bytes)| Arc::new(Image::from_bytes(format, bytes)));
+        cache.borrow_mut().insert(url.to_owned(), image.clone());
+        image
     })
 }
 

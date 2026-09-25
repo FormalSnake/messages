@@ -188,7 +188,7 @@ fn photo_avatar(src: &str, size: Pixels) -> impl IntoElement {
         .overflow_hidden()
         .border_1()
         .border_color(hsla(0., 0., 1., 0.1))
-        .child(img(src.to_owned()).w(inner).h(inner).rounded(inner / 2.).object_fit(ObjectFit::Cover))
+        .child(img(crate::attachments::image_source(std::path::Path::new(src))).w(inner).h(inner).rounded(inner / 2.).object_fit(ObjectFit::Cover))
 }
 
 fn monogram_avatar(label: &str, size: Pixels) -> impl IntoElement {

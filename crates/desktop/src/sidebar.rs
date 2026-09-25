@@ -491,9 +491,13 @@ fn render_row(sidebar: &mut Sidebar, index: usize, window: &mut Window, cx: &mut
         Row::Result(message, chat) => {
             let palette = Theme::get(cx);
             let chat_guid = chat.guid.clone();
+            let message_guid = message.guid.clone();
             let on_select = sidebar.on_select.clone();
             let id = ElementId::Name(format!("result-{}", message.guid).into());
-            let row = search_result_row(id, message, chat, palette, move |window, cx| on_select(&chat_guid, window, cx));
+            let row = search_result_row(id, message, chat, palette, move |window, cx| {
+                on_select(&chat_guid, window, cx);
+                crate::thread::request_jump(&chat_guid, &message_guid, cx);
+            });
             div().px(spacing::X2).child(row).into_any_element()
         }
         Row::Note { title, body } => {

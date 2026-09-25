@@ -396,6 +396,7 @@ impl MessageRow {
             self.model = Model::new(self.data.message.clone());
             Media::sync(self, cx);
         }
+        cx.notify();
     }
 
     fn capabilities(&self) -> Capabilities {
