@@ -588,9 +588,11 @@ item only when the Rust build does it on Linux and macOS.
 
 - [ ] Linux client-side decorations with drag, double-click maximize and window controls via gpui-kit `TitleBar::window_options()`
 - [ ] App id `es.canarycoders.messages`, shipped `es.canarycoders.messages.desktop` and icon, so Hyprland rules and GNOME's dock group and show it
-- [ ] Per-view invalidation: a `StoreEvent` notifies only the entities watching it (sidebar row, bubble, header, composer) instead of re-rendering the whole tree
+- [x] Per-view invalidation: a `StoreEvent` notifies only the entities watching it (sidebar row, bubble, header, composer) instead of re-rendering the whole tree; the sidebar, header and thread are cached views and settled bubbles are cached at their measured height, so a GIF frame re-renders one bubble
 - [x] GIFs decoded once per shared file and stepped by a clock that notifies only the bubbles showing it, with no React rebuild per frame and no ffmpeg frame dump
 - [ ] Stills (previews, tiles, tail cuts, avatars) derived in process with the `image` crate; ffmpeg only for video posters and HEIF
 - [ ] Drag files onto the window to attach them (TS has no drop target)
 - [ ] No system TLS: rustls everywhere, so the Linux build needs no OpenSSL
-- [ ] Performance budget from `docs/rust-architecture.md` met and measured: cold start under 150 ms, chat switch and keystroke under one frame, idle CPU about 0%
+- [ ] Performance budget from `docs/rust-architecture.md` met and measured: cold start under 150 ms, chat switch and keystroke under one frame, idle CPU about 0% (measured with `MESSAGES_TRACE=1`: switch and keystroke under 1 ms, idle 0%; first paint 150 to 178 ms on macOS and thread rows at 187 to 241 ms, so cold start is still over)
+- [x] Stills decoded at the size they are shown, off the UI thread and cached per path and size (`stills.rs`): no aliased thumbnails, and a 320 px photo holds about 1.2 MB instead of a full-size texture
+- [ ] Colour emoji on Linux everywhere (bubbles, tapbacks, sidebar previews), not only where cosmic-text's fallback happens to reach the colour font (`emoji_font.rs`; needs a Linux run)

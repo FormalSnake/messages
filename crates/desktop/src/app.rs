@@ -827,7 +827,7 @@ impl Render for AppRoot {
         } else if selected {
             main_pane
                 .child(AnyView::from(self.header.clone()).cached(StyleRefinement::default().w_full().h(TITLEBAR_HEIGHT).flex_shrink_0()))
-                .child(self.thread.clone())
+                .child(AnyView::from(self.thread.clone()).cached(StyleRefinement::default().flex_grow(1.).min_h(px(0.)).w_full()))
                 .child(self.composer.clone())
         } else {
             main_pane.child(empty_state(status, connection_error, cx))

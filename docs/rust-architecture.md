@@ -80,6 +80,50 @@ no whole-tree notify (the root view only re-renders on `Selection`,
 index into it under the read guard; derived media is computed once per shared
 path and cached on disk.
 
+### Measured
+
+`MESSAGES_TRACE=1` prints the numbers below on stderr (`crates/desktop/src/trace.rs`):
+startup phases, `first paint`, `thread open -> paint`, `key -> paint` for
+every keystroke, and once a second the frames painted and which views
+rendered. Release build, demo data, 2026-09-25. macOS runs are the offscreen
+screenshot build; Linux runs are g815 (RTX 5070 laptop) in a headless sway.
+
+| Metric | macOS | Linux (g815) |
+| --- | --- | --- |
+| Process start to first paint | 150 to 178 ms (was 327 to 391) | 256 to 302 ms, measured before the theme font fix below |
+| Process start to thread rows painted | 187 to 241 ms (was 395 to 459) | 267 to 350 ms, same caveat |
+| Chat switch, key to painted frame | not measured | 0.25 ms to the frame; the thread's own rebuild to paint 0.5 to 3.4 ms |
+| Composer keystroke to painted frame | not measured | 0.5 to 0.9 ms |
+| Idle CPU | not measured | 0% (top, 1 s samples) |
+| GIF CPU | not measured | about 2% for a 10 fps GIF, from before view caching; the headless sway deactivates the window, so it has not been re-measured |
+| RSS | 114 MB | 355 MB, of which 275 MB is file-backed GPU driver code (see below) |
+
+Renders per GIF frame: the sidebar, header and thread are cached views
+(`AnyView::cached`) and every settled message row is cached inside the
+thread's list at its measured height, so a GIF step notifies one row and
+re-renders that row, its ancestors (`Thread`, `AppRoot`) and the uncached
+composer; sidebar rows, the header and every other bubble replay last frame.
+
+Startup: gpui-component resolves `.SystemUIFont` and the platform monospace
+default by listing every installed font, about 210 ms through CoreText.
+`main.rs` names both families on the component theme before
+`gpui_kit::init`, which is where the macOS drop comes from.
+
+Linux RSS: wgpu is created with Vulkan and GL, and enumerating adapters maps
+every installed Vulkan ICD and EGL vendor. On g815 that is libLLVM (100 MB,
+pulled in by Mesa's lavapipe and gallium), libnvidia-gpucomp (69 MB), Mesa
+gallium (26 MB) and NVIDIA's EGL and GL cores (46 MB): clean, shared,
+file-backed pages that count toward RSS but not toward what the app owns.
+The backend list is hardcoded in gpui-pre-wgpu (`WgpuContext::instance`), so
+cutting it means patching that crate. What the app owns is about 46 MB
+anonymous plus 35 MB of GPU shared memory; heaptrack puts the peak heap at
+31 MB, 14 MB of it inside the NVIDIA EGL driver.
+
+Stills are decoded at the size they are shown (`stills.rs`): a demo avatar
+went from a 480x480 texture (900 KB) to 84x84 (27 KB); a 4032x3024 photo in
+a 320 px bubble goes from 46.5 MB to about 1.2 MB, CPU copy and texture
+alike.
+
 ## Linux is first class
 
 Targets: NixOS with Hyprland (e1504g), GNOME on Wayland, and macOS. Core must

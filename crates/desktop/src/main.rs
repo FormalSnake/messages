@@ -81,19 +81,41 @@ fn main() {
     let runtime_handle = Box::leak(Box::new(runtime)).handle().clone();
 
     gpui_kit::application().with_assets(icons::IconAssets).run(move |cx| {
-        gpui_kit::init(cx);
+        trace::log_if_enabled("platform up");
+        // gpui-component resolves ".SystemUIFont" and the platform monospace
+        // default by listing every installed font (about 200 ms through
+        // CoreText) unless the theme already names families. The app never
+        // shows monospace text and names its own sans, so both are set first
+        // and the default light and dark configs are put back afterwards.
+        {
+            use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
+            let mut named = Theme::default();
+            named.font_family = theme::font_sans();
+            named.mono_font_family = theme::font_sans();
+            cx.set_global(named);
+            gpui_kit::init(cx);
+            let registry = ThemeRegistry::global(cx);
+            let (light, dark) = (registry.default_light_theme().clone(), registry.default_dark_theme().clone());
+            let component = Theme::global_mut(cx);
+            component.light_theme = light;
+            component.dark_theme = dark;
+            Theme::change(ThemeMode::Light, None, cx);
+        }
         app::init(cx);
         theme::Theme::install(cx);
         live_theme::watch(cx);
         emoji_font::install(cx);
         bridge::Bridge::install(cx);
         trace::watch_keys(cx);
+        trace::log_if_enabled("app initialised");
 
         let runtime_handle = runtime_handle.clone();
         cx.spawn(async move |cx| {
             let options = cx.update(|cx| window_options(cx));
             cx.open_window(options, |window, cx| {
+                trace::log_if_enabled("window created");
                 let view = cx.new(|cx| AppRoot::new(runtime_handle, window, cx));
+                trace::log_if_enabled("views built");
                 cx.new(|cx| Root::new(view, window, cx))
             })
             .expect("open window");

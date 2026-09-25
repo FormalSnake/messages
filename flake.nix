@@ -22,16 +22,16 @@
             fontconfig.lib
             freetype
             libxcb
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libXi
-            xorg.libXrandr
+            libx11
+            libxcursor
+            libxi
+            libxrandr
             libglvnd
           ];
         in
         {
           default = pkgs.mkShell {
-            packages = [ pkgs.bun ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux ([ pkgs.cargo pkgs.rustc pkgs.fontconfig.dev pkgs.grim pkgs.wl-clipboard pkgs.libnotify pkgs.pkg-config ] ++ linuxLibs);
+            packages = [ pkgs.bun ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.cargo pkgs.rustc pkgs.fontconfig pkgs.fontconfig.dev pkgs.grim pkgs.wl-clipboard pkgs.libnotify pkgs.pkg-config ] ++ linuxLibs);
             # `cargo build -p messages` needs pkg-config to find libxkbcommon's and
             # freetype's headers; mkShell's setup hooks pick those up from the
             # packages above automatically once pkg-config is present.
@@ -41,7 +41,7 @@
             # NIX_LD_LIBRARY_PATH, so the libraries go on LD_LIBRARY_PATH instead, and
             # the Rust binary (built outside the Nix sandbox) needs
             # the same at both link and run time.
-            shellHook = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH=/run/opengl-driver/lib:${pkgs.lib.makeLibraryPath linuxLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
             '';
           };

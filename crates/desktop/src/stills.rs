@@ -171,7 +171,12 @@ fn decode(key: &Key, renderer: &SvgRenderer) -> Option<RenderImage> {
         (bytes, svg)
     };
     let rgba = if svg { rasterize_svg(&bytes, renderer)? } else { decode_raster(&bytes)? };
+    let full = rgba.dimensions();
     let mut scaled = fit(rgba, key.width, key.height, key.cover);
+    if crate::trace::enabled() {
+        let kb = |(w, h): (u32, u32)| w as usize * h as usize * 4 / 1024;
+        crate::trace::log(&format!("still {}x{} -> {}x{}: {} KB instead of {} KB", full.0, full.1, scaled.width(), scaled.height(), kb(scaled.dimensions()), kb(full)));
+    }
     if !svg {
         // The SVG path already hands back BGRA; `image` decodes RGBA.
         for pixel in scaled.chunks_exact_mut(4) {
@@ -183,9 +188,23 @@ fn decode(key: &Key, renderer: &SvgRenderer) -> Option<RenderImage> {
 
 /// The SVG at twice its own size, in GPUI's BGRA, as the input to `fit`.
 fn rasterize_svg(bytes: &[u8], renderer: &SvgRenderer) -> Option<RgbaImage> {
-    let image = renderer.render_single_frame(bytes, 1.0).ok()?;
+    let bytes = with_concrete_sans(bytes);
+    let image = renderer.render_single_frame(&bytes, 1.0).ok()?;
     let size = image.size(0);
     RgbaImage::from_raw(size.width.0 as u32, size.height.0 as u32, image.as_bytes(0)?.to_vec())
+}
+
+/// GPUI's SVG font database maps `sans-serif` to Arial, then to a bundled
+/// IBM Plex Sans this app does not ship; with neither installed (most Linux
+/// systems) usvg takes the database's first face, which is how the demo
+/// avatars' initials came out as garbage. Naming the UI font first fixes it.
+fn with_concrete_sans(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let Ok(text) = std::str::from_utf8(bytes) else { return bytes.into() };
+    if !text.contains("sans-serif") {
+        return bytes.into();
+    }
+    let family = format!("{}, sans-serif", crate::theme::font_sans());
+    text.replace("font-family=\"sans-serif\"", &format!("font-family=\"{family}\"")).replace("font-family='sans-serif'", &format!("font-family='{family}'")).into_bytes().into()
 }
 
 fn decode_raster(bytes: &[u8]) -> Option<RgbaImage> {
@@ -221,6 +240,13 @@ mod tests {
         let wide = RgbaImage::new(400, 200);
         assert_eq!(fit(wide.clone(), 64, 64, true).dimensions(), (128, 64));
         assert_eq!(fit(wide, 64, 64, false).dimensions(), (64, 32));
+    }
+
+    #[test]
+    fn a_generic_sans_serif_names_the_ui_font_first() {
+        let out = with_concrete_sans(br#"<text font-family="sans-serif">AR</text>"#);
+        let out = std::str::from_utf8(&out).unwrap();
+        assert!(out.contains(&format!("font-family=\"{}, sans-serif\"", crate::theme::font_sans())));
     }
 
     #[test]
