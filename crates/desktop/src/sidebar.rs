@@ -373,6 +373,7 @@ impl Render for Sidebar {
                     .h(px(28.))
                     .px(spacing::X2)
                     .rounded(radius::CONTROL)
+                    .occlude()
                     .bg(palette.canvas)
                     .border_1()
                     .border_color(palette.separator)

@@ -193,6 +193,7 @@ impl Render for NewChat {
         let needle = self.to_field.read(cx).value().trim().to_string();
         let ready = self.ready(cx);
         let has_recipients = !self.recipients.is_empty();
+        let info_open = crate::app::root(cx).is_some_and(|app| app.read(cx).info_open());
 
         let to_row = div()
             .flex()
@@ -374,7 +375,7 @@ impl Render for NewChat {
                     .items_center()
                     .h(TITLEBAR_HEIGHT)
                     .pl(spacing::X4)
-                    .pr(spacing::X2)
+                    .pr(spacing::X2 + if info_open { px(0.) } else { crate::chrome::caption_reserve(window) })
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(palette.separator)

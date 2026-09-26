@@ -530,7 +530,7 @@ impl Render for InfoPanel {
                     .items_center()
                     .h(TITLEBAR_HEIGHT)
                     .pl(spacing::X4)
-                    .pr(spacing::X2)
+                    .pr(spacing::X2 + crate::chrome::caption_reserve(window))
                     .flex_shrink_0()
                     .child(div().flex_grow(1.).text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).child("Details"))
                     .child(IconButton::new("close-details", IconName::Close, format!("Close details ({})", shortcut("I", false, false))).color(palette.secondary).on_click(|_, window, cx| {

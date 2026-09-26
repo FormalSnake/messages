@@ -208,11 +208,13 @@ fn subtitle(chat: &messages_core::Chat, handles: &[messages_core::Handle], shari
 }
 
 impl Render for ConversationHeader {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::trace::render("Header");
         self.sync_selection(cx);
         self.card_shown.set(self.card.clone(), |this: &mut Self| &mut this.card_shown, cx);
         let palette = Theme::get(cx);
+        let info_open = root(cx).is_some_and(|app| app.read(cx).info_open());
+        let reserve = if info_open { px(0.) } else { crate::chrome::caption_reserve(window) };
         let blank = || div().w_full().h(TITLEBAR_HEIGHT).flex_shrink_0().border_b_1().border_color(palette.separator).into_any_element();
         let Some(live) = store(cx) else { return blank() };
         let state = live.state();
@@ -234,7 +236,7 @@ impl Render for ConversationHeader {
         drop(state);
         let subtitle = subtitle(&chat, &handles, sharing);
         let assistant = config(cx).is_some_and(|config| config.canaryllm.as_ref().is_some_and(|settings| !settings.api_key.trim().is_empty()));
-        self.info_open = root(cx).is_some_and(|app| app.read(cx).info_open());
+        self.info_open = info_open;
         let info_label = format!("{} ({})", if self.info_open { "Hide details" } else { "Show details" }, shortcut("I", false, false));
 
         let card = self.card_shown.current().cloned().map(|card| {
@@ -253,19 +255,18 @@ impl Render for ConversationHeader {
             .items_center()
             .gap(spacing::X2)
             .pl(spacing::X3)
-            .pr(spacing::X2)
+            .pr(spacing::X2 + reserve)
             .border_b_1()
             .border_color(palette.separator)
             .child(
                 div()
                     .id("thread-identity")
+                    .occlude()
                     .tab_index(0)
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(spacing::X2)
-                    .flex_grow(1.)
-                    .flex_basis(px(0.))
                     .min_w(px(0.))
                     .h(px(40.))
                     .pl(spacing::X1)
@@ -311,6 +312,7 @@ impl Render for ConversationHeader {
                             .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).text_ellipsis().child(subtitle)),
                     ),
             )
+            .child(div().flex_grow(1.).h_full())
             .when(capabilities.facetime && !chat.is_group, |el| {
                 let chat_guid = chat.guid.clone();
                 el.child(IconButton::new("facetime", IconName::Video, "FaceTime").size(px(17.)).on_click(move |_, _, cx| {

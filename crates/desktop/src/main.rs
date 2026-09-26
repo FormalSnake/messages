@@ -1,6 +1,7 @@
 mod app;
 mod assets;
 mod bridge;
+mod chrome;
 mod confirm;
 mod emoji_font;
 mod connect;

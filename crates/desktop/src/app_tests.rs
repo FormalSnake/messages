@@ -258,3 +258,26 @@ fn escape_in_the_composer_drops_the_reply_before_the_panel() {
     assert!(cx.update(|_, cx| !root.read(cx).info_open));
 }
 
+/// Title rows move the window only where nothing clickable sits on top of the
+/// drag strip, in the sidebar as well as the header.
+#[::core::prelude::v1::test]
+fn title_rows_drag_except_on_controls() {
+    let mut app = TestAppContext::single();
+    let cx = &mut app;
+    let (root, cx) = boot(cx, demo_config(&[]));
+    wait_until(cx, "Alex selected", |cx| selected_title(&root, cx).as_deref() == Some("Alex Rivera"));
+    let mut drags = |cx: &mut VisualTestContext, x: f32, y: f32| {
+        crate::chrome::DRAG_HOVERED.with(|cell| cell.set(false));
+        cx.simulate_mouse_move(gpui_kit::point(gpui_kit::px(x - 2.), gpui_kit::px(y)), None, Modifiers::none());
+        cx.simulate_mouse_move(gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y)), None, Modifiers::none());
+        cx.run_until_parked();
+        crate::chrome::DRAG_HOVERED.with(|cell| cell.get())
+    };
+    assert!(drags(cx, 150., 47.), "sidebar title row below the search field");
+    assert!(drags(cx, 8., 26.), "sidebar title row left of the search field");
+    assert!(drags(cx, 760., 24.), "header gap");
+    assert!(!drags(cx, 120., 26.), "search field");
+    assert!(!drags(cx, 401., 24.), "conversation identity");
+    assert!(!drags(cx, 561., 321.), "thread");
+}
+

@@ -95,6 +95,7 @@ impl RenderOnce for IconButton {
             .debug_selector(|| selector)
             .w(self.hit)
             .h(self.hit)
+            .occlude()
             .rounded(radius::CONTROL)
             .flex()
             .items_center()
