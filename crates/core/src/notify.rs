@@ -79,7 +79,7 @@ pub fn notification_body(chat: &Chat, message: &Message, target: Option<&Message
 /// without an error. The registry key is enough (no Start Menu shortcut
 /// needed), so the script writes it before every toast.
 #[cfg(windows)]
-const WINDOWS_TOAST: &str = r#"$key = 'HKCU:\Software\Classes\AppUserModelId\Messages'
+const WINDOWS_TOAST: &str = r#"$key = 'HKCU:\Software\Classes\AppUserModelId\es.canarycoders.messages'
 if (-not (Test-Path $key)) { New-Item $key -Force | Out-Null; Set-ItemProperty $key DisplayName 'Messages' }
 [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
@@ -87,7 +87,7 @@ $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([
 $lines = $xml.GetElementsByTagName('text')
 [void]$lines.Item(0).AppendChild($xml.CreateTextNode($env:MESSAGES_TITLE))
 [void]$lines.Item(1).AppendChild($xml.CreateTextNode($env:MESSAGES_TEXT))
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Messages').Show([Windows.UI.Notifications.ToastNotification]::new($xml))"#;
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('es.canarycoders.messages').Show([Windows.UI.Notifications.ToastNotification]::new($xml))"#;
 
 /// Desktop notification: notify-send on Linux (with an Open action when the
 /// daemon supports it), osascript on macOS, a toast on Windows. Resolves to

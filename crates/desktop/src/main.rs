@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod assets;
 mod bridge;
@@ -81,6 +83,8 @@ fn main() {
     let runtime_handle = Box::leak(Box::new(runtime)).handle().clone();
 
     gpui_kit::application().with_assets(icons::IconAssets).run(move |cx| {
+        // Windows groups the window, a pinned shortcut and toasts by this id.
+        cx.set_app_identity(APP_ID, "Messages");
         trace::log_if_enabled("platform up");
         // gpui-component resolves ".SystemUIFont" and the platform monospace
         // default by listing every installed font (about 200 ms through
