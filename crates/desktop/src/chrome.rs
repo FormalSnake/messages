@@ -61,6 +61,17 @@ pub fn caption_buttons() -> impl IntoElement {
 }
 
 pub fn has_caption_buttons(window: &Window) -> bool {
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    LOGGED.call_once(|| {
+        let controls = window.window_controls();
+        crate::trace::log_if_enabled(&format!(
+            "decorations {:?}, minimize {}, maximize {}, window menu {}",
+            window.window_decorations(),
+            controls.minimize,
+            controls.maximize,
+            controls.window_menu
+        ));
+    });
     if cfg!(target_os = "windows") {
         return true;
     }
