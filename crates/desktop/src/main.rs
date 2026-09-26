@@ -54,15 +54,14 @@ fn window_options(cx: &App) -> WindowOptions {
     let mut options = TitleBar::window_options();
     options.titlebar = Some(TitlebarOptions {
         title: Some("Messages".into()),
-        // Matches `apps/desktop/app.tsx`'s `trafficLightX`/`trafficLightY` (16, 18).
+        // Traffic light offset kept at (16, 18) for continuity with the previous build.
         traffic_light_position: Some(point(px(16.), px(18.))),
         ..TitleBar::title_bar_options()
     });
     options.window_bounds = Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1120.), px(760.)), cx)));
     options.window_min_size = Some(size(px(720.), px(480.)));
     options.app_id = Some(APP_ID.into());
-    // Same name as the TS app's `GPUIX_BACKGROUND` so existing screenshot/test
-    // scripts keep working unchanged.
+    // `GPUIX_BACKGROUND` keeps the existing screenshot/test scripts working unchanged.
     options.focus = std::env::var("GPUIX_BACKGROUND").ok().as_deref() != Some("1");
     options
 }

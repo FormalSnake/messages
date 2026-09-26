@@ -1,8 +1,8 @@
 # Rust client architecture
 
-The Rust rewrite replaces `packages/core` and `apps/desktop`. `apps/mac-agent`
-stays TypeScript on the Mac and is reached over HTTP exactly as before. The
-feature list to hit is `docs/rust-parity.md`.
+The client is two crates, `crates/core` and `crates/desktop`. `apps/mac-agent`
+stays TypeScript on the Mac and is reached over HTTP. `docs/rust-parity.md`
+is the feature list the client was checked against.
 
 ## Crates
 
@@ -143,15 +143,21 @@ Platform code sits behind `cfg` in core, with a Linux path for each:
 | File picker | GPUI `prompt_for_paths` (xdg portal via ashpd) | GPUI | GPUI |
 | Audio playback | mpv, ffplay, paplay | afplay | not supported in TS either |
 
-The window uses gpui-kit `TitleBar::window_options()` for client-side
-decorations with drag and window controls, app id `es.canarycoders.messages`,
-and ships `es.canarycoders.messages.desktop` plus the icon from
-`apps/desktop/assets/icon.svg`.
+The window uses gpui-kit `TitleBar::window_options()`, app id
+`es.canarycoders.messages`, and ships `packaging/linux/es.canarycoders.messages.desktop`
+plus `packaging/linux/es.canarycoders.messages.svg`. On Windows and
+client-decorated Linux, `chrome.rs` draws the caption buttons (gpui-kit's
+`TitleBar`, pinned top-right in the root view) and one drag strip across the
+title rows. The strip lives in the root view because gpui-pre 0.3.6 drops a
+cached view's window control areas when it reuses that view's frame
+(`reuse_prepaint` copies hitboxes but not `window_control_hitboxes`), and
+anything clickable in a title row `occlude()`s it, since the Windows caption
+hit test sees every hitbox under the cursor.
 
 ### Linux build
 
-System libraries the desktop crate needs (for `flake.nix`, which today only
-serves the gpuix build):
+System libraries the desktop crate needs (the `flake.nix` dev shell provides
+them):
 
 - Build: `pkg-config`, `clang` / `libclang` (bindgen in gpui-pre; set
   `LIBCLANG_PATH`), `libxkbcommon` (xkbcommon crate links it, x11 and wayland

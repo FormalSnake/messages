@@ -1,5 +1,5 @@
-//! Port of packages/core/src/bluebubbles/map.ts: raw server JSON to the model.
-//! Stays synchronous; the transport precomputes paths, services and icons.
+//! Raw server JSON to the model. Stays synchronous; the transport
+//! precomputes paths, services and icons.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -272,7 +272,7 @@ pub struct RawContact {
 }
 
 impl RawContact {
-    /// `String(raw.id)`: the id as the TS client wrote it into file names and state.json.
+    /// `String(raw.id)`: the id format already on disk in file names and state.json.
     pub fn id_string(&self) -> String {
         match &self.id {
             Value::String(text) => text.clone(),

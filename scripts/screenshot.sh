@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# `bun run screenshot` for the Rust client: demo data, animations jumped to
-# their end, one PNG.
+# One PNG of the demo data with animations jumped to their end.
 #
 #   scripts/screenshot.sh [out.png]     default screenshots/messages.png
 #

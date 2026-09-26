@@ -1,4 +1,4 @@
-//! Port of packages/core/src/fuzzy.ts: the Ctrl+K switcher's ranking.
+//! The Ctrl+K switcher's ranking.
 
 use std::sync::Arc;
 

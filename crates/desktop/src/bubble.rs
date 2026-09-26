@@ -1,5 +1,4 @@
-//! Port of `MessageRow` in `apps/desktop/src/ui/thread.tsx` and `BubbleContent`
-//! in `bubble.tsx`: one entity per message row, watching `Message(guid)`.
+//! One entity per message row, watching `Message(guid)`.
 //! Everything the row shows that depends only on the message (blocks, rich
 //! text spans, labels, tapback groups) is derived in `Model::new` when the
 //! message's `Arc` changes; render lays out what is already there.

@@ -1,7 +1,7 @@
 /**
  * Runs on the Mac. Serves the friend and device locations `findmy/index.ts`
- * decrypts, over HTTP, so `packages/core`'s `FindMyClient` can reach them
- * from the Linux desktop.
+ * decrypts, over HTTP, so the client's `MacAgentClient` (crates/core/src/agent.rs)
+ * can reach them from the Linux desktop.
  */
 
 import { randomBytes } from 'node:crypto'

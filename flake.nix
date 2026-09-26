@@ -1,5 +1,5 @@
 {
-  description = "Messages for Linux: dev shell with the libraries the prebuilt gpuix renderer dlopens";
+  description = "Messages: dev shell with the libraries the GPUI client needs on Linux";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -11,9 +11,8 @@
     {
       devShells = forAll (pkgs:
         let
-          # gpui-pre (the Rust rewrite's `crates/desktop`, vendored from Zed) links
-          # libxkbcommon and freetype at build time and dlopens wayland, vulkan and
-          # X11 at runtime, on top of what @gpuix/native (the TS app) already dlopens.
+          # gpui-pre links libxkbcommon and freetype at build time and dlopens
+          # wayland, vulkan, fontconfig and X11 at runtime.
           linuxLibs = with pkgs; [
             libxkbcommon
             wayland
@@ -34,13 +33,9 @@
             packages = [ pkgs.bun ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.cargo pkgs.rustc pkgs.fontconfig pkgs.fontconfig.dev pkgs.grim pkgs.wl-clipboard pkgs.libnotify pkgs.pkg-config ] ++ linuxLibs);
             # `cargo build -p messages` needs pkg-config to find libxkbcommon's and
             # freetype's headers; mkShell's setup hooks pick those up from the
-            # packages above automatically once pkg-config is present.
-            #
-            # @gpuix/native ships a prebuilt .node that links libxkbcommon and dlopens
-            # wayland, vulkan, fontconfig and X11 at runtime. Nix's bun does not read
-            # NIX_LD_LIBRARY_PATH, so the libraries go on LD_LIBRARY_PATH instead, and
-            # the Rust binary (built outside the Nix sandbox) needs
-            # the same at both link and run time.
+            # packages above once pkg-config is present. The binary is built
+            # outside the Nix sandbox, so the dlopened libraries go on
+            # LD_LIBRARY_PATH for both linking and running.
             shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH=/run/opengl-driver/lib:${pkgs.lib.makeLibraryPath linuxLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
             '';

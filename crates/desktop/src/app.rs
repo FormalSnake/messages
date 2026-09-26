@@ -1,7 +1,6 @@
-//! Port of `apps/desktop/src/ui/app.tsx`: the root view. Builds the tokio
-//! runtime's store, wires the bridge, lays out sidebar | main pane | info
-//! panel, and owns the overlay stack (menu, confirm, switcher, new chat,
-//! lightbox, connect/settings) and its Escape order.
+//! The root view. Builds the tokio runtime's store, wires the bridge, lays
+//! out sidebar | main pane | info panel, and owns the overlay stack (menu,
+//! confirm, switcher, new chat, lightbox, connect/settings) and its Escape order.
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -99,7 +98,7 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-/// The error toast stays up this long, then `clear_error` (app.tsx:217-225).
+/// The error toast stays up this long, then `clear_error`.
 const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 
 enum StoreStatus {
@@ -110,7 +109,7 @@ enum StoreStatus {
     Ready { store: MessagesStore, key: String },
 }
 
-/// `connectionKey` in app.tsx: a new key means a new store, anything else
+/// A new connection key means a new store; anything else
 /// (pins, mutes, notifications) edits the live one.
 fn connection_key(config: &Config) -> Option<String> {
     if config.demo {
@@ -130,10 +129,9 @@ pub fn root(cx: &App) -> Option<Entity<AppRoot>> {
     cx.try_global::<RootHandle>().and_then(|handle| handle.0.upgrade())
 }
 
-/// The root view. `apps/desktop/src/ui/app.tsx` splits this into `MessagesApp`
-/// (owns the store) and `Workspace` (owns the overlay stack); one entity does
-/// both here since GPUI has no context-provider equivalent to hand the store
-/// down without threading it.
+/// The root view. One entity owns both the store and the overlay stack,
+/// since GPUI has no context-provider equivalent to hand the store down
+/// without threading it.
 pub struct AppRoot {
     runtime: tokio::runtime::Handle,
     window: AnyWindowHandle,
@@ -304,9 +302,9 @@ impl AppRoot {
         }
     }
 
-    /// `onIncoming` in app.tsx: a desktop notification while the window is
-    /// not focused; clicking it selects the conversation (the store folds a
-    /// member chat into its primary) and raises the window.
+    /// A desktop notification while the window is not focused; clicking it
+    /// selects the conversation (the store folds a member chat into its
+    /// primary) and raises the window.
     fn notify_incoming(&mut self, incoming: &Incoming, cx: &mut Context<Self>) {
         if !self.config.notifications {
             return;
@@ -351,7 +349,7 @@ impl AppRoot {
         })
     }
 
-    /// Escape closes the topmost overlay, in this order (app.tsx:316-323).
+    /// Escape closes the topmost overlay, in this order.
     /// With nothing to close the key goes on to whoever has focus (the
     /// composer's reply banner, the search field, the lightbox).
     fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
@@ -463,9 +461,8 @@ impl AppRoot {
     }
 
     /// Cmd/Ctrl+1..6: reacts to the newest incoming reactable message in the
-    /// open conversation, when the server supports reactions (app.tsx:293-301,
-    /// 340-344). Skips group events and unsends, which never render as
-    /// reactable bubbles.
+    /// open conversation, when the server supports reactions. Skips group
+    /// events and unsends, which never render as reactable bubbles.
     fn tapback(&self, kind: messages_core::TapbackKind) {
         let Some(store) = self.store() else { return };
         let target = {
@@ -486,7 +483,7 @@ impl AppRoot {
     }
 
     /// Cmd/Ctrl+]/[ and their Shift+arrow twins: selects the next or previous
-    /// row the sidebar shows, wrapping at either end (app.tsx:282-291).
+    /// row the sidebar shows, wrapping at either end.
     fn step_conversation(&mut self, delta: i32, cx: &mut Context<Self>) {
         let Some(store) = self.store() else { return };
         let guid = {
@@ -510,7 +507,6 @@ impl AppRoot {
         store.clone().spawn(async move { store.select_chat(Some(&guid)).await });
     }
 
-    /// `Shell::openMenu`/`closeMenu` in context.ts.
     pub fn open_menu(this: &Entity<Self>, request: MenuRequest, window: &mut Window, cx: &mut App) {
         let weak = this.downgrade();
         let close = move |window: &mut Window, cx: &mut App| {
@@ -533,8 +529,8 @@ impl AppRoot {
         self.menu.as_ref().map(|menu| menu.entity_id())
     }
 
-    /// `Shell::confirm` in context.ts: opens the yes/no dialog `AppRoot`
-    /// itself renders in its overlay stack (see `confirm.rs`).
+    /// Opens the yes/no dialog `AppRoot` itself renders in its overlay
+    /// stack (see `confirm.rs`).
     pub fn open_confirm(this: &Entity<Self>, request: ConfirmRequest, cx: &mut App) {
         let _ = this.update(cx, |this, cx| {
             this.menu = None;
@@ -544,9 +540,8 @@ impl AppRoot {
         });
     }
 
-    /// `Shell::setInfo(true)` in context.ts: used by "Show details" in a chat
-    /// row's menu, which wants the panel open regardless of its prior state
-    /// (unlike Cmd+I, which toggles it).
+    /// Used by "Show details" in a chat row's menu, which wants the panel
+    /// open regardless of its prior state (unlike Cmd+I, which toggles it).
     pub fn open_info(this: &Entity<Self>, cx: &mut App) {
         let _ = this.update(cx, |this, cx| {
             this.menu = None;

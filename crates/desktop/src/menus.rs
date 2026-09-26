@@ -1,7 +1,6 @@
-//! Port of `apps/desktop/src/ui/menus.tsx`: the `MenuItem` data model other
-//! screens build, and the `ContextMenu` entity that renders it. `MenuItem` is
-//! the "MenuItem data screens build" piece D0 owns; D1/D2/D3 construct
-//! `Vec<MenuItem>` for their own rows and open a menu through `AppRoot`.
+//! The `MenuItem` data model other screens build, and the `ContextMenu`
+//! entity that renders it. `MenuItem` is the piece D0 owns; D1/D2/D3
+//! construct `Vec<MenuItem>` for their own rows and open a menu through `AppRoot`.
 
 use gpui_kit::component::box_shadow;
 use gpui_kit::component::tooltip::Tooltip;
@@ -12,8 +11,8 @@ use messages_core::TapbackKind;
 use crate::icons::{Icon, IconName};
 use crate::theme::{Palette, Theme, radius, spacing, type_scale};
 
-/// Port of `context.ts`'s `shortcut()`: a menu hint reads the way the
-/// platform writes it, "⇧⌘U" on macOS, "Ctrl+Shift+U" elsewhere.
+/// A menu hint reads the way the platform writes it, "⇧⌘U" on macOS,
+/// "Ctrl+Shift+U" elsewhere.
 pub fn shortcut(key: &str, shift: bool, alt: bool) -> String {
     if cfg!(target_os = "macos") {
         format!("{}{}⌘{}", if shift { "⇧" } else { "" }, if alt { "⌥" } else { "" }, key.to_uppercase())
@@ -157,10 +156,9 @@ impl MenuRequest {
     }
 }
 
-/// The rendered menu. Port of `ContextMenu` in menus.tsx: focused on open,
-/// Escape closes, Down/Up wrap through the selectable items, Home/End jump to
-/// the ends, Enter/Space activates. TS has no typeahead (menus.tsx has no key
-/// handling beyond those), so none is added here either.
+/// The rendered menu: focused on open, Escape closes, Down/Up wrap through
+/// the selectable items, Home/End jump to the ends, Enter/Space activates.
+/// No typeahead is implemented.
 pub struct ContextMenu {
     request: MenuRequest,
     highlighted: Option<usize>,

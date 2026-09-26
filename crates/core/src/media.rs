@@ -1,5 +1,4 @@
-//! Derived media the thread paints, ported from the ffmpeg helpers in
-//! apps/desktop/src/ui/{bubble,gif,ffmpeg}.ts. Lives in core so it runs on the
+//! Derived media the thread paints. Lives in core so it runs on the
 //! runtime, off the GPUI thread. Stills are done in process with the `image`
 //! crate; ffmpeg is only needed for video posters and HEIF. Every output is
 //! written beside its source in the attachment cache and named from the shared

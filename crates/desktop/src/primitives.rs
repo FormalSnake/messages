@@ -1,5 +1,5 @@
-//! Port of `apps/desktop/src/ui/primitives.tsx`: Avatar, IconButton, Button,
-//! Divider, SectionLabel and the password-masking text field wrapper.
+//! Avatar, IconButton, Button, Divider, SectionLabel and the
+//! password-masking text field wrapper.
 
 use gpui_kit::component::box_shadow;
 use gpui_kit::component::input::{Input, InputState};
@@ -38,7 +38,7 @@ pub struct IconButton {
 }
 
 /// IconButton and tapback tooltips wait a beat longer than the app-wide
-/// 500 ms default (primitives.tsx:77, menus.tsx:192).
+/// 500 ms default.
 pub const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 
 impl IconButton {
@@ -198,9 +198,8 @@ impl RenderOnce for Button {
 /// Below this a monogram is a smudge, so the disc stays plain.
 const MONOGRAM_MIN: f32 = 18.;
 
-// None of the elements below register a click or id, so unlike the TS/gpuix
-// renderer (see CLAUDE.md's gpuix rules) they never capture a click meant for
-// their row: GPUI only hit-tests elements that ask for it.
+// None of the elements below register a click or id, so they never capture
+// a click meant for their row: GPUI only hit-tests elements that ask for it.
 
 fn photo_avatar(src: &str, size: Pixels) -> impl IntoElement {
     let inner = size - px(2.);
@@ -280,9 +279,9 @@ pub fn section_label(label: impl Into<SharedString>, color: Hsla, inset: Pixels)
         .child(label.into())
 }
 
-/// A single-line text field. `secure` shows a mask-toggle eye button, the
-/// Rust equivalent of the TS bullet-masking trick (gpui-component's `Input`
-/// has real password masking, so there is no need to fake it with bullets).
+/// A single-line text field. `secure` shows a mask-toggle eye button;
+/// gpui-component's `Input` has real password masking, so there is no need
+/// to fake it with bullets.
 pub fn new_input_state(window: &mut Window, cx: &mut App, placeholder: impl Into<SharedString>, secure: bool) -> Entity<InputState> {
     cx.new(|cx| {
         let mut state = InputState::new(window, cx).placeholder(placeholder);

@@ -1,6 +1,5 @@
-//! Port of `apps/desktop/src/ui/scheduled.tsx`: the list of scheduled sends
-//! for one chat, shown above the composer. Owned by D3; not mounted directly
-//! by app.rs (`composer::Composer` renders it).
+//! The list of scheduled sends for one chat, shown above the composer.
+//! Owned by D3; not mounted directly by app.rs (`composer::Composer` renders it).
 
 use gpui_kit::*;
 use messages_core::ScheduledMessage;

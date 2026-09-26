@@ -1,6 +1,6 @@
-//! Colour tokens, spacing, radii, type scale and sizes ported from
-//! `apps/desktop/src/ui/theme.ts`, plus the `~/.config/messages/theme.json`
-//! override that drives the app from matugen on Linux.
+//! Colour tokens, spacing, radii, type scale and sizes, plus the
+//! `~/.config/messages/theme.json` override that drives the app from
+//! matugen on Linux.
 //!
 //! The palette lives in a GPUI [`Global`], not a React-style remount: a file
 //! change swaps the colours in place and calls `cx.refresh_windows()` so every
@@ -72,13 +72,12 @@ pub mod radius {
 #[derive(Clone, Copy)]
 pub struct TypeStyle {
     pub font_size: Pixels,
-    /// Line height as an absolute pixel value, matching the TS `lineHeight`.
+    /// Line height as an absolute pixel value.
     pub line_height: Pixels,
     pub font_weight: f32,
 }
 
-/// Screen headings, titlebar titles, list rows, bubble copy: the same scale
-/// `apps/desktop/src/ui/theme.ts` exports as `TYPE`.
+/// Screen headings, titlebar titles, list rows, bubble copy.
 pub mod type_scale {
     use super::TypeStyle;
     use gpui_kit::px;
@@ -119,9 +118,9 @@ pub fn traffic_light_clearance() -> Pixels {
 // ---------------------------------------------------------------------------
 
 /// Apple's dark-appearance system colours: the app should read as Messages,
-/// not as a theme of it. Mirrors the `APPLE` / `Palette` pair in theme.ts:
-/// `theme.json` sets the base tokens, `derived` recomputes the washes and
-/// accent-following tokens below from whichever base tokens it set.
+/// not as a theme of it. `theme.json` sets the base tokens, `derived`
+/// recomputes the washes and accent-following tokens below from whichever
+/// base tokens it set.
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub canvas: Hsla,

@@ -1,10 +1,9 @@
-//! Port of `Thread` in `apps/desktop/src/ui/thread.tsx`. The open
-//! conversation as a virtualized, bottom-aligned `list` that follows the tail.
-//! Rows are rebuilt only when what they are made of changes (compared by
-//! `Arc` pointer every render, which costs one pass over the thread's
-//! pointers); only rows the list actually lays out get a `MessageRow` entity,
-//! and those are kept across rebuilds by key, so a chat switch paints from
-//! memory in the frame it happens.
+//! The open conversation as a virtualized, bottom-aligned `list` that
+//! follows the tail. Rows are rebuilt only when what they are made of
+//! changes (compared by `Arc` pointer every render, which costs one pass
+//! over the thread's pointers); only rows the list actually lays out get a
+//! `MessageRow` entity, and those are kept across rebuilds by key, so a
+//! chat switch paints from memory in the frame it happens.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -62,7 +61,7 @@ struct PendingJump(Option<(String, String)>);
 impl Global for PendingJump {}
 
 /// Opens `chat_guid` at `message_guid` once the thread shows it: the search
-/// result path (thread.tsx `consumeJump`). The caller selects the chat.
+/// result path. The caller selects the chat.
 pub fn request_jump(chat_guid: &str, message_guid: &str, cx: &mut App) {
     cx.set_global(PendingJump(Some((chat_guid.to_owned(), message_guid.to_owned()))));
     if let Some(host) = cx.try_global::<ThreadHost>().map(|host| host.0.clone()) {

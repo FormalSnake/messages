@@ -1,5 +1,5 @@
-//! Maps the icon names used by the TS reference (`apps/desktop/src/ui/icons.tsx`)
-//! to gpui-kit's bundled Lucide set (`gpui_kit::assets::IconName`).
+//! Maps the icon names used across the app to gpui-kit's bundled Lucide set
+//! (`gpui_kit::assets::IconName`).
 //!
 //! `gpui_kit::component::IconName` is a different, much smaller enum: a
 //! curated set gpui-component's own widgets use internally (window controls,
@@ -127,9 +127,9 @@ pub fn glyph(name: IconName) -> Glyph {
     }
 }
 
-/// Prefix of the icon paths `IconAssets` rewrites: `icons.tsx` bakes
-/// Lucide's stroke down from 2 to 1.5 beside regular copy, keeps 2 for
-/// `strong`, and fills the favorite heart.
+/// Prefix of the icon paths `IconAssets` rewrites: it bakes Lucide's stroke
+/// down from 2 to 1.5 beside regular copy, keeps 2 for `strong`, and fills
+/// the favorite heart.
 const VARIANT_PREFIX: &str = "messages-icon/";
 
 /// The bundled asset set, plus stroke and fill variants of its Lucide glyphs
@@ -156,8 +156,8 @@ impl AssetSource for IconAssets {
     }
 }
 
-/// Port of `apps/desktop/src/ui/icons.tsx`'s `<Icon>` (and `HeartIcon`'s
-/// filled variant): stroke 1.5, 2 when `strong`.
+/// The icon element (and the favorite heart's filled variant): stroke 1.5,
+/// 2 when `strong`.
 #[derive(IntoElement)]
 pub struct Icon {
     name: IconName,

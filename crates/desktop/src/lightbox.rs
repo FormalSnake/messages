@@ -1,5 +1,5 @@
-//! Port of `apps/desktop/src/ui/lightbox.tsx`: every picture in the loaded
-//! conversation, one at a time, over the whole window. The thread mounts it
+//! Every picture in the loaded conversation, one at a time, over the whole
+//! window. The thread mounts it
 //! as a deferred overlay; `open` is how any screen (the thread, the details
 //! gallery) asks for it.
 

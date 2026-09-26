@@ -1,5 +1,4 @@
-//! Port of the toast in `apps/desktop/src/ui/app.tsx` (lines ~217-225, 388-417):
-//! a non-interactive pill, centred at the bottom, that rises and fades in.
+//! A non-interactive pill, centred at the bottom, that rises and fades in.
 
 use gpui_kit::component::box_shadow;
 use gpui_kit::*;

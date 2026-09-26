@@ -1,9 +1,10 @@
 # Rust parity checklist
 
-Every user-visible feature and behaviour of the TypeScript client, with the
-TS source it comes from. Paths are relative to `packages/core/src/` for core
-items and `apps/desktop/src/ui/` for UI items unless written in full. Tick an
-item only when the Rust build does it on Linux and macOS.
+Every user-visible feature and behaviour of the TypeScript client the Rust
+client replaced, with the TS source it came from. The TS client was removed
+after commit ef55bdd; the paths below are relative to `packages/core/src/`
+for core items and `apps/desktop/src/ui/` for UI items at that commit
+(`git show ef55bdd:<path>`).
 
 ## Core
 

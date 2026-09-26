@@ -1,5 +1,5 @@
-//! Port of packages/core/src/agent.ts: client for `@messages/mac-agent`, which
-//! serves decrypted Find My locations and the prefs shared between clients.
+//! Client for `@messages/mac-agent`, which serves decrypted Find My
+//! locations and the prefs shared between clients.
 
 use std::collections::HashMap;
 use std::time::Duration;

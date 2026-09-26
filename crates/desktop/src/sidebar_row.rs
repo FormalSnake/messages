@@ -1,7 +1,6 @@
-//! Port of the row components in `apps/desktop/src/ui/sidebar.tsx`: `ChatRow`
-//! (~112-174) and `PinnedChat` (~176-238), plus the row context menu
-//! (`chatMenu`/`confirmDelete`, ~79-110). One entity renders either shape,
-//! chosen by `pinned_cell`, since a chat is never shown as both at once.
+//! The sidebar row: a plain chat row and a pinned-strip cell, plus the row
+//! context menu. One entity renders either shape, chosen by `pinned_cell`,
+//! since a chat is never shown as both at once.
 //!
 //! Watches only `Chat(guid)`, `Typing(guid)` and `Focus` (docs/rust-architecture.md's
 //! per-row invalidation contract): a message elsewhere, a tapback, or someone
@@ -46,7 +45,6 @@ pub fn shortcut(key: &str, shift: bool) -> SharedString {
     }
 }
 
-/// Port of `previewText` (sidebar.tsx:54-77).
 pub fn preview_text(message: Option<&Message>, chat: &Chat) -> String {
     let Some(message) = message else {
         return if chat.is_group { "New group".to_owned() } else { "New conversation".to_owned() };
@@ -89,8 +87,8 @@ pub fn preview_text(message: Option<&Message>, chat: &Chat) -> String {
     body
 }
 
-/// Port of `chatMenu` (sidebar.tsx:79-100). `open` adds "Open conversation",
-/// used by the pinned strip, where the row itself is not the list item.
+/// `open` adds "Open conversation", used by the pinned strip, where the row
+/// itself is not the list item.
 pub fn chat_menu(chat: &Chat, store: &messages_core::MessagesStore, app: WeakEntity<AppRoot>, open: bool) -> Vec<MenuItem> {
     let guid = chat.guid.clone();
     let mut items = Vec::new();
@@ -182,7 +180,6 @@ pub fn chat_menu(chat: &Chat, store: &messages_core::MessagesStore, app: WeakEnt
     items
 }
 
-/// Port of `confirmDelete` (sidebar.tsx:102-110).
 pub fn confirm_delete(chat: &Chat, store: &messages_core::MessagesStore, app: WeakEntity<AppRoot>, cx: &mut App) {
     let Some(app_entity) = app.upgrade() else { return };
     let store = store.clone();

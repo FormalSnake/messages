@@ -1,7 +1,7 @@
-//! Port of `apps/desktop/src/ui/new-chat.tsx`: pick one or more recipients,
-//! write the first message, send it. `app.rs` mounts `NewChat` in the main
-//! pane in place of header/thread/composer while composing, and drops it
-//! when `on_close` runs (Escape or a successful send).
+//! Pick one or more recipients, write the first message, send it. `app.rs`
+//! mounts `NewChat` in the main pane in place of header/thread/composer
+//! while composing, and drops it when `on_close` runs (Escape or a
+//! successful send).
 
 use std::rc::Rc;
 

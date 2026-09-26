@@ -1,6 +1,5 @@
-//! Port of packages/core/src/format.ts. Times are local; weekday and month
-//! names are fixed to English (chrono has no locale table without pulling in
-//! ICU, unlike the TS client's `Intl` calls, which follow the system locale).
+//! Times are local; weekday and month names are fixed to English, since
+//! chrono has no locale table without pulling in ICU.
 
 use chrono::{DateTime, Datelike, Local, NaiveTime};
 use unicode_segmentation::UnicodeSegmentation;
@@ -259,7 +258,7 @@ pub fn pluralize(count: usize, singular: &str, plural: Option<&str>) -> String {
 /// One grapheme cluster that is a single emoji: a country flag (two regional
 /// indicators), a keycap, or a pictograph with its modifiers, variation
 /// selectors, ZWJ parts and tag characters. The properties come from the
-/// regex crate's Unicode tables, the same ones the TS pattern names.
+/// regex crate's Unicode tables.
 fn is_emoji_cluster(segment: &str) -> bool {
     static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     RE.get_or_init(|| {

@@ -1,5 +1,4 @@
-//! Port of packages/core/src/config.ts. Reads and writes the same
-//! `$XDG_CONFIG_HOME/messages/config.json` as the TS client, keeping keys it does not know.
+//! Reads and writes `$XDG_CONFIG_HOME/messages/config.json`, keeping keys it does not know.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

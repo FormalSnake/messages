@@ -1,5 +1,5 @@
-//! Port of packages/core/src/notify.ts. Linux: notify-send with an "open"
-//! action (`--app-name=Messages --category=im.received --action=open=Open`).
+//! Linux: notify-send with an "open" action
+//! (`--app-name=Messages --category=im.received --action=open=Open`).
 //! macOS: osascript. Windows: a PowerShell toast. Failures are logged, never returned.
 
 use std::path::PathBuf;

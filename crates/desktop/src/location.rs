@@ -1,6 +1,5 @@
-//! Port of `apps/desktop/src/ui/location.tsx`: the Find My tile card shown
-//! under a participant in the details panel. Owned by D3; not mounted
-//! directly by app.rs (it sits inside `details::InfoPanel`).
+//! The Find My tile card shown under a participant in the details panel.
+//! Owned by D3; not mounted directly by app.rs (it sits inside `details::InfoPanel`).
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;

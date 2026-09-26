@@ -1,7 +1,6 @@
-//! The part of `apps/desktop/src/ui/thread.tsx` that turns a conversation's
-//! messages into list rows: date separators, runs, quotes, receipts, event
-//! captions. Pure, so every string a row shows is formatted here once per
-//! change rather than in render.
+//! Turns a conversation's messages into list rows: date separators, runs,
+//! quotes, receipts, event captions. Pure, so every string a row shows is
+//! formatted here once per change rather than in render.
 
 use std::sync::Arc;
 

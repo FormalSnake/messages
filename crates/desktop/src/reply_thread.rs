@@ -1,6 +1,6 @@
-//! Port of the "Thread" view in `apps/desktop/src/ui/thread.tsx`: a message
-//! and every reply to it, opened from "N replies", with a Back button. The
-//! main thread computes its rows and hands them over on every change.
+//! The "Thread" view: a message and every reply to it, opened from
+//! "N replies", with a Back button. The main thread computes its rows and
+//! hands them over on every change.
 
 use gpui_kit::*;
 use messages_core::MessagesStore;

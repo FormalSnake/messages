@@ -1,9 +1,8 @@
-//! Durations, easing curves and the presence helpers, ported from
-//! `apps/desktop/src/ui/motion.tsx`.
+//! Durations, easing curves and the presence helpers.
 //!
 //! gpui-pre's `Animation` (`elements/animation.rs`) only ships linear, quadratic,
-//! ease-in-out and a quint ease-out; it has no cubic-bezier curve, which is what
-//! the TS app's easings are. `cubic_bezier` below solves one, the same curve CSS
+//! ease-in-out and a quint ease-out; it has no cubic-bezier curve, which the
+//! easings here need. `cubic_bezier` below solves one, the same curve CSS
 //! `cubic-bezier()` and gpuix's `MotionEase` describe.
 //!
 //! GPUI animations are one-shot and keyed by element id, so `Presence` bumps a

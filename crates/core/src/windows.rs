@@ -1,5 +1,3 @@
-//! Port of packages/core/src/windows.ts.
-
 use std::collections::HashMap;
 use std::process::Stdio;
 

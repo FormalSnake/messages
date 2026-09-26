@@ -1,6 +1,6 @@
-//! Port of packages/core/src/dedupe.ts. Every attachment cache entry becomes a
-//! symlink to a file named by its SHA-1, so the renderer, which keys decoded
-//! images on the path, decodes forty copies of one GIF once.
+//! Every attachment cache entry becomes a symlink to a file named by its
+//! SHA-1, so the renderer, which keys decoded images on the path, decodes
+//! forty copies of one GIF once.
 
 use std::path::{Component, Path, PathBuf};
 

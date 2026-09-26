@@ -1,5 +1,5 @@
-//! Port of packages/core/src/clipboard.ts: files and images through the
-//! clipboard. Plain text goes through GPUI's own clipboard in the desktop crate.
+//! Files and images through the clipboard. Plain text goes through GPUI's
+//! own clipboard in the desktop crate.
 //! Linux: wl-copy / wl-paste on Wayland, xclip on X11. macOS: osascript.
 //! Windows: PowerShell.
 

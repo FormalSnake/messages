@@ -1,5 +1,4 @@
-//! Port of `apps/desktop/src/ui/sidebar.tsx`: search, pinned strip, the
-//! conversation list and the connection footer.
+//! Search, pinned strip, the conversation list and the connection footer.
 //!
 //! Each chat row is its own `SidebarRow` entity, created once and cached by
 //! guid in `rows`; a render pass here only ever calls `set_state` on the
@@ -34,7 +33,7 @@ fn current_store(cx: &App) -> Option<messages_core::MessagesStore> {
     cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone())
 }
 
-/// One row the sidebar's body shows, in paint order (sidebar.tsx's `SidebarItem`).
+/// One row the sidebar's body shows, in paint order.
 enum Row {
     Chat(Arc<Chat>),
     ResultsHeader,
@@ -443,10 +442,10 @@ impl Render for Sidebar {
             .min_h(px(0.))
             .w_full()
             .pb(spacing::X2);
-            // Right-click on the list's empty space offers "New message"
-            // (sidebar.tsx:436-443). A row opens its own menu on the same
-            // mouse-up, so the capture pass notes which menu was up and the
-            // bubble pass only acts when no row replaced it.
+            // Right-click on the list's empty space offers "New message". A row
+            // opens its own menu on the same mouse-up, so the capture pass
+            // notes which menu was up and the bubble pass only acts when no
+            // row replaced it.
             div()
                 .id("sidebar-list-area")
                 .debug_selector(|| "sidebar-list-area".into())

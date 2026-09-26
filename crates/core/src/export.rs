@@ -1,4 +1,4 @@
-//! Port of packages/core/src/export.ts: a conversation as Markdown in ~/Downloads.
+//! A conversation as Markdown in ~/Downloads.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

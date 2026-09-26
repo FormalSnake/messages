@@ -1,6 +1,6 @@
-//! Port of packages/core/src/image.ts: sizes from file headers (EXIF
-//! orientation included) and the square thumbnails Linux needs because GPUI
-//! does not clip an `object-fit: cover` image there.
+//! Sizes from file headers (EXIF orientation included) and the square
+//! thumbnails Linux needs because GPUI does not clip an `object-fit: cover`
+//! image there.
 
 use std::path::Path;
 use std::process::Stdio;

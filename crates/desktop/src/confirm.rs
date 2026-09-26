@@ -1,5 +1,4 @@
-//! Port of `apps/desktop/src/ui/confirm.tsx`: one question, two buttons.
-//! Enter confirms, Escape or a click outside cancels.
+//! One question, two buttons. Enter confirms, Escape or a click outside cancels.
 
 use gpui_kit::component::box_shadow;
 use gpui_kit::prelude::FluentBuilder as _;

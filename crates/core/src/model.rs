@@ -1,11 +1,11 @@
-//! Port of packages/core/src/model.ts. Field names serialize in camelCase so the
-//! Rust client reads the same state.json and config.json the TS client writes.
+//! Field names serialize in camelCase, matching the format already on disk
+//! from earlier installs (state.json and config.json).
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Epoch milliseconds, as every timestamp in the TS model.
+/// Epoch milliseconds, the unit for every timestamp in this model.
 pub type Millis = i64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,7 +107,7 @@ fn is_false(value: &bool) -> bool {
 pub struct Attachment {
     pub guid: String,
     pub name: String,
-    /// An older TS build wrote a null mime into the cache; it reads back as UNKNOWN_MIME.
+    /// An older cache write left a null mime on some entries; it reads back as UNKNOWN_MIME.
     #[serde(default = "unknown_mime", deserialize_with = "mime_or_unknown")]
     pub mime: String,
     pub bytes: u64,

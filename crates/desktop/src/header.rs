@@ -1,5 +1,4 @@
-//! Port of the conversation header in `apps/desktop/src/ui/header.tsx`.
-//! `app.rs` mounts `ConversationHeader` above `Thread`.
+//! The conversation header. `app.rs` mounts `ConversationHeader` above `Thread`.
 
 use std::sync::Arc;
 
@@ -24,7 +23,7 @@ use crate::theme::{TITLEBAR_HEIGHT, Theme, radius, spacing, type_scale};
 const CATCH_UP_FALLBACK: usize = 50;
 
 /// Everything since my last message in the thread, oldest first, or the last
-/// 50 if there is nothing after it (header.tsx:34-42).
+/// 50 if there is nothing after it.
 fn messages_to_catch_up_on(messages: &[Arc<Message>]) -> Vec<Arc<Message>> {
     let visible: Vec<Arc<Message>> = messages.iter().filter(|message| message.date_retracted.is_none()).cloned().collect();
     let since = match visible.iter().rposition(|message| message.from_me) {
@@ -192,7 +191,7 @@ fn card_view(card: &Card, cx: &mut Context<ConversationHeader>) -> Stateful<Div>
         .child(body)
 }
 
-/// The line under the title (header.tsx:151-158).
+/// The line under the title.
 fn subtitle(chat: &messages_core::Chat, handles: &[messages_core::Handle], sharing: bool) -> String {
     let base = if chat.is_group {
         chat.participants.iter().map(handle_name).collect::<Vec<_>>().join(", ")

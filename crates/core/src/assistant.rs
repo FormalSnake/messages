@@ -1,6 +1,6 @@
-//! Port of packages/core/src/assistant.ts: the CanaryLLM gateway behind the
-//! summarize, translate and transcribe buttons. Every call is triggered by a
-//! click; nothing here schedules or retries on its own. Cancel by dropping the future.
+//! The CanaryLLM gateway behind the summarize, translate and transcribe
+//! buttons. Every call is triggered by a click; nothing here schedules or
+//! retries on its own. Cancel by dropping the future.
 
 use std::path::Path;
 use std::time::Duration;

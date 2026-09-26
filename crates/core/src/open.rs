@@ -1,5 +1,5 @@
-//! Port of packages/core/src/open.ts: URLs and files to the desktop, link
-//! splitting, and voice note playback through an external player.
+//! URLs and files to the desktop, link splitting, and voice note playback
+//! through an external player.
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};

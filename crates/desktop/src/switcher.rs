@@ -1,6 +1,6 @@
-//! Port of `apps/desktop/src/ui/switcher.tsx`: Cmd/Ctrl+K's "jump to a
-//! conversation" panel. `app.rs` mounts `Switcher` when the action fires and
-//! drops it when `on_close` runs (Escape, a click outside, or opening a chat).
+//! Cmd/Ctrl+K's "jump to a conversation" panel. `app.rs` mounts `Switcher`
+//! when the action fires and drops it when `on_close` runs (Escape, a click
+//! outside, or opening a chat).
 
 use gpui_kit::component::box_shadow;
 use gpui_kit::component::input::{Input, InputEvent, InputState};

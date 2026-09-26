@@ -1,5 +1,4 @@
-//! Port of packages/core/src/search.ts: the sidebar query language
-//! (`from:`, `has:`, `before:`, `after:`, `in:`).
+//! The sidebar query language (`from:`, `has:`, `before:`, `after:`, `in:`).
 
 use std::collections::HashSet;
 
@@ -25,7 +24,7 @@ pub struct ParsedSearchQuery {
 }
 
 fn parse_local_date(value: &str) -> Option<Millis> {
-    // Exactly YYYY-MM-DD, as the TS pattern; chrono alone would take `2026-9-3`.
+    // Exactly YYYY-MM-DD; chrono alone would take `2026-9-3`.
     if value.len() != 10 || !value.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() }) {
         return None;
     }

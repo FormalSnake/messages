@@ -1,5 +1,4 @@
-//! Port of the search-results list in `apps/desktop/src/ui/sidebar.tsx`
-//! (~252-284, 447-456): the "Messages" section header and one result row.
+//! The search-results list: the "Messages" section header and one result row.
 //! `sidebar.rs` builds these into its own virtualized list; results are not
 //! persistent entities like `SidebarRow`, since the whole set is rebuilt
 //! together whenever the search query or its results change.
@@ -14,7 +13,7 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// The "Messages" label above the result rows (sidebar.tsx:483).
+/// The "Messages" label above the result rows.
 pub fn section_header(palette: Palette) -> impl IntoElement {
     div()
         .text_size(type_scale::MICRO.font_size)
@@ -27,7 +26,7 @@ pub fn section_header(palette: Palette) -> impl IntoElement {
         .child("Messages")
 }
 
-/// One matched message, jumping into its conversation on click (sidebar.tsx:252-284).
+/// One matched message, jumping into its conversation on click.
 pub fn search_result_row(id: ElementId, message: &Message, chat: &Chat, palette: Palette, on_open: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     div()
         .id(id)

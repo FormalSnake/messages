@@ -2,13 +2,15 @@
   "name": "messages",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "apps/mac-agent"
+  ],
   "scripts": {
-    "dev": "bun run --cwd apps/desktop dev",
-    "demo": "bun run --cwd apps/desktop demo",
-    "build": "bun run --cwd apps/desktop build",
-    "screenshot": "bun run --cwd apps/desktop screenshot",
-    "test": "bun run --cwd packages/core test && bun run --cwd apps/desktop test",
-    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd apps/desktop typecheck"
+    "dev": "cargo run --release -p messages",
+    "demo": "MESSAGES_DEMO=1 cargo run --release -p messages",
+    "screenshot": "scripts/screenshot.sh",
+    "test": "cargo test --workspace && bun run --cwd apps/mac-agent test",
+    "typecheck": "cargo check --workspace && bun run --cwd apps/mac-agent typecheck",
+    "agent": "bun run --cwd apps/mac-agent start"
   }
 }

@@ -1,7 +1,7 @@
-//! Port of `apps/desktop/src/ui/gif.tsx`. An animated `img()` asks GPUI for a
-//! new frame on every paint while the window is active, so a GIF handed to
-//! the renderer as a file would redraw the window at the refresh rate. Here a
-//! GIF is decoded once per shared (SHA-1) path into one multi-frame
+//! An animated `img()` asks GPUI for a new frame on every paint while the
+//! window is active, so a GIF handed to the renderer as a file would redraw
+//! the window at the refresh rate. Here a GIF is decoded once per shared
+//! (SHA-1) path into one multi-frame
 //! `RenderImage`, and a canvas paints whichever frame the file's clock is on.
 //! Every copy of the file shares that clock. It advances only while some copy
 //! was painted since the last step and the window is active, and each step

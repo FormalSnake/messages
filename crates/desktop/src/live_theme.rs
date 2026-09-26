@@ -1,6 +1,5 @@
-//! Port of `apps/desktop/src/ui/live-theme.ts`: polls
-//! `~/.config/messages/theme.json` (matugen's output on Linux) and applies it
-//! over the baked-in palette in `theme.rs`.
+//! Polls `~/.config/messages/theme.json` (matugen's output on Linux) and
+//! applies it over the baked-in palette in `theme.rs`.
 //!
 //! The poll runs on the background executor and only touches the foreground
 //! (a `cx.update` plus `refresh_windows`) when the file's mtime actually
@@ -17,7 +16,7 @@ use serde::Deserialize;
 use crate::theme::{Palette, Theme, with_alpha};
 
 /// The subset of `Palette` a theme file sets directly; everything else is
-/// derived from these, the same split `theme.ts`'s `derived()` makes.
+/// derived from these.
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct PaletteFile {
@@ -42,11 +41,11 @@ struct PaletteFile {
     received: Option<String>,
 }
 
-/// Applies a `theme.json` file's base tokens over `base`, then recomputes the
-/// derived ones, matching `applyPalette` in theme.ts. Unknown keys and
-/// anything but `#rrggbb`/`#rrggbbaa` are ignored, and a field the file omits
-/// keeps `base`'s value, so a missing or unreadable file's caller can pass
-/// `Palette::default()` to reset every token.
+/// Applies a `theme.json` file's base tokens over `base`, then recomputes
+/// the derived ones. Unknown keys and anything but `#rrggbb`/`#rrggbbaa`
+/// are ignored, and a field the file omits keeps `base`'s value, so a
+/// missing or unreadable file's caller can pass `Palette::default()` to
+/// reset every token.
 fn apply(base: Palette, file: &PaletteFile) -> Palette {
     let mut palette = base;
     macro_rules! set {
@@ -125,7 +124,7 @@ pub fn watch(cx: &mut App) {
             if last_mtime != Some(mtime) {
                 last_mtime = Some(mtime);
                 match mtime {
-                    // Missing or unreadable resets to defaults, same as live-theme.ts.
+                    // Missing or unreadable resets to defaults.
                     None => {
                         let _ = cx.update(|cx| Theme::set(cx, Palette::default()));
                     }

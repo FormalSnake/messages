@@ -17,8 +17,8 @@ known state from disk while the server catches up.
 ```
    Linux                              Mac (yours, SIP off for the good bits)
  ┌──────────────────┐   http + socket.io   ┌────────────────────────────────┐
- │ Messages (gpuix) │ ───────────────────▶ │ BlueBubbles server             │
- │ React on GPUI    │ ◀─────────────────── │  reads chat.db                 │
+ │ Messages (Rust)  │ ───────────────────▶ │ BlueBubbles server             │
+ │ GPUI + gpui-kit  │ ◀─────────────────── │  reads chat.db                 │
  │ Vulkan on Linux  │                      │  drives Messages.app           │
  └──────────────────┘                      │  Private API helper (SIP off)  │
                                            └────────────────────────────────┘
@@ -28,12 +28,15 @@ The Mac side is the open source [BlueBubbles server](https://github.com/BlueBubb
 It already does the hard part, including the Private API injection into
 Messages.app that makes tapbacks, typing indicators, read receipts, replies,
 edits and unsend possible. This repo is only the client. The backend half of
-the client (`packages/core`) has no UI dependencies, so a bar widget or a TUI
+the client (`crates/core`) has no UI dependencies, so a bar widget or a TUI
 can reuse it.
 
-The window is drawn by [gpuix](https://github.com/remorses/gpuix), which is
-React rendered natively by Zed's GPUI. No Electron, no web view, and a message
-list that stays smooth with years of history because only visible rows exist.
+The window is drawn by Zed's [GPUI](https://www.gpui.rs) with
+[gpui-kit](https://gpui-kit.com) components, all in Rust. No Electron, no web
+view, no JavaScript runtime. A store event redraws only the row, bubble or
+header it touches, so the window idles at 0% CPU, and the message list stays
+smooth with years of history because only visible rows exist. It runs on
+Linux (GNOME and Hyprland on Wayland), Windows and macOS.
 
 ![A group thread with a photo, formatted text, a mention and a tapback](docs/mac-rich.png)
 
@@ -161,8 +164,8 @@ it again on the Mac.
 The app ships Apple's dark palette. Drop a flat JSON of palette tokens at
 `~/.config/messages/theme.json` to override any of them; the file is polled
 every second, so a wallpaper-driven generator such as matugen can rewrite
-it and the window recolours in place. The token names are the keys of `C`
-in `apps/desktop/src/ui/theme.ts`; give `accent`, `danger`, `text` and the
+it and the window recolours in place. The token names are the fields of
+`Palette` in `crates/desktop/src/theme.rs`; give `accent`, `danger`, `text` and the
 surfaces and the rest is derived.
 
 ```json
@@ -213,12 +216,13 @@ you ask it to.
 
 ## Install on Linux
 
-You need [Bun](https://bun.sh) and a GPU with Vulkan. `ffmpeg` on `PATH` is
+You need a Rust toolchain (edition 2024, so 1.85 or newer) and a GPU with
+Vulkan. `ffmpeg` on `PATH` is
 optional: without it a video is a dark box with a play button instead of a
 poster frame, and the tiles of a photo grid letterbox the whole picture
-instead of filling their box. On NixOS you also need Nix (obviously) because
-the prebuilt renderer wants a handful of system libraries on
-`LD_LIBRARY_PATH`; `flake.nix` provides them.
+instead of filling their box. On NixOS the installer builds inside
+`flake.nix`'s dev shell, which also provides the system libraries the window
+loads at runtime.
 
 ```
 git clone https://github.com/FormalSnake/messages ~/Developer/messages
@@ -226,10 +230,14 @@ cd ~/Developer/messages
 ./scripts/install-linux.sh
 ```
 
-That installs a `messages` command in `~/.local/bin` and a desktop entry, so
-it shows up in your launcher. On other distros install `libxkbcommon`,
-`wayland`, `vulkan-loader`, `fontconfig` and `freetype` from your package
-manager, then `bun install && bun run dev`.
+That builds a release binary and installs a `messages` command in
+`~/.local/bin`, a desktop entry and the icon, so it shows up in your launcher
+and the dock groups the window under it. On other distros install
+`libxkbcommon`, `wayland`, `vulkan-loader`, `fontconfig` and `freetype` from
+your package manager first; the same script works without Nix.
+
+On Windows, install [rustup](https://rustup.rs) and the Visual Studio C++
+build tools, then `cargo run --release -p messages` from the clone.
 
 First launch opens the connect screen. Paste the server address and password
 from BlueBubbles on the Mac. Tailscale works well for this; the app has been
@@ -289,17 +297,17 @@ library shows up there as a dlopen failure.
 ## Hacking on it
 
 ```
-bun install
-bun run demo        # window on fixtures
-bun run dev         # window against ~/.config/messages/config.json
-bun run test        # mapper tests, then GPU-backed app tests (macOS only for now)
-bun run typecheck
+MESSAGES_DEMO=1 cargo run --release -p messages   # window on fixtures
+cargo run --release -p messages                   # window against ~/.config/messages/config.json
+cargo test --workspace                            # core tests, then GPUI app tests on the fixtures
+scripts/screenshot.sh                             # screenshots/messages.png from the fixtures
 ```
 
-`packages/core` is the backend: types, the `Transport` interface, the
-BlueBubbles client, the store, the demo fixtures. `apps/desktop` is the
-window. `CLAUDE.md` has the details that bit me while building it, including
-the gpuix rules.
+`crates/core` is the backend: types, the `Transport` trait, the BlueBubbles
+client, the store, the demo fixtures. `crates/desktop` is the window.
+`apps/mac-agent` is the TypeScript agent that runs on the Mac (`bun run
+agent`). `CLAUDE.md` has the details that bit me while building it, including
+the GPUI rules.
 
 ## License
 

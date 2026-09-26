@@ -1,8 +1,7 @@
-//! Port of the attachment surfaces in `apps/desktop/src/ui/bubble.tsx`:
-//! photos (alone and as a grid), video posters, voice notes, stickers, file
-//! pills and link cards, plus the tail every block can carry. Sizes and
-//! labels are settled in `Media::sync` when the message changes; render only
-//! lays out what is already known.
+//! The attachment surfaces: photos (alone and as a grid), video posters,
+//! voice notes, stickers, file pills and link cards, plus the tail every
+//! block can carry. Sizes and labels are settled in `Media::sync` when the
+//! message changes; render only lays out what is already known.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

@@ -1,6 +1,6 @@
-//! The behaviours `apps/desktop/app.test.tsx` checked, driven through GPUI's
-//! test platform against the demo transport. The store runs on a real tokio
-//! runtime (the demo replies on real timers), so waits poll with a deadline.
+//! The app's behaviours, driven through GPUI's test platform against the
+//! demo transport. The store runs on a real tokio runtime (the demo replies
+//! on real timers), so waits poll with a deadline.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

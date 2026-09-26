@@ -1,6 +1,5 @@
-//! Port of `apps/desktop/src/ui/gif-picker.tsx`: the Klipy GIF picker
-//! anchored off the composer's GIF button. Owned by D3; not mounted directly
-//! by app.rs (`composer::Composer` opens it).
+//! The Klipy GIF picker anchored off the composer's GIF button. Owned by
+//! D3; not mounted directly by app.rs (`composer::Composer` opens it).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

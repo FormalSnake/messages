@@ -1,5 +1,5 @@
-//! Port of packages/core/src/gifs.ts: the Klipy GIF API. The key rides in the
-//! URL path. Klipy's attribution rules require the search placeholder "Search KLIPY".
+//! The Klipy GIF API. The key rides in the URL path. Klipy's attribution
+//! rules require the search placeholder "Search KLIPY".
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

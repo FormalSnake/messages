@@ -1,5 +1,4 @@
-//! Port of `apps/desktop/src/ui/composer.tsx`. `app.rs` mounts `Composer` at
-//! the bottom of the main pane.
+//! `app.rs` mounts `Composer` at the bottom of the main pane.
 //!
 //! Typing latency is the hard budget (`docs/rust-architecture.md`): the text
 //! buffer lives entirely in `TextareaState`, which GPUI updates without a
@@ -28,7 +27,7 @@ use crate::primitives::{Button, IconButton, new_input_state};
 use crate::scheduled::ScheduledList;
 use crate::theme::{Palette, Theme, radius, spacing, type_scale};
 
-/// My own messages stay editable this long (composer.tsx:48).
+/// My own messages stay editable this long.
 const EDIT_WINDOW_MS: i64 = 15 * 60_000;
 const BANNER_HEIGHT: Pixels = px(34.);
 
@@ -36,9 +35,8 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// The 13 iOS expressive-send effects, bundle id then label
-/// (composer.tsx:32-46). The first four animate the bubble; the rest play
-/// across the whole screen.
+/// The 13 iOS expressive-send effects, bundle id then label. The first four
+/// animate the bubble; the rest play across the whole screen.
 const EFFECTS: [(&str, &str); 13] = [
     ("impact", "Slam"),
     ("loud", "Loud"),
@@ -162,7 +160,7 @@ impl Composer {
 
     /// Loads a draft the store changed behind the field's back (a send clears
     /// it, starting an edit fills it), and refocuses the field whenever the
-    /// chat, reply or edit changes (composer.tsx:138-140).
+    /// chat, reply or edit changes.
     fn sync_store(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(store) = Self::store(cx) else { return };
         let Some(chat) = self.current_chat.clone() else { return };
@@ -197,8 +195,8 @@ impl Composer {
     }
 
     /// Escape: the schedule panel, the path field, the GIF picker, then the
-    /// reply and edit banners (composer.tsx:422-425). Anything else is the
-    /// root's (menus, the info panel).
+    /// reply and edit banners. Anything else is the root's (menus, the info
+    /// panel).
     fn on_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.schedule_field.take().is_some() {
             self.schedule_error = None;
@@ -228,7 +226,7 @@ impl Composer {
     }
 
     /// Up on an empty draft edits my last message still inside the edit
-    /// window (composer.tsx:426, 239-244).
+    /// window.
     fn on_up(&mut self, cx: &mut Context<Self>) -> bool {
         if !self.input.read(cx).value().is_empty() {
             return false;

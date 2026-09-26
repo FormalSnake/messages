@@ -1,5 +1,5 @@
-//! Port of `apps/desktop/src/ui/connect.tsx`: the "Connect to your Mac" screen,
-//! shown when there is no store yet, or overlaid when settings are open.
+//! The "Connect to your Mac" screen, shown when there is no store yet, or
+//! overlaid when settings are open.
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -42,7 +42,7 @@ impl ConnectScreen {
         // gpui-component's `Input` emits `InputEvent::PressEnter` rather than
         // a DOM-style submit event; `subscribe_in` is the variant of
         // `subscribe` that also hands back the `Window` the event needs to
-        // reach `submit` (`connect.tsx`'s onSubmit-on-Enter, ported).
+        // reach `submit`.
         let on_press_enter = |this: &mut Self, _: &Entity<InputState>, event: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.submit(window, cx);
@@ -84,7 +84,7 @@ impl ConnectScreen {
         self
     }
 
-    /// Port of connect.tsx's `/^https?:\/\/\S+$/` check.
+    /// Checks the URL against `/^https?:\/\/\S+$/`.
     fn valid(&self, cx: &App) -> bool {
         let url = self.url.read(cx).value();
         let url = url.trim();

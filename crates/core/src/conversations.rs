@@ -1,5 +1,3 @@
-//! Port of packages/core/src/conversations.ts.
-//!
 //! chat.db keeps one chat per address, so a person texted on two numbers shows
 //! up twice. Those fold into one conversation: the most recently active chat is
 //! the primary the sidebar lists and sends go to; the others lend their messages.

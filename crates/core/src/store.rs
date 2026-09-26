@@ -1,4 +1,4 @@
-//! Port of packages/core/src/store.ts: the public API of `MessagesStore`.
+//! The public API of `MessagesStore`.
 //!
 //! Threading: the store lives on the tokio runtime the desktop app creates at
 //! startup. Every network call, timer, cache write and JSON parse runs there.
@@ -72,7 +72,7 @@ pub enum FindMyState {
     Ok,
 }
 
-/// Every field of the TS `AppState`. Chats and messages are `Arc` so a view can
+/// Every field the UI needs to render. Chats and messages are `Arc` so a view can
 /// keep what it rendered and compare by pointer: an unchanged row keeps its Arc.
 #[derive(Clone, Debug)]
 pub struct AppState {
@@ -249,7 +249,7 @@ struct Inner {
     events: broadcast::Sender<StoreEvent>,
     options: StoreOptions,
     agent: Option<MacAgentClient>,
-    /// Everything the TS class kept in private fields: prefs, pending reactions,
+    /// Internal state not exposed to views: prefs, pending reactions,
     /// typing timers, forced-unread set, draft sync timers, outbox, focus
     /// check times, Find My stream handle, batch depth. Never held across an await.
     ///
@@ -756,7 +756,7 @@ impl MessagesStore {
     }
 
     /// Applies every transport event queued so far. A socket event the transport
-    /// sent before `connect` returned has landed once this resolves, as it had in TS.
+    /// sent before `connect` returned has landed once this resolves.
     async fn sync_events(&self) {
         let barrier = self.inner.private.lock().barrier.clone();
         let Some(barrier) = barrier else { return };
@@ -1404,7 +1404,6 @@ impl MessagesStore {
         });
     }
 
-    /// Port of `applyMessage`. `from_server` and `silent` as in TS.
     pub fn apply_message(&self, message: Message, from_server: bool, silent: bool) {
         let followup = self.inner.update(|state, events| self.inner.apply_message(state, events, message, from_server, silent));
         if let Some(chat_guid) = followup.read_receipt {

@@ -1,5 +1,5 @@
-//! Port of `apps/desktop/src/ui/facetime.tsx`: the incoming-call banner.
-//! `app.rs` mounts `FaceTimeBanner` absolutely positioned over the thread.
+//! The incoming-call banner. `app.rs` mounts `FaceTimeBanner` absolutely
+//! positioned over the thread.
 //! Answering asks the Mac to pick up and hand us a FaceTime Link to open in a
 //! browser; the Mac itself leaves the call about 15 s after we join
 //! (bluebubbles-helper#38).
@@ -15,7 +15,7 @@ use crate::primitives::{Button, ButtonKind, IconButton};
 use crate::theme::{Theme, spacing, type_scale};
 
 /// Sits `offset` in from the right edge: 12 px, or clear of the details
-/// panel while it is open (app.tsx:386).
+/// panel while it is open.
 pub struct FaceTimeBanner {
     offset: Pixels,
 }

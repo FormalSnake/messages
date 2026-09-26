@@ -1,5 +1,5 @@
-//! Port of packages/core/src/demo.ts: fixtures and a transport that answers
-//! from them, for `MESSAGES_DEMO=1` and the UI tests. Sends get a canned reply.
+//! Fixtures and a transport that answers from them, for `MESSAGES_DEMO=1`
+//! and the UI tests. Sends get a canned reply.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

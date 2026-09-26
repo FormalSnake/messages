@@ -1,5 +1,5 @@
-//! Port of packages/core/src/cache.ts: the last known chats and threads on
-//! disk, so the window paints before the server answers.
+//! The last known chats and threads on disk, so the window paints before
+//! the server answers.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,9 @@ use crate::store::AppState;
 const MESSAGES_PER_CHAT: usize = 100;
 const SAVE_DELAY: Duration = Duration::from_millis(2000);
 
-/// Same shape and file (`<cache_dir>/state.json`) as the TS client. Rows are
-/// the store's own `Arc`s, so taking a snapshot copies pointers, not messages.
+/// Same shape and file (`<cache_dir>/state.json`) already on disk from
+/// earlier installs. Rows are the store's own `Arc`s, so taking a snapshot
+/// copies pointers, not messages.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CachedState {

@@ -1,5 +1,3 @@
-//! Port of packages/core/src/findmy.ts.
-
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 

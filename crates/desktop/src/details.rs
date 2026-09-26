@@ -1,6 +1,5 @@
-//! Port of `InfoPanel` in `apps/desktop/src/ui/header.tsx` (the details
-//! panel). `app.rs` mounts `InfoPanel` in the sliding info column, sized to
-//! `INFO_WIDTH` whatever holds it.
+//! The details panel (`InfoPanel`). `app.rs` mounts it in the sliding info
+//! column, sized to `INFO_WIDTH` whatever holds it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -102,7 +101,7 @@ impl InfoPanel {
     }
 
     /// The details panel is the only Find My consumer, so while it is
-    /// mounted it drives the store's stream and poll (header.tsx:516-519).
+    /// mounted it drives the store's stream and poll.
     pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
         if let Some(store) = store(cx) {
             store.set_details_open(open);
@@ -259,7 +258,7 @@ where
     }
 }
 
-/// One action in the panel (header.tsx `Row`): Enter or Space runs it too.
+/// One action in the panel: Enter or Space runs it too.
 fn action_row(palette: &Palette, id: &str, icon: IconName, label: impl Into<SharedString>, value: Option<SharedString>, danger: bool, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     let on_click = std::rc::Rc::new(on_click);
     let on_key = on_click.clone();

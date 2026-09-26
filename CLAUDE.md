@@ -7,22 +7,28 @@ client side only.
 
 ## Layout
 
-Bun workspace. `bun install` at the root links both packages.
+Cargo workspace for the client, Bun for the Mac agent.
 
-- `packages/core` (`@messages/core`): everything that is not pixels. No React,
-  no gpuix. Model types (`model.ts`), the `Transport` interface
-  (`transport.ts`), the BlueBubbles implementation (`bluebubbles/client.ts`,
-  `bluebubbles/map.ts`), fixtures (`demo.ts`), the app store (`store.ts`),
-  config, formatting, notifications, clipboard, URL opening. A second frontend
-  imports this package and gets the whole backend.
-- `apps/desktop` (`@messages/desktop`): the gpuix (React on GPUI) window.
-  `app.tsx` is the entry; `src/ui/` holds the screens. The only React-facing
-  piece of the store is `src/ui/use-app-state.ts`.
+- `crates/core` (`messages-core`): everything that is not pixels, no GPUI.
+  Model types (`model.rs`), the `Transport` trait (`transport.rs`), the
+  BlueBubbles implementation (`bluebubbles/client.rs`, `map.rs`, and
+  `socket.rs`, a socket.io v4 client on tokio-tungstenite and rustls, since
+  `rust_socketio` needs OpenSSL), fixtures (`demo.rs`), the store
+  (`store.rs`), config, formatting, notifications, clipboard, URL opening.
+  Everything that does I/O runs on tokio.
+- `crates/desktop` (binary `messages`): the GPUI window on gpui-kit 0.6.6
+  (gpui-pre 0.3.6). `main.rs` is the entry, one file per screen beside it.
+  `bridge.rs` is the only piece that turns store events into GPUI notifies.
+- `apps/mac-agent` (`@messages/mac-agent`): TypeScript, runs on the Mac.
 
-The seam between the two is `MessagesStore`: the frontend calls its methods and
-subscribes to `AppState` snapshots. Nothing in the UI talks to the transport
-directly except through the store (search and FaceTime go through
-`store.transport` on purpose, they own no state).
+The seam is `MessagesStore`: the UI calls its methods and reads state under a
+short `RwLock` guard; every change sends a narrow `StoreEvent` (`Chat(guid)`,
+`Thread(guid)`, `Message{..}`, `Typing(guid)`, `Draft(guid)`, ...) on a
+broadcast channel, and `bridge.rs` notifies only the entities watching that
+topic. Nothing in the UI talks to the transport directly except search and
+FaceTime, which own no state. `docs/rust-architecture.md` has the threading
+model and the measured performance budget; `docs/rust-parity.md` is the
+checklist the client was held to against the TS client it replaced.
 
 ## Why a store and a reconcile loop
 
@@ -34,9 +40,9 @@ after every reconnect. The UI never refetches on navigation.
 
 chat.db keeps one chat per address, so one person can be two rows. The store
 folds one-to-one chats that share a contact (or an address) into one
-conversation (`conversations.ts`): the most recently active chat is the
-primary the sidebar lists and sends go to, `state.primaryOf` and
-`state.merged` map the rest, and the `conversation*` helpers give the UI the
+conversation (`conversations.rs`): the most recently active chat is the
+primary the sidebar lists and sends go to, `state.primary_of` and
+`state.merged` map the rest, and the `conversation_*` helpers give the UI the
 merged thread, unread and typing state. Message actions use the message's own
 `chatGuid`; conversation state (drafts, replying, editing) keys on the primary.
 
@@ -48,39 +54,41 @@ The reconcile sweep asks for ten messages at a time and keeps paging, so a
 long absence catches up progressively instead of in one request that hangs.
 It re-reads the open thread before the sweep, so what is on screen never waits
 for the backlog. Threads nobody has opened are paged in the background after
-every pass (`warmThreads`), newest conversation first, one page at a time with
+every pass (`warm_threads`), newest conversation first, one page at a time with
 a gap between them, so opening a chat left alone for days paints from memory
 instead of waiting on a fifty-message request. The same pass downloads the
 media of the last dozen messages in the fifteen most recent chats
-(`warmMedia`), so a thread opens with its photos, videos and voice notes on
-disk rather than a row of placeholders. `warmBudget` decides what is worth
+(`warm_media`), so a thread opens with its photos, videos and voice notes on
+disk rather than a row of placeholders. `warm_budget` decides what is worth
 pulling: images and audio up to 25 MB, video up to 60 MB, everything else (a
 PDF, a zip) left to a click, which is the bargain the thread already makes.
-`warmChats: 0` turns both off.
+`warmChats: 0` in the config turns both off.
 
 A Focus on the other end shows up twice. The message carries it: chat.db's
-`was_delivered_quietly` and `did_notify_recipient` become `deliveredQuietly`
+`was_delivered_quietly` and `did_notify_recipient` become `delivered_quietly`
 and `notified`, and the receipt under the last thing I sent reads "Delivered
-Quietly" with a Notify Anyway button (`store.notifySilenced`, which is
+Quietly" with a Notify Anyway button (`store.notify_silenced`, which is
 `POST /message/:guid/notify`). The person carries it too:
 `GET /handle/:address/focus` answers `silenced`, `none` or `unknown`, so
-`refreshFocus` asks about the open conversation on open and every minute after,
+`refresh_focus` asks about the open conversation on open and every minute after,
 and the same pass that warms threads keeps an answer for the fifteen most
-recent one-to-one chats (`warmFocus`, a ten minute TTL) so the sidebar and the
+recent one-to-one chats (`warm_focus`, a ten minute TTL) so the sidebar and the
 header can show the moon without each thread being opened first. Answers are
-keyed by `focusKey`, one entry per person rather than per number, and
-`conversationFocus` reads them back.
+keyed by `focus_key`, one entry per person rather than per number, and
+`conversation_focus` reads them back.
 
-None of that is re-pulled after a restart. `StateCache` (`cache.ts`) keeps the
+None of that is re-pulled after a restart. `StateCache` (`cache.rs`) keeps the
 chat list, contacts and the last 100 messages per chat in
-`$XDG_CACHE_HOME/messages/state.json`, written debounced and atomically, and
-the window paints from it before the server answers; the messages carry the
+`$XDG_CACHE_HOME/messages/state.json`, written debounced and atomically and
+parsed on the blocking pool (about 2 ms for a megabyte), and the window paints
+from it before the server answers; the messages carry the
 `localPath` of anything already downloaded, and the client resolves that path
 again for every message it maps, so a file in the attachment cache is never
 fetched twice. A message the server sends again keeps the attachment size the
 client read from the file header (`measured`): the server's own size ignores
-EXIF, so without that the open thread recropped its photos every sweep. What a restart does cost is one page of the open thread and the
-sweep since `savedAt`.
+EXIF, so without that the open thread recropped its photos every sweep. What
+a restart does cost is one page of the open thread and the sweep since
+`savedAt`.
 
 `apps/mac-agent` (`@messages/mac-agent`) runs on the Mac as a launchd user
 agent (`scripts/install-mac-agent.sh`, label `es.canarycoders.messages.agent`,
@@ -92,8 +100,8 @@ pinned and muted state and GIF favorites shared between clients (`PUT /prefs`,
 newest entry per chat or gif id wins, an unfavorite kept as a tombstone), and
 reports the chats pinned in Messages.app itself, read from
 `~/Library/Preferences/com.apple.messages.pinning.plist`. The client talks to
-it through `MacAgentClient` in `packages/core/src/agent.ts` when
-`config.agent` is set; `isPinned` in the same file decides between a Mac pin
+it through `MacAgentClient` in `crates/core/src/agent.rs` when
+`config.agent` is set; `is_pinned` in the same file decides between a Mac pin
 and a client change, comparing the Mac's list against `pinnedAt`, which only a
 pin moves. `updatedAt` is the whole entry's clock, so a draft syncing while you
 type used to read as a pin change and unpin the chat.
@@ -111,23 +119,22 @@ Setting `keepFindMyOpen` to false in `agent.json` leaves the app alone.
 
 Both payloads are memoized on their source files' mtimes rather than a TTL, and
 `GET /findmy/stream` (`findmy/feed.ts`) watches those files and pushes a
-snapshot whenever one changes: `MacAgentClient.streamFindMy` reads that stream
+snapshot whenever one changes: `MacAgentClient::stream_findmy` reads that stream
 and the store applies it while the details panel is open, so someone who moves
 shows up in seconds. The minute poll stays as the fallback, and an answer to it
 that arrives after a push has landed is dropped rather than allowed to
 overwrite it.
 
-Colours live in `apps/desktop/src/ui/theme.ts` (`C`). A flat JSON of palette
-tokens at `~/.config/messages/theme.json` overrides them and is polled every
-second, which is how matugen drives the app on Linux (template in the nix
-config, `matugen-templates/messages.json.tmpl`). The palette is mutated in
-place and the tree remounts, so never capture a `C.*` value in a module-level
-constant.
+Colours live in `crates/desktop/src/theme.rs`, a GPUI `Global`. A flat JSON of
+palette tokens at `~/.config/messages/theme.json` overrides them and is
+polled every second off the UI thread, which is how matugen drives the app on
+Linux (template in the nix config, `matugen-templates/messages.json.tmpl`).
+A change calls `refresh_windows`, which redraws cached views too.
 
 The composer's GIF picker talks to the Klipy GIF API through `KlipyClient` in
-`packages/core/src/gifs.ts`, shown only when `config.klipy` (an `apiKey`) is set.
+`crates/core/src/gifs.rs`, shown only when `config.klipy` (an `apiKey`) is set.
 
-`packages/core/src/assistant.ts` (`CanaryLLMClient`) backs the summarize,
+`crates/core/src/assistant.rs` (`CanaryLlmClient`) backs the summarize,
 translate and transcribe buttons in the desktop UI; every call is triggered by
 a click, never a timer or an incoming message, sends at most the last 200
 messages with attachment bytes stripped, and only ever displays its result.
@@ -141,100 +148,75 @@ reset to 1 or SQLite refuses a read-only open (`localstorage.ts`).
 ## Commands
 
 ```
-bun run demo        # desktop window on fixtures, no Mac needed
-bun run dev         # desktop window against ~/.config/messages/config.json
-bun run test        # core mapper tests, then the GPU-backed app tests (macOS only today)
-bun run typecheck
-bun run screenshot  # apps/desktop/screenshots/messages.png from the demo data
+cargo run --release -p messages                        # against ~/.config/messages/config.json
+MESSAGES_DEMO=1 cargo run --release -p messages        # fixtures, no Mac needed
+cargo test --workspace                                 # core tests, then GPUI app tests on the demo transport
+scripts/screenshot.sh                                  # screenshots/messages.png from the demo data
+bun run agent                                          # the Mac agent, on the Mac
 ```
 
 Env overrides: `MESSAGES_SERVER_URL` + `MESSAGES_SERVER_PASSWORD`,
-`MESSAGES_DEMO=1`, `MESSAGES_FONT`. Config lives in
+`MESSAGES_DEMO=1`, `MESSAGES_FONT`, `MESSAGES_TRACE=1` (first paint,
+key-to-paint, thread-open-to-paint, per-second frame and render counts,
+granted window decorations). Cargo features: `screenshot` (offscreen Metal
+capture, macOS only) and `frame-overlay` (F12 frame timings; it turns on
+GPUI's profiler, so it stays out of normal builds). Config lives in
 `$XDG_CONFIG_HOME/messages/config.json`, the attachment cache in
 `$XDG_CACHE_HOME/messages/attachments`.
 
-On NixOS the prebuilt renderer needs its runtime libraries on
-`LD_LIBRARY_PATH`; `flake.nix` provides a dev shell that sets it, so run
-`nix develop -c bun run demo` there (nix-ld does not help: Nix's bun never
-consults `NIX_LD_LIBRARY_PATH`). Keep `flake.nix` git-tracked or the flake is
-invisible.
+On NixOS, build and run inside the dev shell (`nix develop -c cargo run ...`):
+it provides pkg-config, the headers, and the dlopened Wayland, Vulkan and
+fontconfig libraries on `LD_LIBRARY_PATH`. Keep `flake.nix` git-tracked or
+the flake is invisible. `scripts/install-linux.sh` installs the desktop entry
+and icon so GNOME and Hyprland match the window's app id
+(`es.canarycoders.messages`).
 
-Linux test box: `ssh e1504g` (NixOS, Hyprland on `wayland-1`, bun installed,
-Vulkan via the iGPU). Its shell is fish, so pipe scripts through `bash -s`.
-Sync with `rsync -a --exclude node_modules --exclude .git . e1504g:~/Developer/messages/`,
-then on the box `bun install && WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/1000 nix develop -c bun run demo`.
-`grim tmp/shot.png` captures the screen for a look.
+Linux boxes: `ssh e1504g` (NixOS, GNOME on `wayland-0`, Intel iGPU) and
+`ssh g815` (NixOS, Hyprland on `wayland-1`; dual-boots into Windows as
+`desktop-vjmk52d`, `ssh windows`). Their shell is fish, so pipe scripts
+through `bash -s`. Sync with `rsync -a --exclude node_modules --exclude .git
+--exclude target . <host>:~/Developer/messages-rust/`, never into
+`~/Developer/messages` there. `scripts/linux-headless.sh <bin> <png>` runs the
+app in its own headless sway and prints RSS and CPU, so nothing touches the
+desktop session; GNOME refuses screenshots from outside its own tools. On
+Windows the toolchain is rustup plus the VS 2022 C++ build tools, a GUI
+process has to be started in the console session (a `schtasks /IT` task), and
+GPUI answers the caption hit test from the last mouse move it saw, so a
+`WM_NCHITTEST` probe has to move the cursor there first.
 
-## Mac gateway setup
+## GPUI rules that bit us
 
-1. Install the BlueBubbles server on the Mac and grant Full Disk Access.
-2. For the Private API (tapbacks, typing, read receipts, replies, edit,
-   unsend, effects, group management, FaceTime links): SIP off, then turn on
-   Private API in BlueBubbles settings and confirm "helper connected".
-   Docs: https://docs.bluebubbles.app/private-api/installation
-3. Turn OFF "Encrypt communications" in BlueBubbles; the client does not
-   implement its AES envelope.
-4. Enter the server address and password in the app's connect screen.
-
-Capabilities are derived from `/server/info` (`private_api` and
-`helper_connected`), see `capabilitiesFor` in `model.ts`. The UI hides what the
-server cannot do instead of failing on click.
-
-## gpuix rules that bit us
-
-- Every `<text>` needs a `color`; GPUI paints unstyled text black.
-- One scroller per column: the sidebar scrolls, the thread is a
-  `<virtual-list>`, nothing inside either may scroll.
-- Overlays must be `<anchored deferred>` (or SelectContent) to paint above the
-  virtual list; a positioned div ends up underneath it.
-- `<img src>` takes a file path or data URL, so attachments are downloaded into
-  the cache first.
-- Lucide icons come from `lucide-static`; `currentColor` is replaced with a
-  paint colour before GPUI tints the mask.
-- A lone UTF-16 surrogate anywhere in a text prop makes the native batch
-  parser reject the whole commit ("unexpected end of hex escape") and React
-  then dies with "Should not already be working". Never index a string with
-  `[0]` (use `firstGrapheme`), and run server strings through `wellFormed`.
-- On Linux an `<img objectFit="cover">` whose scaled bitmap is bigger than
-  its box is painted whole, not clipped (a portrait photo in a circle comes
-  out as a tall pill); macOS clips it. Contact photos and group icons are
-  therefore cut square on disk (`squareThumbnail` in `image.ts`) before the
-  renderer sees them.
-- Emoji on Linux: cosmic-text's fallback list is hardcoded and puts DejaVu,
-  FreeSans and Noto Sans Symbols ahead of any emoji font, and GPUI only treats
-  a glyph as emoji when the font's PostScript name is literally
-  `NotoColorEmoji`. The nix config (`modules/nixos/mixins/hyprland.nix`)
-  drops those fonts and installs Apple Color Emoji under that name. Never
-  name an emoji family in a style on Linux: a run that asks for one, by any
-  of its names, renders tofu, while an unnamed run reaches the colour font
-  through the per-glyph fallback. `FONT_EMOJI` is therefore undefined off
-  macOS and only the emoji-only nodes use it.
-- A child with a background fill (`backgroundColor` or a gradient) swallows
-  the click meant for an ancestor's `onClick`; a border, a shadow, opacity or
-  a `<text>` do not. Give such decorations `pointerEvents: 'none'` (avatars,
-  dots, badges) or put the handler on the filled element itself.
-- Motion is `motion.div` from gpuix, driven natively: it animates `width`,
-  `height`, `opacity`, `top/right/bottom/left` and `borderRadius`, nothing
-  else (no transforms, no springs, no keyframes) and nothing on unmount.
-  `src/ui/motion.tsx` holds the durations and easing plus `usePresence`,
-  `useLeaving`, `Fade` and `Reveal`, which keep a closing element mounted
-  long enough to animate out. A panel slides by animating a clipping box
-  around content of fixed width, so nothing inside reflows mid-slide.
-- An animated `<img>` makes GPUI request a new frame on every paint while
-  the window is active, and gpuix rebuilds and re-lays out the whole tree
-  for each one, so one GIF in the thread ran the app at the display's
-  refresh rate (a 90% core on the e1504g). GIFs are therefore never handed
-  to the renderer animated: `src/ui/gif.ts` splits them into PNG frames with
-  ffmpeg (`<file>.frames/`, delays from ffprobe, sub-20ms delays clamped to
-  100ms like a browser) and `useGif` steps the `src` from one clock per file,
-  so the window repaints only when the GIF changes and every copy of a
-  spammed GIF moves in unison. The lightbox still shows the GIF itself.
-- A content mask is a rectangle. An image inside a box with `overflow: hidden`
-  and a corner radius is cut to the box but keeps its square corners, so the
-  tail lobe under a photo came out as a square nub. Only the element that
-  paints rounds itself: the lobe is a 14x16 `<img>` with its own radius, fed a
-  corner cut ffmpeg makes on disk (`generateTailCut`), the same bargain the
-  photo tiles already make.
+- A cached view (`AnyView::cached`) re-renders only when its own entity is
+  notified. Anything it reads from another entity in render needs a notify on
+  change, and a cached root that only has `flex_grow` collapses to zero
+  height (give it `flex_basis(0)` and `h_full`).
+- gpui-pre 0.3.6 drops a cached view's window control areas when it reuses
+  the view's frame, so the drag strip (`chrome.rs`) lives in the uncached
+  root view, painted beneath the panes. The Windows caption hit test sees
+  every hitbox under the cursor, so anything clickable in a title row must
+  `occlude()` the strip, and the strip must not reach under the caption
+  buttons.
+- Caption buttons are gpui-kit's `TitleBar`, pinned top-right in the root.
+  It draws them on Windows and when Linux is client-decorated (GNOME); under
+  server decorations it draws nothing.
+- Colour emoji on Linux: cosmic-text falls back to Noto Sans Symbols 2 and
+  DejaVu before any colour font and only paints colour for a face named
+  `NotoColorEmoji`. `emoji_font.rs` registers the system colour emoji font a
+  second time under a name GPUI accepts, mapped rather than copied, and falls
+  back to plain rendering on any failure.
+- `img()` given a `String` looks it up as an embedded asset. Files and data
+  URLs go through `attachments::image_source`, and anything shown smaller
+  than its pixels through `sized_image_source` (`stills.rs`), which decodes
+  at on-screen size off the UI thread into an LRU. GPUI's SVG renderer has
+  no system fonts, so SVG text names the app's UI font.
+- GIFs are decoded once per shared file and stepped by one clock per file;
+  only the row showing the GIF is notified, and only while the window is
+  active.
+- A lone UTF-16 surrogate in server text is repaired before parsing
+  (`repair_lone_surrogates`); graphemes, not bytes, are indexed
+  (`first_grapheme`).
+- A file already on disk paints at once; a header re-read (`measured`)
+  happens beside it, never before it.
 
 ## Server quirks worth knowing
 
@@ -243,27 +225,26 @@ server cannot do instead of failing on click.
   slow per message. Ask for 10 at a time; a request for 150 hung the server
   for two minutes.
 - Attachments: download without `original=true` so HEIC becomes JPEG and CAF
-  audio becomes AAC (labelled mp3). See `downloadPlan` in `map.ts`. Stickers
+  audio becomes AAC (labelled mp3). See `download_plan` in `map.rs`. Stickers
   are the exception: an iOS 17 sticker is HEIC with an alpha plane and the
   server's sips conversion flattens it onto black, so the client fetches the
-  original and runs it through ffmpeg (`heifToPng`, alphamerge of the second
+  original and runs it through ffmpeg (`heif_to_png`, alphamerge of the second
   video stream), caching the result as `<guid>.png`.
 - Every cache entry is a symlink to a file named by its SHA-1
-  (`shareByContent` in `dedupe.ts`), and `attachmentPath` hands back that
+  (`share_by_content` in `dedupe.rs`), and the store hands back that
   shared path. GPUI keys decoded images on the path string, so the same GIF
   sent forty times is one decode and one set of textures instead of forty;
   previews, tiles and tail cuts key on the file name for the same reason.
-  `cachedFile` follows only the link itself, never the directories above it,
+  `cached_file` follows only the link itself, never the directories above it,
   because `realpath` would spell the same file two ways on macOS.
 - The attachment `width`/`height` the server reports ignore EXIF
   orientation, so a portrait iPhone photo arrives as a landscape box and the
   renderer, which does turn the pixels upright, paints past it into the next
-  row. `imageSize` in `image.ts` reads the file header, orientation included,
-  and `attachmentSrc` trusts it over the server; `ImageAttachment` reads it
-  once per mount for files already in the cache.
+  row. `image_size` in `image.rs` reads the file header, orientation included,
+  and `attachment_src` trusts it over the server.
 - Editing a message through the helper on macOS 26 calls an `IMChat`
   selector that no longer exists, Messages.app crashes, and the helper is gone
-  for 30 s. `capabilitiesFor` turns `edit` off when the reported macOS major
+  for 30 s. `capabilities_for` turns `edit` off when the reported macOS major
   is 26 or later. Unsend and tapbacks are fine.
 - Private API events (`typing-indicator`, `chat-read-status-changed`) can
   name a chat with the old `iMessage;-;` prefix while chat.db on macOS 26
@@ -275,10 +256,10 @@ server cannot do instead of failing on click.
   The FaceTime helper needs `enable_ft_private_api` and does not inject on
   macOS 26 (bluebubbles-server#776).
 - Focus status (`GET /handle/:address/focus`) is Monterey and newer and needs
-  the private API, so `capabilitiesFor` gates it on both; the same goes for
+  the private API, so `capabilities_for` gates it on both; the same goes for
   `wasDeliveredQuietly` and `didNotifyRecipient`, which the server also leaves
   out of the message it serializes for a notification. Someone who does not
   share their Focus with this Apple ID answers `unknown`, not an error.
-- Scheduled sends (`POST /message/schedule`) are `Transport.scheduleText`,
-  `listScheduled` and `cancelScheduled`; the server holds and fires them, not
+- Scheduled sends (`POST /message/schedule`) are `Transport::schedule_text`,
+  `list_scheduled` and `cancel_scheduled`; the server holds and fires them, not
   the client.
