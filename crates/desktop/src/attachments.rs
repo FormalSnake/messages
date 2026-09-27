@@ -152,6 +152,15 @@ pub fn image_source(path: &Path) -> ImageSource {
     ImageSource::Resource(Resource::Path(Arc::from(path)))
 }
 
+/// `img()` of the still at `path`, sized to a `width` x `height` box. Left
+/// without an aspect ratio, `img()` takes the picture's own, which beats the
+/// explicit height: a cover crop then lays out taller than its box, spills past
+/// it and loses its bottom corners.
+pub fn sized_img(path: &Path, width: f32, height: f32, fit: ObjectFit) -> Img {
+    let source = sized_image_source(path, px(width), px(height), if matches!(fit, ObjectFit::Cover) { ObjectFit::Cover } else { ObjectFit::Contain });
+    img(source).w(px(width)).h(px(height)).aspect_ratio(width / height.max(1.)).object_fit(fit)
+}
+
 /// The decoded still behind `path`, from the same cache `img()` uses.
 pub fn render_image(path: &Path, window: &mut Window, cx: &mut App) -> Option<Arc<RenderImage>> {
     let text = path.to_string_lossy();
@@ -430,8 +439,43 @@ fn fetch(row: &MessageRow, chat_guid: &str, message_guid: &str, attachment_guid:
 #[derive(Clone)]
 pub enum TailFill {
     Color(Hsla),
-    /// The picture's own bottom outer corner, as painted into a box of this size (cover).
-    Picture(PathBuf, f32, f32),
+    /// The picture's own bottom outer corner, as painted into a box of this
+    /// size, or the colour when the picture does not reach that corner.
+    Picture(PathBuf, f32, f32, Source, Hsla),
+}
+
+/// Where the lobe's picture comes from: the still the block paints (decoded
+/// at the block's size with the block's fit), or the frame a GIF is on.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Source {
+    Still { cover: bool },
+    Gif { cover: bool },
+}
+
+/// What the tail under a picture block carries: the picture once there is one
+/// to show, the block's placeholder colour until then.
+pub fn picture_tail(tail: Option<TailFill>, still: Option<PathBuf>, mime: &str, width: f32, height: f32, cover: bool) -> Option<TailFill> {
+    let source = if mime == "image/gif" && still.as_ref().is_some_and(|path| !is_data_url(path)) { Source::Gif { cover } } else { Source::Still { cover } };
+    match (tail, still) {
+        (Some(TailFill::Color(color)), Some(path)) => Some(TailFill::Picture(path, width, height, source, color)),
+        (tail, _) => tail,
+    }
+}
+
+/// Where the picture sits relative to the lobe, as (width, height, overflow
+/// past the box's outer side, overflow past its bottom), all in lobe space.
+/// The lobe shows the bottom outer 12% by 14% of the box, the same cut Messages
+/// masks into its tail. None when a contained picture leaves that corner to
+/// the box's own fill.
+fn lobe_picture(box_w: f32, box_h: f32, image_w: f32, image_h: f32, cover: bool) -> Option<(f32, f32, f32, f32)> {
+    let (sx, sy) = (box_w / image_w, box_h / image_h);
+    let scale = if cover { sx.max(sy) } else { sx.min(sy) };
+    let (w, h) = (image_w * scale, image_h * scale);
+    if w < box_w - 1. || h < box_h - 1. {
+        return None;
+    }
+    let (fx, fy) = (TAIL_WIDTH / (0.12 * box_w), TAIL_HEIGHT / (0.14 * box_h));
+    Some((w * fx, h * fy, (w - box_w) / 2. * fx, (h - box_h) / 2. * fy))
 }
 
 fn lobe_and_cut(from_me: bool, lobe: AnyElement, palette: &Palette) -> [AnyElement; 2] {
@@ -449,33 +493,34 @@ fn tail(from_me: bool, fill: &TailFill, palette: &Palette) -> [AnyElement; 2] {
             let lobe = div().absolute().bottom_0().w(px(TAIL_WIDTH)).h(px(TAIL_HEIGHT)).bg(*color);
             if from_me { lobe.right(px(-5.)).rounded_bl(px(14.)) } else { lobe.left(px(-5.)).rounded_br(px(14.)) }.into_any_element()
         }
-        TailFill::Picture(path, box_w, box_h) => {
-            let (path, box_w, box_h) = (path.clone(), *box_w, *box_h);
+        TailFill::Picture(path, box_w, box_h, source, fallback) => {
+            let (path, box_w, box_h, source, fallback) = (path.clone(), *box_w, *box_h, *source, *fallback);
             let lobe = div().absolute().bottom_0().w(px(TAIL_WIDTH)).h(px(TAIL_HEIGHT)).child(
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, cx| {
-                        let Some(image) = render_image(&path, window, cx) else { return };
-                        let pixels = image.size(0);
+                        let (picture, cover) = match source {
+                            Source::Gif { cover } => (crate::gif::current_frame(&path, cx), cover),
+                            Source::Still { cover } => (crate::stills::sized_image(&path, px(box_w), px(box_h), if cover { ObjectFit::Cover } else { ObjectFit::Contain }, window, cx).map(|image| (image, 0)), cover),
+                        };
+                        let Some((image, frame)) = picture else { return };
+                        let pixels = image.size(frame);
                         if pixels.width.0 <= 0 || pixels.height.0 <= 0 {
                             return;
                         }
-                        // The lobe shows the bottom outer 12% by 14% of the box the
-                        // picture fills, the same cut Messages masks into its tail.
-                        let (iw, ih) = (pixels.width.0 as f32, pixels.height.0 as f32);
-                        let scale = (box_w / iw).max(box_h / ih);
-                        let (fx, fy) = (TAIL_WIDTH / (0.12 * box_w), TAIL_HEIGHT / (0.14 * box_h));
-                        let size = size(px(iw * scale * fx), px(ih * scale * fy));
-                        let overflow_x = (iw * scale - box_w) / 2. * fx;
-                        let overflow_y = (ih * scale - box_h) / 2. * fy;
+                        let radii = if from_me { Corners { bottom_left: px(14.), ..Corners::default() } } else { Corners { bottom_right: px(14.), ..Corners::default() } };
+                        let Some((width, height, overflow_x, overflow_y)) = lobe_picture(box_w, box_h, pixels.width.0 as f32, pixels.height.0 as f32, cover) else {
+                            window.paint_quad(gpui_kit::fill(bounds, fallback).corner_radii(radii));
+                            return;
+                        };
+                        let size = size(px(width), px(height));
                         let bottom = bounds.origin.y + bounds.size.height + px(overflow_y);
                         let origin = if from_me {
                             point(bounds.origin.x + bounds.size.width + px(overflow_x) - size.width, bottom - size.height)
                         } else {
                             point(bounds.origin.x - px(overflow_x), bottom - size.height)
                         };
-                        let radii = if from_me { Corners { bottom_left: px(14.), ..Corners::default() } } else { Corners { bottom_right: px(14.), ..Corners::default() } };
-                        let _ = window.paint_image(bounds, Bounds { origin, size }, radii, image, 0, false);
+                        let _ = window.paint_image(bounds, Bounds { origin, size }, radii, image, frame, false);
                     },
                 )
                 .size_full(),
@@ -561,9 +606,9 @@ pub fn image(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
     let radii = Corners::all(radius::BUBBLE);
     let picture: Option<AnyElement> = still.clone().map(|path| {
         if attachment.mime == "image/gif" && !is_data_url(&path) {
-            crate::gif::gif_image(Arc::from(path.as_path()), crate::gif::Fit::Fill, radii).into_any_element()
+            crate::gif::gif_image(Arc::from(path.as_path()), crate::gif::Fit::Contain, radii).into_any_element()
         } else {
-            img(sized_image_source(&path, px(width), px(height), ObjectFit::Contain)).w(px(width)).h(px(height)).rounded(radius::BUBBLE).object_fit(ObjectFit::Contain).into_any_element()
+            sized_img(&path, width, height, ObjectFit::Contain).rounded(radius::BUBBLE).into_any_element()
         }
     });
     let body = div()
@@ -578,12 +623,7 @@ pub fn image(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .cursor_pointer()
         .on_click(open_lightbox(attachment, &row.model.message))
         .children(picture);
-    // A GIF's tail stays a plain lobe: the picture tail would decode the whole animation a second time.
-    let tail = match (tail, still) {
-        (Some(_), Some(path)) if attachment.mime != "image/gif" => Some(TailFill::Picture(path, width, height)),
-        (tail, _) => tail,
-    };
-    tail_box(from_me, tail, palette, body).into_any_element()
+    tail_box(from_me, picture_tail(tail, still, &attachment.mime, width, height, false), palette, body).into_any_element()
 }
 
 pub fn photo_grid(row: &MessageRow, photos: &[Attachment], tail: Option<TailFill>, palette: &Palette, cx: &mut Context<MessageRow>) -> AnyElement {
@@ -611,7 +651,7 @@ pub fn photo_grid(row: &MessageRow, photos: &[Attachment], tail: Option<TailFill
                     if attachment.mime == "image/gif" && !is_data_url(&path) {
                         crate::gif::gif_image(Arc::from(path.as_path()), crate::gif::Fit::Cover, radii).into_any_element()
                     } else {
-                        img(sized_image_source(&path, px(tile.width), px(tile.height), ObjectFit::Cover)).w(px(tile.width)).h(px(tile.height)).object_fit(ObjectFit::Cover).rounded_tl(radii.top_left).rounded_tr(radii.top_right).rounded_bl(radii.bottom_left).rounded_br(radii.bottom_right).into_any_element()
+                        sized_img(&path, tile.width, tile.height, ObjectFit::Cover).rounded_tl(radii.top_left).rounded_tr(radii.top_right).rounded_bl(radii.bottom_left).rounded_br(radii.bottom_right).into_any_element()
                     }
                 });
                 let label = (tile.index == shown.len() - 1 && more > 0).then(|| {
@@ -646,14 +686,7 @@ pub fn photo_grid(row: &MessageRow, photos: &[Attachment], tail: Option<TailFill
                     }))
                     .children(picture)
                     .children(label);
-                let fill = if Some(tile) == tail_tile {
-                    tail.clone().map(|fill| match (&fill, still.clone()) {
-                        (TailFill::Color(_), Some(path)) if attachment.mime != "image/gif" => TailFill::Picture(path, tile.width, tile.height),
-                        _ => fill,
-                    })
-                } else {
-                    None
-                };
+                let fill = if Some(tile) == tail_tile { picture_tail(tail.clone(), still.clone(), &attachment.mime, tile.width, tile.height, true) } else { None };
                 tail_box(from_me, fill, palette, tile_el).flex_shrink_0()
             }))
         }))
@@ -687,7 +720,7 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .on_click(cx.listener(move |row, _, _, cx| {
             open_attachment(row, &attachment_for_open, cx);
         }))
-        .when_some(poster.clone(), |el, (path, _, _)| el.child(img(sized_image_source(&path, px(width), px(height), ObjectFit::Contain)).w(px(width)).h(px(height)).rounded(radius::BUBBLE).object_fit(ObjectFit::Contain)))
+        .when_some(poster.clone(), |el, (path, _, _)| el.child(sized_img(&path, width, height, ObjectFit::Contain).rounded(radius::BUBBLE)))
         .child(
             div()
                 .absolute()
@@ -705,11 +738,7 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .when_some(duration, |el, duration| {
             el.child(div().absolute().bottom(px(8.)).right(px(10.)).text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).font_weight(FontWeight::SEMIBOLD).text_color(white()).child(duration))
         });
-    let tail = match (tail, poster) {
-        (Some(_), Some((path, _, _))) => Some(TailFill::Picture(path, width, height)),
-        (tail, _) => tail,
-    };
-    tail_box(from_me, tail, palette, body).into_any_element()
+    tail_box(from_me, picture_tail(tail, poster.map(|(path, _, _)| path), "", width, height, false), palette, body).into_any_element()
 }
 
 /// Runs `then` with the file on disk, downloading it first when needed.
@@ -892,7 +921,7 @@ pub fn sticker(attachment: &Attachment) -> AnyElement {
     };
     match &attachment.local_path {
         None => div().w(px(STICKER_WIDTH)).h(px(height)).into_any_element(),
-        Some(path) => img(sized_image_source(path, px(STICKER_WIDTH), px(height), ObjectFit::Contain)).w(px(STICKER_WIDTH)).h(px(height)).object_fit(ObjectFit::Contain).into_any_element(),
+        Some(path) => sized_img(path, STICKER_WIDTH, height, ObjectFit::Contain).into_any_element(),
     }
 }
 
@@ -952,7 +981,7 @@ pub fn link_preview(row: &MessageRow, id: usize, palette: &Palette) -> AnyElemen
         .when(has_picture, |el| {
             el.child(
                 div().w(px(PREVIEW_WIDTH)).h(px(PREVIEW_IMAGE_HEIGHT)).bg(palette.raised).rounded_tl(radius::BUBBLE).rounded_tr(radius::BUBBLE).when_some(src, |el, src| {
-                    el.child(img(sized_image_source(&src, px(PREVIEW_WIDTH), px(PREVIEW_IMAGE_HEIGHT), ObjectFit::Cover)).w(px(PREVIEW_WIDTH)).h(px(PREVIEW_IMAGE_HEIGHT)).object_fit(ObjectFit::Cover).rounded_tl(top.top_left).rounded_tr(top.top_right))
+                    el.child(sized_img(&src, PREVIEW_WIDTH, PREVIEW_IMAGE_HEIGHT, ObjectFit::Cover).rounded_tl(top.top_left).rounded_tr(top.top_right))
                 }),
             )
         })
@@ -1049,6 +1078,30 @@ mod tests {
         let corners = tile_radius(&rows[1][1], 320., 320.);
         assert_eq!(corners.bottom_right, radius::BUBBLE);
         assert_eq!(corners.top_left, radius::BUBBLE_TIGHT);
+    }
+
+    #[test]
+    fn a_picture_tail_carries_the_picture_or_the_frame_a_gif_is_on() {
+        let color = hsla(0., 0., 0.2, 1.);
+        let path = PathBuf::from("/cache/a.gif");
+        match picture_tail(Some(TailFill::Color(color)), Some(path.clone()), "image/gif", 120., 120., false) {
+            Some(TailFill::Picture(p, w, h, Source::Gif { cover: false }, fallback)) => assert_eq!((p, w, h, fallback), (path.clone(), 120., 120., color)),
+            _ => panic!("a gif's tail should follow its frames"),
+        }
+        assert!(matches!(picture_tail(Some(TailFill::Color(color)), Some(PathBuf::from("/cache/b.jpg")), "image/jpeg", 320., 213., true), Some(TailFill::Picture(_, _, _, Source::Still { cover: true }, _))));
+        assert!(matches!(picture_tail(Some(TailFill::Color(color)), None, "image/jpeg", 320., 213., false), Some(TailFill::Color(_))));
+        assert!(picture_tail(None, Some(path), "image/gif", 120., 120., false).is_none());
+    }
+
+    #[test]
+    fn the_lobe_shows_the_bottom_outer_corner_unless_the_picture_misses_it() {
+        let (w, h, dx, dy) = lobe_picture(320., 240., 640., 480., false).unwrap();
+        assert!((w - TAIL_WIDTH / 0.12).abs() < 0.01 && (h - TAIL_HEIGHT / 0.14).abs() < 0.01);
+        assert_eq!((dx, dy), (0., 0.));
+        let (_, _, dx, dy) = lobe_picture(159., 159., 1200., 800., true).unwrap();
+        assert!(dx > 0. && dy == 0.);
+        // A square GIF letterboxed in a 4:3 box leaves the corner to the box's fill.
+        assert!(lobe_picture(320., 240., 498., 498., false).is_none());
     }
 
     #[test]

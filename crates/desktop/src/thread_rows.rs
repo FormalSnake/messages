@@ -476,6 +476,25 @@ mod tests {
     }
 
     #[test]
+    fn bubble_corners_tighten_where_a_run_joins_and_mirror_for_mine() {
+        let (big, small) = (radius::BUBBLE, radius::BUBBLE_TIGHT);
+        let received = |position| {
+            let c = bubble_radius(false, position);
+            (c.top_left, c.bottom_left, c.top_right, c.bottom_right)
+        };
+        assert_eq!(received(Position::Single), (big, big, big, big));
+        assert_eq!(received(Position::First), (big, small, big, big));
+        assert_eq!(received(Position::Middle), (small, small, big, big));
+        assert_eq!(received(Position::Last), (small, big, big, big));
+        let mine = bubble_radius(true, Position::Last);
+        assert_eq!((mine.top_right, mine.bottom_right, mine.top_left, mine.bottom_left), (small, big, big, big));
+        let mine = bubble_radius(true, Position::First);
+        assert_eq!((mine.top_right, mine.bottom_right), (big, small));
+        assert!(Position::Last.ends_run() && Position::Single.ends_run());
+        assert!(!Position::First.ends_run() && !Position::Middle.ends_run());
+    }
+
+    #[test]
     fn effect_names_fall_back_to_the_last_segment() {
         assert_eq!(effect_name("com.apple.MobileSMS.expressivesend.impact"), "Slam");
         assert_eq!(effect_name("com.apple.messages.effect.CKNewThing"), "CKNewThing");

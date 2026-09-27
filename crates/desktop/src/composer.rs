@@ -739,7 +739,7 @@ fn staged_chip(palette: &Palette, item: &StagedAttachment, on_remove: impl Fn(&C
         .overflow_hidden()
         .bg(palette.raised)
         .flex_shrink_0()
-        .when(item.is_image, |el| el.child(img(crate::attachments::sized_image_source(&item.path, px(56.), px(56.), ObjectFit::Cover)).w(px(56.)).h(px(56.)).object_fit(ObjectFit::Cover)))
+        .when(item.is_image, |el| el.child(crate::attachments::sized_img(&item.path, 56., 56., ObjectFit::Cover)))
         .when(!item.is_image, |el| {
             el.flex().items_center().justify_center().p(spacing::X1).child(
                 div().flex().flex_col().items_center().gap(px(2.)).child(Icon::new(IconName::File).size(px(16.)).color(palette.secondary)).child(

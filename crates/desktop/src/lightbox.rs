@@ -11,7 +11,7 @@ use messages_core::conversations::conversation_messages;
 use messages_core::format::format_bytes;
 use messages_core::{Attachment, MessagesStore};
 
-use crate::attachments::{image_source, is_data_url, run_for};
+use crate::attachments::{is_data_url, run_for};
 use crate::icons::IconName;
 use crate::motion::{DURATION_BASE, DURATION_FAST, EASE_OUT, cubic_bezier};
 use crate::primitives::IconButton;
@@ -205,8 +205,8 @@ impl Render for Lightbox {
                 .gap(spacing::X2)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(match &src {
-                    Some(path) if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif")) => img(image_source(path)).w(px(display_w)).h(px(display_h)).object_fit(ObjectFit::Contain).into_any_element(),
-                    Some(path) => img(crate::attachments::sized_image_source(path, px(display_w), px(display_h), ObjectFit::Contain)).w(px(display_w)).h(px(display_h)).object_fit(ObjectFit::Contain).into_any_element(),
+                    Some(path) if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif")) => div().w(px(display_w)).h(px(display_h)).child(crate::gif::gif_image(std::sync::Arc::from(path.as_path()), crate::gif::Fit::Contain, Corners::default())).into_any_element(),
+                    Some(path) => crate::attachments::sized_img(path, display_w, display_h, ObjectFit::Contain).into_any_element(),
                     None => div()
                         .w(px(display_w))
                         .h(px(display_h))

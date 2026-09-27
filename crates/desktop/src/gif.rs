@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
+use crate::stills::lru_victim;
+
 /// Frames asking for less than this are shown for SLOW_FRAME, as browsers do.
 const MIN_DELAY: Duration = Duration::from_millis(20);
 const SLOW_FRAME: Duration = Duration::from_millis(100);
@@ -48,10 +50,10 @@ impl Global for GifRegistry {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
-    /// The box already has the picture's aspect.
-    Fill,
     /// Centre crop to the box.
     Cover,
+    /// Whole picture, centred inside the box.
+    Contain,
 }
 
 fn clamp_delay(delay: Duration) -> Duration {
@@ -121,19 +123,17 @@ fn finish_decode(path: Arc<Path>, image: Option<Arc<RenderImage>>, cx: &mut App)
     }
 }
 
-/// Drops the least recently painted GIFs until the budget holds, never `keep`.
+/// Drops the least recently painted GIFs until the budget holds, never `keep`
+/// and never one still animating or painted within `IN_USE`.
 fn evict(keep: &Path, cx: &mut App) {
     let mut dropped = Vec::new();
     {
         let registry = registry(cx);
+        let now = Instant::now();
         while registry.bytes > BUDGET_BYTES {
-            let oldest = registry
-                .entries
-                .iter()
-                .filter(|(path, entry)| &***path != keep && matches!(entry.load, Load::Ready(_)))
-                .min_by_key(|(_, entry)| entry.last_painted)
-                .map(|(path, _)| path.clone());
-            let Some(oldest) = oldest else { break };
+            let candidates = registry.entries.iter().map(|(path, entry)| (path, entry.last_painted, matches!(entry.load, Load::Ready(_)) && !entry.ticking));
+            let Some(oldest) = lru_victim(candidates, &Arc::from(keep), now).cloned() else { break };
+            crate::trace::log_if_enabled(&format!("gif {} evicted", oldest.display()));
             if let Some(entry) = registry.entries.remove(&oldest) {
                 registry.bytes = registry.bytes.saturating_sub(entry.bytes);
                 if let Load::Ready(image) = entry.load {
@@ -179,13 +179,24 @@ fn tick(path: Arc<Path>, cx: &mut App) {
 }
 
 fn fitted(bounds: Bounds<Pixels>, image: Size<DevicePixels>, fit: Fit) -> Bounds<Pixels> {
-    if fit == Fit::Fill || image.width.0 <= 0 || image.height.0 <= 0 {
+    if image.width.0 <= 0 || image.height.0 <= 0 {
         return bounds;
     }
-    let scale = (bounds.size.width / px(image.width.0 as f32)).max(bounds.size.height / px(image.height.0 as f32));
+    let (sx, sy) = (bounds.size.width / px(image.width.0 as f32), bounds.size.height / px(image.height.0 as f32));
+    let scale = if fit == Fit::Cover { sx.max(sy) } else { sx.min(sy) };
     let size = size(px(image.width.0 as f32 * scale), px(image.height.0 as f32 * scale));
     let origin = point(bounds.origin.x + (bounds.size.width - size.width) / 2., bounds.origin.y + (bounds.size.height - size.height) / 2.);
     Bounds { origin, size }
+}
+
+/// The frame the GIF at `path` is showing, once its frames are decoded, so the
+/// tail under it can carry the same picture without decoding it again.
+pub fn current_frame(path: &Path, cx: &mut App) -> Option<(Arc<RenderImage>, usize)> {
+    let entry = registry(cx).entries.get(path)?;
+    match &entry.load {
+        Load::Ready(image) => Some((image.clone(), entry.frame)),
+        _ => None,
+    }
 }
 
 /// Paints the current frame of the GIF at `path` into its box. The box shows
@@ -263,11 +274,13 @@ mod tests {
     }
 
     #[test]
-    fn cover_centres_and_crops_to_the_box() {
+    fn cover_crops_and_contain_letterboxes_around_the_centre() {
         let bounds = Bounds { origin: point(px(0.), px(0.)), size: size(px(100.), px(100.)) };
         let fit = fitted(bounds, size(DevicePixels(200), DevicePixels(100)), Fit::Cover);
         assert_eq!(fit.size, size(px(200.), px(100.)));
         assert_eq!(fit.origin, point(px(-50.), px(0.)));
-        assert_eq!(fitted(bounds, size(DevicePixels(200), DevicePixels(100)), Fit::Fill), bounds);
+        let contain = fitted(bounds, size(DevicePixels(200), DevicePixels(100)), Fit::Contain);
+        assert_eq!(contain.size, size(px(100.), px(50.)));
+        assert_eq!(contain.origin, point(px(0.), px(25.)));
     }
 }

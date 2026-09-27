@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use image::imageops::FilterType;
@@ -60,42 +60,51 @@ fn stills(cx: &mut App) -> &mut Stills {
 pub fn sized_image_source(path: &Path, width: Pixels, height: Pixels, fit: ObjectFit) -> ImageSource {
     let source: Arc<str> = Arc::from(path.to_string_lossy().as_ref());
     let cover = matches!(fit, ObjectFit::Cover | ObjectFit::Fill);
-    ImageSource::Custom(Arc::new(move |window, cx| {
-        let scale = window.scale_factor();
-        let key = Key {
-            source: source.clone(),
-            width: (f32::from(width) * scale).round().max(1.) as u32,
-            height: (f32::from(height) * scale).round().max(1.) as u32,
-            cover,
-        };
-        let viewer = window.current_view();
-        let (image, start, failed) = {
-            let stills = stills(cx);
-            let entry = stills.entries.entry(key.clone()).or_insert_with(|| Entry { slot: Slot::Loading(Vec::new()), used: Instant::now() });
-            entry.used = Instant::now();
-            match &mut entry.slot {
-                Slot::Ready(image, _) => (Some(image.clone()), false, false),
-                Slot::Failed => (None, false, true),
-                Slot::Loading(viewers) => {
-                    let start = viewers.is_empty();
-                    if !viewers.contains(&viewer) {
-                        viewers.push(viewer);
-                    }
-                    (None, start, false)
+    ImageSource::Custom(Arc::new(move |window, cx| sized(&source, width, height, cover, window, cx)))
+}
+
+/// The same still `sized_image_source` hands `img()`, for a canvas that paints
+/// part of it: the tail lobe under a photo shares the photo's decode.
+pub fn sized_image(path: &Path, width: Pixels, height: Pixels, fit: ObjectFit, window: &mut Window, cx: &mut App) -> Option<Arc<RenderImage>> {
+    let source: Arc<str> = Arc::from(path.to_string_lossy().as_ref());
+    sized(&source, width, height, matches!(fit, ObjectFit::Cover | ObjectFit::Fill), window, cx).and_then(Result::ok)
+}
+
+fn sized(source: &Arc<str>, width: Pixels, height: Pixels, cover: bool, window: &mut Window, cx: &mut App) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
+    let scale = window.scale_factor();
+    let key = Key {
+        source: source.clone(),
+        width: (f32::from(width) * scale).round().max(1.) as u32,
+        height: (f32::from(height) * scale).round().max(1.) as u32,
+        cover,
+    };
+    let viewer = window.current_view();
+    let (image, start, failed) = {
+        let stills = stills(cx);
+        let entry = stills.entries.entry(key.clone()).or_insert_with(|| Entry { slot: Slot::Loading(Vec::new()), used: Instant::now() });
+        entry.used = Instant::now();
+        match &mut entry.slot {
+            Slot::Ready(image, _) => (Some(image.clone()), false, false),
+            Slot::Failed => (None, false, true),
+            Slot::Loading(viewers) => {
+                let start = viewers.is_empty();
+                if !viewers.contains(&viewer) {
+                    viewers.push(viewer);
                 }
+                (None, start, false)
             }
-        };
-        if let Some(image) = image {
-            return Some(Ok(image));
         }
-        if failed {
-            return full_size(&source, window, cx);
-        }
-        if start {
-            start_decode(key, cx);
-        }
-        None
-    }))
+    };
+    if let Some(image) = image {
+        return Some(Ok(image));
+    }
+    if failed {
+        return full_size(source, window, cx);
+    }
+    if start {
+        start_decode(key, cx);
+    }
+    None
 }
 
 /// What GPUI's own loader makes of the source, for formats the sized path cannot read.
@@ -138,17 +147,27 @@ fn finish(key: Key, image: Option<RenderImage>, cx: &mut App) {
     }
 }
 
+/// Anything drawn this recently is on screen or about to be again. Evicting it
+/// only makes the next frame decode it anew and paint a blank box meanwhile,
+/// and two such pictures evict each other every frame, which is a flicker.
+/// Over budget with nothing older, the cache runs over budget instead.
+pub(crate) const IN_USE: Duration = Duration::from_secs(1);
+
+/// The least recently used entry not in `keep` and not drawn within `IN_USE`.
+pub(crate) fn lru_victim<'a, K: PartialEq + 'a>(entries: impl Iterator<Item = (&'a K, Instant, bool)>, keep: &K, now: Instant) -> Option<&'a K> {
+    entries
+        .filter(|(key, used, evictable)| *evictable && *key != keep && now.saturating_duration_since(*used) >= IN_USE)
+        .min_by_key(|(_, used, _)| *used)
+        .map(|(key, _, _)| key)
+}
+
 fn evict(keep: &Key, cx: &mut App) {
     let mut dropped = Vec::new();
     {
         let stills = stills(cx);
+        let now = Instant::now();
         while stills.bytes > BUDGET_BYTES {
-            let oldest = stills
-                .entries
-                .iter()
-                .filter(|(key, entry)| *key != keep && matches!(entry.slot, Slot::Ready(..)))
-                .min_by_key(|(_, entry)| entry.used)
-                .map(|(key, _)| key.clone());
+            let oldest = lru_victim(stills.entries.iter().map(|(key, entry)| (key, entry.used, matches!(entry.slot, Slot::Ready(..)))), keep, now).cloned();
             let Some(oldest) = oldest else { break };
             if let Some(Entry { slot: Slot::Ready(image, bytes), .. }) = stills.entries.remove(&oldest) {
                 stills.bytes = stills.bytes.saturating_sub(bytes);
@@ -197,14 +216,21 @@ fn rasterize_svg(bytes: &[u8], renderer: &SvgRenderer) -> Option<RgbaImage> {
 /// GPUI's SVG font database maps `sans-serif` to Arial, then to a bundled
 /// IBM Plex Sans this app does not ship; with neither installed (most Linux
 /// systems) usvg takes the database's first face, which is how the demo
-/// avatars' initials came out as garbage. Naming the UI font first fixes it.
+/// avatars' initials came out as garbage. Naming a concrete family first fixes it.
 fn with_concrete_sans(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     let Ok(text) = std::str::from_utf8(bytes) else { return bytes.into() };
     if !text.contains("sans-serif") {
         return bytes.into();
     }
-    let family = format!("{}, sans-serif", crate::theme::font_sans());
+    let family = format!("{}, sans-serif", svg_sans());
     text.replace("font-family=\"sans-serif\"", &format!("font-family=\"{family}\"")).replace("font-family='sans-serif'", &format!("font-family='{family}'")).into_bytes().into()
+}
+
+/// The family SVG text asks for. On Linux the UI font is bundled and
+/// registered with GPUI's text system only, which usvg's font database never
+/// sees, so SVG text names a system family instead.
+fn svg_sans() -> String {
+    if cfg!(any(target_os = "macos", target_os = "windows")) { crate::theme::font_sans().to_string() } else { "Noto Sans".to_owned() }
 }
 
 fn decode_raster(bytes: &[u8]) -> Option<RgbaImage> {
@@ -246,7 +272,19 @@ mod tests {
     fn a_generic_sans_serif_names_the_ui_font_first() {
         let out = with_concrete_sans(br#"<text font-family="sans-serif">AR</text>"#);
         let out = std::str::from_utf8(&out).unwrap();
-        assert!(out.contains(&format!("font-family=\"{}, sans-serif\"", crate::theme::font_sans())));
+        assert!(out.contains(&format!("font-family=\"{}, sans-serif\"", svg_sans())));
+    }
+
+    #[test]
+    fn eviction_skips_what_was_just_drawn_and_what_is_being_kept() {
+        let now = Instant::now();
+        let old = now - Duration::from_secs(30);
+        let older = now - Duration::from_secs(60);
+        let entries = [("keep", older, true), ("fresh", now, true), ("loading", older, false), ("old", old, true)];
+        assert_eq!(lru_victim(entries.iter().map(|(k, t, e)| (k, *t, *e)), &"keep", now), Some(&"old"));
+        // Two pictures on screen over budget: neither is evicted, so neither is decoded again next frame.
+        let on_screen = [("a", now, true), ("b", now - Duration::from_millis(16), true)];
+        assert_eq!(lru_victim(on_screen.iter().map(|(k, t, e)| (k, *t, *e)), &"a", now), None);
     }
 
     #[test]
