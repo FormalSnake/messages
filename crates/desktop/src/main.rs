@@ -6,6 +6,7 @@ mod bridge;
 mod chrome;
 mod confirm;
 mod emoji_font;
+mod fonts;
 mod connect;
 mod icons;
 mod live_theme;
@@ -86,6 +87,7 @@ fn main() {
         // Windows groups the window, a pinned shortcut and toasts by this id.
         cx.set_app_identity(APP_ID, "Messages");
         trace::log_if_enabled("platform up");
+        fonts::install(cx);
         // gpui-component resolves ".SystemUIFont" and the platform monospace
         // default by listing every installed font (about 200 ms through
         // CoreText) unless the theme already names families. The app never

@@ -13,13 +13,19 @@ use gpui_kit::{App, Global, Hsla, Pixels, SharedString, px, rgb};
 // ---------------------------------------------------------------------------
 
 /// `MESSAGES_FONT` overrides the body font on any platform; otherwise SF Pro
-/// Text on macOS, Noto Sans elsewhere (see CLAUDE.md's Linux emoji section for
-/// why Noto Sans, not a bundled UI font, is the Linux default).
+/// Text on macOS, the bundled static Noto Sans on Linux (`fonts.rs`), and
+/// the system Noto Sans on Windows or when the bundled faces failed to load.
 pub fn font_sans() -> SharedString {
     if let Ok(font) = std::env::var("MESSAGES_FONT") {
         return font.into();
     }
-    if cfg!(target_os = "macos") { "SF Pro Text".into() } else { "Noto Sans".into() }
+    if cfg!(target_os = "macos") {
+        "SF Pro Text".into()
+    } else if crate::fonts::loaded() {
+        crate::fonts::FAMILY.into()
+    } else {
+        "Noto Sans".into()
+    }
 }
 
 /// The family emoji-only text names. On Linux that is the renamed copy
