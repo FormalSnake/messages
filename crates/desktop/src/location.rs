@@ -119,7 +119,7 @@ impl Render for LocationCard {
                 width: width.round() as u32,
                 height: MAP_HEIGHT as u32,
                 scale,
-                dark: palette.canvas.l < 0.5,
+                dark: palette.is_dark(),
                 span: SPAN,
             },
             cx,
@@ -142,13 +142,15 @@ impl Render for LocationCard {
             .w(px(width))
             .h(px(MAP_HEIGHT))
             .flex_shrink_0()
-            .rounded(radius::BUBBLE)
+            .rounded(radius::CARD)
             .overflow_hidden()
             .bg(palette.raised)
             .border_1()
-            .border_color(palette.separator)
+            .border_color(crate::primitives::image_outline(&palette))
             .cursor_pointer()
             .tab_index(0)
+            .hover(|style| style.opacity(0.92))
+            .focus_visible(move |style| style.border_color(palette.focus_ring))
             .map(|el| match &self.snapshot {
                 Snapshot::Ready(path) => el.child(img(crate::attachments::image_source(path)).absolute().top_0().left_0().w(px(width)).h(px(MAP_HEIGHT)).object_fit(ObjectFit::Cover)),
                 Snapshot::Loading => el,
@@ -162,7 +164,7 @@ impl Render for LocationCard {
                         .justify_center()
                         .text_size(type_scale::MICRO.font_size)
                         .line_height(type_scale::MICRO.line_height)
-                        .text_color(palette.secondary)
+                        .text_color(palette.tertiary)
                         .child(coordinates.clone()),
                 ),
             })
@@ -214,14 +216,25 @@ impl Render for LocationCard {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.text).child(place))
-                    .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).child(detail)),
+                    .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_ellipsis().child(place))
+                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child(detail)),
             )
             .child(
                 div()
                     .id("open-in-maps")
+                    .self_start()
                     .cursor_pointer()
-                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.accent).child(open_label))
+                    .tab_index(0)
+                    .rounded(radius::CONTROL)
+                    .hover(|style| style.opacity(0.8))
+                    .active(|style| style.opacity(0.6))
+                    .focus_visible(move |style| style.bg(palette.selected_soft))
+                    .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.accent).child(open_label))
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, _cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            this.open_in_maps();
+                        }
+                    }))
                     .on_click(cx.listener(|this, _, _window, _cx| this.open_in_maps())),
             )
     }

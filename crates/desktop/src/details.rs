@@ -262,8 +262,9 @@ where
 fn action_row(palette: &Palette, id: &str, icon: IconName, label: impl Into<SharedString>, value: Option<SharedString>, danger: bool, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
     let on_click = std::rc::Rc::new(on_click);
     let on_key = on_click.clone();
-    let wash = if danger { palette.danger_soft } else { palette.raised };
-    let press = if danger { palette.danger_soft } else { palette.raised_hover };
+    let wash = if danger { palette.danger_soft } else { palette.hover_wash };
+    let press = if danger { palette.danger_soft } else { palette.press_wash };
+    let ring = palette.focus_ring;
     div()
         .id(SharedString::from(format!("details-{id}")))
         .tab_index(0)
@@ -275,6 +276,9 @@ fn action_row(palette: &Palette, id: &str, icon: IconName, label: impl Into<Shar
         .px(spacing::X2)
         .rounded(radius::CONTROL)
         .flex_shrink_0()
+        .border_2()
+        .border_color(palette.transparent)
+        .focus_visible(move |style| style.border_color(ring))
         .hover(move |style| style.bg(wash))
         .active(move |style| style.bg(press))
         .on_click(move |_, window, cx| on_click(window, cx))
@@ -401,13 +405,13 @@ impl Render for InfoPanel {
                     }
                 };
                 shown_cards.insert(handle.address.clone());
-                people_column = people_column.child(section_label("Location", palette.tertiary, spacing::X2)).child(card);
+                people_column = people_column.child(div().pt(spacing::X3).child(section_label("Location", palette.tertiary, spacing::X2))).child(card);
             }
         }
         self.locations.retain(|address, _| shown_cards.contains(address));
         if find_my_unavailable {
             people_column = people_column.child(
-                div().pl(spacing::X2).pt(spacing::X1).text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child("Find My needs the Mac agent (see README)"),
+                div().pl(spacing::X2).pt(spacing::X1).text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child("Locations need the Mac agent. See the README to set it up."),
             );
         }
 
@@ -427,6 +431,8 @@ impl Render for InfoPanel {
                     .rounded(radius::CONTROL)
                     .overflow_hidden()
                     .bg(palette.raised)
+                    .border_1()
+                    .border_color(crate::primitives::image_outline(&palette))
                     .hover(|style| style.opacity(0.9))
                     .on_click(move |_, window, cx| crate::lightbox::open(&chat_guid, &attachment_guid, window, cx))
                     .when_some(tile, |el, tile| el.child(img(crate::attachments::sized_image_source(&tile, px(GALLERY_THUMB), px(GALLERY_THUMB), ObjectFit::Contain)).w(px(GALLERY_THUMB)).h(px(GALLERY_THUMB)).object_fit(ObjectFit::Contain)))
@@ -445,7 +451,11 @@ impl Render for InfoPanel {
                     .px(spacing::X2)
                     .rounded(radius::CONTROL)
                     .flex_shrink_0()
-                    .hover(|style| style.bg(palette.raised))
+                    .border_2()
+                    .border_color(palette.transparent)
+                    .focus_visible(move |style| style.border_color(palette.focus_ring))
+                    .hover(move |style| style.bg(palette.hover_wash))
+                    .active(move |style| style.bg(palette.press_wash))
                     .on_click(move |_, _, cx| Self::open_file(&for_click.0, &for_click.1, cx))
                     .on_key_down(move |event: &KeyDownEvent, _, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -592,7 +602,7 @@ impl Render for InfoPanel {
                                     run(move |store| store.toggle_read_receipts(&guid))
                                 },
                             ))
-                            .child(action_row(&palette, "unread", IconName::MarkUnread, "Mark as unread", Some(shortcut("U", true, false).into()), false, {
+                            .child(action_row(&palette, "unread", IconName::MarkUnread, "Mark as unread", None, false, {
                                 let guid = guid.clone();
                                 spawn_store(move |store| {
                                     let guid = guid.clone();
@@ -671,7 +681,16 @@ fn participant_row(palette: &Palette, handle: &Handle, chat: &Chat, manage: bool
         .pr(spacing::X1)
         .rounded(radius::CONTROL)
         .flex_shrink_0()
-        .hover(|style| style.bg(palette.raised))
+        .border_2()
+        .border_color(palette.transparent)
+        .focus_visible({
+            let ring = palette.focus_ring;
+            move |style| style.border_color(ring)
+        })
+        .hover({
+            let wash = palette.hover_wash;
+            move |style| style.bg(wash)
+        })
         .on_mouse_up(MouseButton::Right, move |event: &MouseUpEvent, window, cx| {
             if let Some(app) = root(cx) {
                 AppRoot::open_menu(&app, MenuRequest::at(event.position, participant_menu(&menu_handle, &menu_chat, manage)), window, cx);
