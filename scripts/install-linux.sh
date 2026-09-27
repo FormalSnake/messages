@@ -2,7 +2,14 @@
 # Builds the release binary and installs a `messages` launcher, a desktop entry
 # and the icon for the current user. The desktop entry is named after the
 # window's app id, so GNOME and Hyprland group the window under it.
+#
+#   scripts/install-linux.sh              build, then install
+#   scripts/install-linux.sh --no-build   install target/release/messages as it
+#                                         is, e.g. one built on a faster box
 set -euo pipefail
+
+BUILD=1
+[ "${1:-}" = --no-build ] && BUILD=
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
@@ -20,11 +27,12 @@ if command -v nix >/dev/null 2>&1; then
   # The binary dlopens wayland, vulkan and fontconfig, which NixOS keeps off
   # the default search path. The profile is a GC root, so the store paths
   # behind LIBS survive nix-collect-garbage.
-  nix develop "$REPO_DIR" --profile "$STATE_DIR/devshell" -c cargo build --release -p messages
+  [ -n "$BUILD" ] && nix develop "$REPO_DIR" --profile "$STATE_DIR/devshell" -c cargo build --release -p messages
   LIBS="$(nix develop "$REPO_DIR" --profile "$STATE_DIR/devshell" -c bash -c 'printf %s "$LD_LIBRARY_PATH"')"
-else
+elif [ -n "$BUILD" ]; then
   cargo build --release -p messages
 fi
+[ -x "$REPO_DIR/target/release/messages" ] || { echo "no target/release/messages to install" >&2; exit 1; }
 
 cat > "$BIN_DIR/messages" <<LAUNCHER
 #!/usr/bin/env bash
