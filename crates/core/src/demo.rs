@@ -59,6 +59,9 @@ fn photo_src(guid: &str) -> Option<String> {
         "demo-att-5" => svg_url(
             r##"<svg xmlns="http://www.w3.org/2000/svg" width="600" height="1300" viewBox="0 0 600 1300"><rect width="600" height="1300" fill="#2f5d8a"/><rect x="40" y="40" width="520" height="1220" rx="40" fill="#123"/><text x="60" y="140" font-family="sans-serif" font-size="48" fill="white">Tall screenshot</text><text x="60" y="1220" font-family="sans-serif" font-size="40" fill="#9cf">bottom edge</text></svg>"##,
         ),
+        "demo-att-9" | "demo-att-10" | "demo-att-11" => svg_url(&format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="1170" height="2532" viewBox="0 0 1170 2532"><rect width="1170" height="2532" fill="#101418"/><rect x="60" y="180" width="1050" height="160" rx="40" fill="#1f2a33"/><rect x="60" y="2280" width="1050" height="140" rx="70" fill="#1f2a33"/><text x="90" y="1300" font-family="sans-serif" font-size="90" fill="#9cc">{guid}</text></svg>"##
+        )),
         "demo-att-6" => photo(190, 240, "Rooftops"),
         "demo-att-7" => photo(330, 20, "Plaza Mayor"),
         "demo-att-8" => photo(80, 140, "Tapas"),
@@ -266,6 +269,13 @@ fn seeds(p: &People, now: Millis) -> Vec<Seed> {
                     m.date_delivered = Some(now - 39 * MIN);
                     m.date_read = Some(now - 38 * MIN);
                 }),
+                row("", 30 * MIN, None).with(|m| m.attachments = vec![attachment("demo-att-11", "IMG_2203.PNG", 1170, 2532)]),
+                row("it says applied and a new chat still says 2 days", 29 * MIN, None),
+                row("", 28 * MIN, None).with(|m| {
+                    m.attachments = vec![attachment("demo-att-9", "IMG_2201.PNG", 1170, 2532), attachment("demo-att-10", "IMG_2202.PNG", 1170, 2532)]
+                }),
+                row("the tall screenshots must not run under these bubbles", 27 * MIN, None),
+                row("the buttons are wrong and the layout is broken", 26 * MIN, None),
                 row("bring the charger this time 🔌", 12 * MIN, alex).with(|m| m.reply_to = Some("demo-msg-0006".into())),
                 row("", 11 * MIN, alex).with(|m| m.attachments = vec![wave("demo-gif-1")]),
             ],
@@ -1062,9 +1072,9 @@ mod tests {
         assert_eq!(chats.len(), 9);
         assert_eq!(chats[0].guid, "iMessage;-;+14155550134");
         let alex = demo.load_messages("iMessage;-;+14155550134", LoadMessagesOptions { limit: 50, before: None }).await.unwrap();
-        assert_eq!(alex.items.len(), 8);
-        assert_eq!(alex.items[7].attachments[0].mime, "image/gif");
-        assert_eq!(alex.items[6].reply_to.as_deref(), Some("demo-msg-0006"));
+        assert_eq!(alex.items.len(), 13);
+        assert_eq!(alex.items[12].attachments[0].mime, "image/gif");
+        assert_eq!(alex.items[11].reply_to.as_deref(), Some("demo-msg-0006"));
         assert_eq!(alex.items[5].guid, "demo-msg-0006");
         assert!(chats.iter().find(|chat| chat.guid.ends_with("0199")).unwrap().unread);
         assert_eq!(demo.focus_status("+14155550170").await.unwrap(), FocusStatus::Silenced);
@@ -1097,6 +1107,6 @@ mod tests {
         let now = now_ms();
         let recent = demo.search_messages("", &SearchFilters { after: Some(now - 30 * MIN), ..SearchFilters::default() }).await.unwrap();
         assert!(recent.iter().all(|message| message.date > now - 30 * MIN));
-        assert_eq!(recent.len(), 3);
+        assert_eq!(recent.len(), 7);
     }
 }
