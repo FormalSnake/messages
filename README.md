@@ -129,7 +129,9 @@ that runs on the Mac (`apps/mac-agent`), decrypts them the way
 [findmy-cache-decryptor](https://github.com/PnutCN/findmy-cache-decryptor) and
 [FindMySyncPlus](https://github.com/manonstreet/FindMySyncPlus) worked out, and
 serves the people sharing their location with you. The details panel then shows
-a map tile, the place and when it was updated, under each participant.
+an Apple Maps snapshot (rendered on the Mac by MapKit, `GET /findmy/snapshot`),
+the place and when it was updated, under each participant; clicking the map
+opens Apple Maps on a Mac and Google Maps elsewhere.
 
 Those caches only move while FindMy.app is running, and only for the first few
 minutes after it launches, so the agent keeps the app open hidden and restarts

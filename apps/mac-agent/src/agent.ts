@@ -11,6 +11,7 @@ import path from 'node:path'
 import { subscribeFindMy } from './findmy/feed'
 import { cachedDevices, cachedFriends, keyAvailability } from './findmy/index'
 import { findMyRunning, keepFindMyOpen } from './findmy/refresher'
+import { mapKitRenderer, SnapshotCache, snapshotResponse } from './maps/snapshot'
 import { pinnedOnMac } from './pinning'
 import { loadPrefs, updatePrefs } from './prefs'
 
@@ -119,6 +120,7 @@ function prefsResponse(prefs: { chats: unknown; gifs: unknown }): Response {
 export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
   const config = await loadOrCreateConfig()
   if (config.keepFindMyOpen !== false) keepFindMyOpen()
+  const snapshots = new SnapshotCache(mapKitRenderer(path.join(configDir, 'bin')))
 
   const server = Bun.serve({
     hostname: config.host,
@@ -126,7 +128,7 @@ export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
     async fetch(request, server) {
       const url = new URL(request.url)
 
-      if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true, keys: keyAvailability(), prefs: true, findMyOpen: findMyRunning() })
+      if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true, keys: keyAvailability(), prefs: true, snapshots: true, findMyOpen: findMyRunning() })
 
       if (!authorized(request, config.token)) return json({ error: 'unauthorized' }, { status: 401 })
 
@@ -169,6 +171,8 @@ export async function startAgent(): Promise<ReturnType<typeof Bun.serve>> {
           return errorResponse(error)
         }
       }
+
+      if (request.method === 'GET' && url.pathname === '/findmy/snapshot') return snapshotResponse(url.searchParams, snapshots)
 
       if (request.method === 'GET' && url.pathname === '/findmy/stream') {
         // A stream between two Find My writes reads as idle, and Bun closes an idle connection after ten seconds.

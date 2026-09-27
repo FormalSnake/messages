@@ -576,6 +576,11 @@ impl MessagesStore {
         self.inner.state.read()
     }
 
+    /// The Mac agent, when one is configured. Map snapshots go through it without touching the store.
+    pub fn agent(&self) -> Option<&MacAgentClient> {
+        self.inner.agent.as_ref()
+    }
+
     pub fn transport(&self) -> &Arc<dyn Transport> {
         &self.inner.transport
     }
@@ -841,6 +846,10 @@ impl MessagesStore {
             for handle in [private.locations_timer.take(), private.locations_stream.take()].into_iter().flatten() {
                 handle.abort();
             }
+            return;
+        }
+        if self.inner.transport.kind() == TransportKind::Demo {
+            self.apply_friends(&crate::demo::friends());
             return;
         }
         if self.inner.agent.is_none() || self.inner.private.lock().locations_timer.is_some() {

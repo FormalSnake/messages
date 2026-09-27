@@ -84,6 +84,21 @@ fn handle(address: &str, service: Service, name: Option<&str>, avatar: Option<St
     Handle { address: address.into(), service, name: name.map(Into::into), avatar }
 }
 
+/// Alex shares a location, so the details panel has a map to show.
+pub fn friends() -> Vec<crate::findmy::FriendLocation> {
+    vec![crate::findmy::FriendLocation {
+        id: "demo-friend-alex".into(),
+        name: Some("Alex Rivera".into()),
+        addresses: vec!["+14155550134".into()],
+        latitude: 37.7955,
+        longitude: -122.3937,
+        accuracy: Some(35.),
+        timestamp: now_ms() - 4 * 60_000,
+        label: Some("Ferry Building, San Francisco".into()),
+        is_sharing: true,
+    }]
+}
+
 fn people() -> People {
     People {
         alex: handle("+14155550134", Service::IMessage, Some("Alex Rivera"), Some(avatar(200, 260, "AR"))),

@@ -21,7 +21,7 @@ Contracts that are frozen (change only through the orchestrator):
   `messages-rt`) before GPUI starts, and keeps it alive for the process.
   Every network call, timer, file read or write, JSON parse, image decode and
   ffmpeg run happens on it. A `reqwest::Client` is built once and cloned into
-  every client (BlueBubbles, agent, Klipy, CanaryLLM, map tiles).
+  every client (BlueBubbles, agent, Klipy, CanaryLLM).
 - The GPUI foreground thread renders and handles input. It never awaits I/O.
   It reads state with `store.state()` (a `parking_lot` read guard, held only for
   the length of one render, never across an await) and calls store methods:

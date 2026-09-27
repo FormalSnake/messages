@@ -395,9 +395,8 @@ impl Render for InfoPanel {
                         card.clone()
                     }
                     None => {
-                        let address = handle.address.clone();
-                        let card = cx.new(|cx| LocationCard::new(address.clone(), friend, window, cx));
-                        self.locations.insert(address, card.clone());
+                        let card = cx.new(|cx| LocationCard::new(handle.clone(), friend, window, cx));
+                        self.locations.insert(handle.address.clone(), card.clone());
                         card
                     }
                 };

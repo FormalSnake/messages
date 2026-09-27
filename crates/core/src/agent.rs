@@ -2,12 +2,13 @@
 //! locations and the prefs shared between clients.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::findmy::{DeviceLocation, FriendLocation};
+use crate::findmy::{DeviceLocation, FriendLocation, MapSnapshotRequest};
 use crate::gifs::GifFavorite;
 use crate::model::Millis;
 
@@ -118,13 +119,20 @@ pub enum AgentError {
     /// The agent predates `/findmy/stream` (404); fall back to polling instead of retrying.
     #[error("agent: this Mac agent does not serve /findmy/stream")]
     StreamUnsupported,
+    /// The agent predates `/findmy/snapshot` (404).
+    #[error("agent: this Mac agent does not serve /findmy/snapshot")]
+    SnapshotUnsupported,
     #[error("agent: {0}")]
     Http(String),
 }
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// A first render compiles the MapKit helper on the Mac, which takes a few seconds on its own.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
+const SNAPSHOT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// All requests but the stream time out after 10 s. Auth is `Authorization: Bearer <token>`.
+/// All requests but the stream and snapshots time out after 10 s. Auth is `Authorization: Bearer <token>`.
+#[derive(Clone)]
 pub struct MacAgentClient {
     config: AgentConfig,
     http: reqwest::Client,
@@ -221,6 +229,33 @@ impl MacAgentClient {
             }
         }
         Ok(())
+    }
+
+    /// `GET /findmy/snapshot`, saved as `dir/<rounded request>.png` and reused for a day.
+    pub async fn find_my_snapshot(&self, request: &MapSnapshotRequest, dir: &Path) -> Result<PathBuf, AgentError> {
+        let target = dir.join(request.file_name());
+        let fresh = tokio::fs::metadata(&target).await.ok().and_then(|meta| meta.modified().ok()).is_some_and(|modified| SystemTime::now().duration_since(modified).is_ok_and(|age| age < SNAPSHOT_MAX_AGE));
+        if fresh {
+            return Ok(target);
+        }
+        let url = format!("{}?{}", self.endpoint("/findmy/snapshot"), request.query());
+        let response = self.http.get(&url).timeout(SNAPSHOT_TIMEOUT).bearer_auth(&self.config.token).send().await.map_err(|error| AgentError::Http(error.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(AgentError::SnapshotUnsupported);
+        }
+        if !response.status().is_success() {
+            return Err(AgentError::Http(format!("agent: /findmy/snapshot returned {}", response.status().as_u16())));
+        }
+        let bytes = response.bytes().await.map_err(|error| AgentError::Http(error.to_string()))?;
+        if !bytes.starts_with(b"\x89PNG") {
+            return Err(AgentError::Http("agent: /findmy/snapshot did not answer a PNG".to_owned()));
+        }
+        let io = |error: std::io::Error| AgentError::Http(format!("agent: saving the snapshot: {error}"));
+        tokio::fs::create_dir_all(dir).await.map_err(io)?;
+        let partial = target.with_extension(format!("png.{}.part", std::process::id()));
+        tokio::fs::write(&partial, &bytes).await.map_err(io)?;
+        tokio::fs::rename(&partial, &target).await.map_err(io)?;
+        Ok(target)
     }
 
     /// `PUT /prefs` with `{chats, gifs}`; answers the merged set plus the Mac's own pins.
@@ -350,6 +385,54 @@ mod tests {
         let (tx, _rx) = mpsc::channel(8);
         let error = client(base).stream_findmy(tx).await.unwrap_err();
         assert!(error.to_string().contains("503"));
+    }
+
+    /// Answers one connection with `status` and `body`, handing the request line back through `seen`.
+    async fn png_server(status: u16, body: &'static [u8], seen: Arc<AsyncMutex<Vec<u8>>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            if let Ok(n) = socket.read(&mut buf).await {
+                seen.lock().await.extend_from_slice(&buf[..n]);
+            }
+            let header = format!("HTTP/1.1 {status} X\r\ncontent-type: image/png\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(body).await;
+        });
+        format!("http://{addr}")
+    }
+
+    fn snapshot_request() -> MapSnapshotRequest {
+        MapSnapshotRequest { latitude: 37.795512, longitude: -122.39371, width: 248, height: 160, scale: 2, dark: true, span: 1500 }
+    }
+
+    #[tokio::test]
+    async fn saves_a_snapshot_under_its_rounded_request_and_reuses_it() {
+        let dir = crate::testing::temp_dir("snapshot");
+        let seen = Arc::new(AsyncMutex::new(Vec::new()));
+        let base = png_server(200, b"\x89PNG fake", seen.clone()).await;
+        let agent = client(base);
+        let path = agent.find_my_snapshot(&snapshot_request(), dir.as_path()).await.unwrap();
+        assert_eq!(path, dir.join(snapshot_request().file_name()));
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x89PNG fake");
+        let request = String::from_utf8_lossy(&seen.lock().await).to_lowercase();
+        assert!(request.starts_with("get /findmy/snapshot?lat=37.79551&lon=-122.39371&w=248&h=160&scale=2&dark=1&span=1500 "));
+        assert!(request.contains("authorization: bearer tok"));
+        // The server answers one connection only, so a second fetch has to come from disk.
+        assert_eq!(agent.find_my_snapshot(&snapshot_request(), dir.as_path()).await.unwrap(), path);
+    }
+
+    #[tokio::test]
+    async fn tells_an_agent_without_snapshots_apart_from_a_failed_render() {
+        let dir = crate::testing::temp_dir("snapshot");
+        let base = png_server(404, b"{}", Arc::new(AsyncMutex::new(Vec::new()))).await;
+        assert!(matches!(client(base).find_my_snapshot(&snapshot_request(), dir.as_path()).await, Err(AgentError::SnapshotUnsupported)));
+        let base = png_server(503, b"{}", Arc::new(AsyncMutex::new(Vec::new()))).await;
+        let error = client(base).find_my_snapshot(&snapshot_request(), dir.as_path()).await.unwrap_err();
+        assert!(error.to_string().contains("503"));
+        assert!(std::fs::read_dir(dir.as_path()).unwrap().next().is_none());
     }
 
     #[test]

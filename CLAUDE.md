@@ -99,8 +99,12 @@ whether Find My is running. It also keeps `~/.config/messages/prefs.json`, the
 pinned and muted state and GIF favorites shared between clients (`PUT /prefs`,
 newest entry per chat or gif id wins, an unfavorite kept as a tombstone), and
 reports the chats pinned in Messages.app itself, read from
-`~/Library/Preferences/com.apple.messages.pinning.plist`. The client talks to
-it through `MacAgentClient` in `crates/core/src/agent.rs` when
+`~/Library/Preferences/com.apple.messages.pinning.plist`. The details panel's
+map is `GET /findmy/snapshot` (`maps/snapshot.ts`): `MKMapSnapshotter` centred
+on the coordinate, run through a Swift helper compiled once into
+`~/.config/messages/bin` and keyed by its source hash, cached ten minutes
+by rounded request. No agent means a neutral placeholder, never a tile
+server. The client talks to it through `MacAgentClient` in `crates/core/src/agent.rs` when
 `config.agent` is set; `is_pinned` in the same file decides between a Mac pin
 and a client change, comparing the Mac's list against `pinnedAt`, which only a
 pin moves. `updatedAt` is the whole entry's clock, so a draft syncing while you
