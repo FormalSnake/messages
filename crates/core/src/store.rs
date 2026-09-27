@@ -266,6 +266,9 @@ struct Inner {
 }
 
 /// Time between reconnects to the Find My stream starts at one second and doubles to this.
+/// How long after the last click, scroll or keystroke in a thread it still counts as being read.
+const ENGAGED_FOR: Duration = Duration::from_secs(60);
+
 const LOCATIONS_STREAM_RETRY_MAX_MS: u64 = 30_000;
 /// The fallback behind the push stream: an agent that cannot stream, or one whose stream is down.
 const LOCATIONS_POLL_MS: u64 = 60_000;
@@ -509,6 +512,10 @@ struct Private {
     typing_sent: HashSet<String>,
     /// Chats marked unread here: the Mac's mark-unread leaves `dateRead` alone, so a re-read of the list would clear the dot.
     forced_unread: HashSet<String>,
+    /// The conversation last clicked, scrolled or typed in, and when. Only it
+    /// reads incoming messages, and only for `ENGAGED_FOR` after that, so a
+    /// thread left open on an idle screen leaves the phone and watch to ring.
+    engaged: Option<(String, tokio::time::Instant)>,
     typing_shown: HashMap<String, AbortHandle>,
     draft_sync_timers: HashMap<String, AbortHandle>,
     /// When the composer for a chat was last typed into, so a stale remote draft never overwrites newer local text.
@@ -1335,17 +1342,9 @@ impl MessagesStore {
         });
         // The thread just left keeps only its recent rows.
         self.trim_messages();
+        // Opening a thread reads nothing; `engage` does, once the thread is used.
+        self.inner.private.lock().engaged = None;
         let Some(chat_guid) = chat_guid else { return };
-        // The dot clears the moment the thread opens, not once its first page is in.
-        let receipts = self.clear_unread(&chat_guid);
-        if !receipts.is_empty() {
-            let store = self.clone();
-            self.spawn(async move {
-                for member in receipts {
-                    store.send_read_receipt(&member).await;
-                }
-            });
-        }
         let store = self.clone();
         let focus_guid = chat_guid.clone();
         self.spawn(async move {
@@ -1869,7 +1868,26 @@ impl MessagesStore {
         })
     }
 
-    /// Port of `markRead`: every member, receipts only where the chat allows them.
+    /// A click, scroll or keystroke in the open thread or its composer. Reads
+    /// the conversation and keeps reading what arrives in it for `ENGAGED_FOR`.
+    pub fn engage(&self, chat_guid: &str) {
+        let primary = conversation_guid(&self.inner.state.read().grouping, chat_guid).to_owned();
+        let unread = conversation_members(&self.inner.state.read().grouping, &primary)
+            .iter()
+            .any(|member| self.inner.state.read().chat(member).is_some_and(|chat| chat.unread));
+        self.inner.private.lock().engaged = Some((primary.clone(), tokio::time::Instant::now()));
+        if unread {
+            let store = self.clone();
+            self.spawn(async move { store.mark_read(&primary).await });
+        }
+    }
+
+    /// The window lost focus: nothing is being read any more.
+    pub fn disengage(&self) {
+        self.inner.private.lock().engaged = None;
+    }
+
+    /// Every member, receipts only where the chat allows them.
     pub async fn mark_read(&self, chat_guid: &str) {
         for member in self.clear_unread(chat_guid) {
             self.send_read_receipt(&member).await;
@@ -2724,7 +2742,9 @@ impl Inner {
         let newest_is_this = state.messages.get(&chat_guid).and_then(|list| list.last()).is_some_and(|newest| newest.guid == message.guid);
         match state.chat(&chat_guid).cloned() {
             Some(chat) if newest_is_this => {
-                let selected_and_visible = state.selected_chat.as_deref() == Some(conversation_guid(&state.grouping, &chat_guid));
+                let primary = conversation_guid(&state.grouping, &chat_guid);
+                let selected_and_visible = state.selected_chat.as_deref() == Some(primary)
+                    && self.private.lock().engaged.as_ref().is_some_and(|(engaged, at)| engaged == primary && at.elapsed() < ENGAGED_FOR);
                 // A read date on the newest incoming message means it was read on another device; the dot goes without waiting for the sweep.
                 let read_elsewhere = !message.from_me && message.date_read.is_some();
                 let unread = if is_new && !message.from_me && !selected_and_visible {
@@ -3329,6 +3349,7 @@ mod tests {
                 transport.lock().messages.push(message("a", &format!("row {index}"), index + 1, false));
             }
             let store = started(&transport, options()).await;
+            store.engage("a");
             settle(&store).await;
             let chats_before = store.state().chats.clone();
             let rows_before = store.state().messages["a"].clone();
@@ -3492,6 +3513,8 @@ mod tests {
             assert_eq!(merged, ["from the email", "from the phone"]);
             let rows: Vec<String> = conversation_chats(&store.state()).iter().map(|item| item.guid.clone()).collect();
             assert_eq!(rows, [phone.guid.clone(), "c".to_owned()]);
+            store.engage(&email.guid);
+            settle(&store).await;
             assert!(!unread(&store, &email.guid));
 
             store.send(&phone.guid, "hello", None);
@@ -3540,16 +3563,34 @@ mod tests {
             let store = started(&transport, StoreOptions { warm_chats: Some(0), ..options() }).await;
             assert_eq!(store.state().selected_chat.as_deref(), Some("a"));
 
-            transport.emit(TransportEvent::Message(message("a", "hi", 3000, false)));
+            // Open but untouched: the message stays unread so the phone still rings.
+            transport.emit(TransportEvent::Message(message("a", "idle", 2500, false)));
+            settle(&store).await;
+            assert!(unread(&store, "a"));
+            assert!(transport.lock().mark_read_calls.is_empty());
+
+            store.engage("a");
             settle(&store).await;
             assert!(!unread(&store, "a"));
             assert_eq!(transport.lock().mark_read_calls, ["a"]);
 
-            // One for a thread that is not open waits for the thread to be opened.
+            transport.emit(TransportEvent::Message(message("a", "hi", 3000, false)));
+            settle(&store).await;
+            assert!(!unread(&store, "a"));
+            assert_eq!(transport.lock().mark_read_calls, ["a", "a"]);
+
+            // A minute without touching the thread and it stops reading.
+            tokio::time::advance(ENGAGED_FOR).await;
+            transport.emit(TransportEvent::Message(message("a", "still there?", 3500, false)));
+            settle(&store).await;
+            assert!(unread(&store, "a"));
+            assert_eq!(transport.lock().mark_read_calls, ["a", "a"]);
+
+            // One for a thread that is not open waits for the thread to be used.
             transport.emit(TransportEvent::Message(message("b", "later", 4000, false)));
             settle(&store).await;
             assert!(unread(&store, "b"));
-            assert_eq!(transport.lock().mark_read_calls, ["a"]);
+            assert_eq!(transport.lock().mark_read_calls, ["a", "a"]);
             store.stop().await;
         }
 
@@ -3692,16 +3733,14 @@ mod tests {
         }
 
         #[tokio::test(start_paused = true)]
-        async fn clears_the_unread_dot_the_moment_a_conversation_is_selected() {
+        async fn selecting_a_conversation_leaves_it_unread_until_it_is_used() {
             let transport = FakeTransport::new(vec![chat("a", 2000), Chat { unread: true, ..chat("b", 1000) }]);
             let store = started(&transport, StoreOptions { warm_chats: Some(0), ..options() }).await;
-            let pending = store.select_chat(Some("b"));
-            tokio::pin!(pending);
-            let first = futures_util::poll!(pending.as_mut());
+            store.select_chat(Some("b")).await;
+            assert!(unread(&store, "b"));
+            store.engage("b");
+            settle(&store).await;
             assert!(!unread(&store, "b"));
-            if first.is_pending() {
-                pending.await;
-            }
             store.stop().await;
         }
     }

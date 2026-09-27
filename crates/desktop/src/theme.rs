@@ -236,17 +236,38 @@ impl Theme {
     }
 }
 
-/// Pushes the base tokens gpui-component's own `Theme` reads for chrome it
-/// draws itself (the title bar and its close/minimize/maximize controls) so
-/// the window border, drag area and control hover colours read as Messages
-/// rather than gpui-component's own defaults.
+/// Hands the palette to gpui-component, which draws the text fields, the
+/// caption buttons and, on client-decorated Linux, the window frame from its
+/// own `Theme`. Its mode follows the canvas, because the frame and the input
+/// fill pick their colours by `is_dark()` rather than by token, so a light
+/// matugen palette needs a light mode and a dark one a dark mode.
 fn sync_component_theme(cx: &mut App) {
+    use gpui_kit::component::ThemeMode;
+
     let palette = Theme::get(cx);
     let theme = gpui_kit::component::Theme::global_mut(cx);
+    theme.mode = if palette.canvas.l < 0.5 { ThemeMode::Dark } else { ThemeMode::Light };
     theme.background = palette.canvas;
     theme.foreground = palette.text;
+    theme.border = palette.separator;
+    theme.input = palette.separator;
+    theme.ring = palette.focus_ring;
+    theme.caret = palette.accent;
+    theme.selection = palette.accent.opacity(0.35);
+    theme.muted = palette.raised;
+    theme.muted_foreground = palette.tertiary;
+    theme.popover = palette.overlay;
+    theme.popover_foreground = palette.text;
+    theme.accent = palette.hover_wash;
+    theme.accent_foreground = palette.text;
+    theme.primary = palette.accent;
+    theme.primary_foreground = palette.on_accent;
+    theme.list_hover = palette.hover_wash;
+    theme.list_active = palette.selected_soft;
+    theme.scrollbar_thumb = palette.ghost;
     theme.title_bar = palette.canvas;
     theme.title_bar_border = palette.separator;
+    theme.window_border = palette.separator;
     theme.secondary_hover = palette.hover_wash;
     theme.secondary_active = palette.press_wash;
     theme.secondary_foreground = palette.text;

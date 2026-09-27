@@ -67,7 +67,9 @@ pub fn preview_text(message: Option<&Message>, chat: &Chat) -> String {
             GroupEvent::Photo => format!("{who} changed the group photo"),
         };
     }
-    let mut body = message.text.clone();
+    // gpui clamps wrapped lines per paragraph, so a multi-line message would
+    // overflow the row's two lines; the preview reads as one line of prose.
+    let mut body = message.text.split_whitespace().collect::<Vec<_>>().join(" ");
     if body.is_empty() {
         if let Some(first) = message.attachments.first() {
             body = if message.is_audio {
@@ -439,6 +441,8 @@ impl Render for SidebarRow {
                                 .line_height(type_scale::PREVIEW.line_height)
                                 .text_color(color)
                                 .line_clamp(2)
+                                .max_h(type_scale::PREVIEW.line_height * 2.)
+                                .overflow_hidden()
                                 .w_full()
                                 .min_w(px(0.))
                                 .child(crate::emoji_font::styled_text(preview.into(), Vec::new(), color))
@@ -446,5 +450,17 @@ impl Render for SidebarRow {
                 )
                 .into_any_element()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[::core::prelude::v1::test]
+    fn a_multi_line_message_previews_as_one_line() {
+        let chat = Chat { guid: "a".into(), ..Chat::default() };
+        let message = Message { text: "BUZON MOVISTAR\njue, 10 - 15:36\n\n1 llamada de 615372599".into(), ..Message::default() };
+        assert_eq!(preview_text(Some(&message), &chat), "BUZON MOVISTAR jue, 10 - 15:36 1 llamada de 615372599");
     }
 }

@@ -281,3 +281,28 @@ fn title_rows_drag_except_on_controls() {
     assert!(!drags(cx, 561., 321.), "thread");
 }
 
+
+/// Opening a conversation from the sidebar leaves it unread, so the phone and
+/// watch still ring; a click in its thread is what reads it.
+#[::core::prelude::v1::test]
+fn reads_a_conversation_only_once_its_thread_is_used() {
+    const MORGAN: &str = "iMessage;-;+14155550199";
+    let mut app = TestAppContext::single();
+    let cx = &mut app;
+    let (root, cx) = boot(cx, demo_config(&[]));
+    wait_until(cx, "Alex selected", |cx| selected_title(&root, cx).as_deref() == Some("Alex Rivera"));
+    let live = store(cx);
+    let unread = |store: &MessagesStore| store.state().chat(MORGAN).is_some_and(|chat| chat.unread);
+    assert!(unread(&live));
+
+    let select = live.clone();
+    runtime().block_on(async move { select.select_chat(Some(MORGAN)).await });
+    wait_until(cx, "Morgan selected", |cx| store(cx).state().selected_chat.as_deref() == Some(MORGAN));
+    assert!(unread(&live), "selecting from the sidebar must not read it");
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    let bounds = cx.debug_bounds("thread-title").expect("header painted");
+    cx.simulate_click(gpui_kit::point(bounds.center().x + gpui_kit::px(200.), bounds.center().y + gpui_kit::px(300.)), Modifiers::none());
+    wait_until(cx, "Morgan read", |_| !unread(&live));
+}

@@ -201,6 +201,14 @@ impl AppRoot {
         let confirm_focus = cx.focus_handle();
         let root_focus = cx.focus_handle();
         root_focus.focus(window, cx);
+        cx.observe_window_activation(window, |this, window, _| {
+            if !window.is_window_active() {
+                if let Some(store) = this.store() {
+                    store.disengage();
+                }
+            }
+        })
+        .detach();
 
         let mut this = Self {
             runtime,
@@ -425,6 +433,17 @@ impl AppRoot {
     fn on_open_settings(&mut self, _: &OpenSettings, _window: &mut Window, cx: &mut Context<Self>) {
         self.settings_open = true;
         cx.notify();
+    }
+
+    /// A click, scroll or keystroke in the open conversation's pane: the only
+    /// thing that reads it. Selecting it from the sidebar does not.
+    fn engage(&mut self, window: &Window) {
+        if !window.is_window_active() {
+            return;
+        }
+        let Some(store) = self.store() else { return };
+        let Some(guid) = store.state().selected_chat.clone() else { return };
+        store.engage(&guid);
     }
 
     fn on_mark_unread(&mut self, _: &MarkUnread, _window: &mut Window, _cx: &mut Context<Self>) {
@@ -816,7 +835,17 @@ impl Render for AppRoot {
             }
         };
 
-        let main_pane = div().flex().flex_col().flex_grow(1.).min_w(px(0.)).h_full().bg(palette.canvas);
+        let main_pane = div()
+            .id("main-pane")
+            .flex()
+            .flex_col()
+            .flex_grow(1.)
+            .min_w(px(0.))
+            .h_full()
+            .bg(palette.canvas)
+            .capture_any_mouse_down(cx.listener(|this, _, window, _| this.engage(window)))
+            .capture_key_down(cx.listener(|this, _, window, _| this.engage(window)))
+            .on_scroll_wheel(cx.listener(|this, _, window, _| this.engage(window)));
         let main_pane = if self.new_chat {
             main_pane.when_some(self.new_chat_view.clone(), |el, view| el.child(view))
         } else if selected {

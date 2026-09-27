@@ -392,7 +392,7 @@ impl Render for Sidebar {
                         }
                     }))
                     .child(crate::icons::Icon::new(IconName::Search).size(px(13.)).color(palette.tertiary))
-                    .child(Input::new(&self.search_state).bordered(false))
+                    .child(Input::new(&self.search_state).appearance(false))
                     .when(has_query, |el| el.child(IconButton::new("clear-search", IconName::Close, "Clear search").size(px(12.)).hit(px(20.)).on_click(move |_, window, cx| close_search(window, cx)))),
             )
             .child(IconButton::new("new-message", IconName::Compose, "New message").size(px(17.)).on_click(|_, window, cx| {
