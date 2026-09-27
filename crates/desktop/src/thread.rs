@@ -78,7 +78,7 @@ pub(crate) fn with_thread(cx: &mut App, f: impl FnOnce(&mut Thread, &mut Context
 /// One list item: a caption, a message, or the typing bubble.
 #[derive(Clone)]
 pub(crate) enum Slot {
-    Caption { key: String, text: SharedString, top: Pixels, bottom: Pixels },
+    Caption { key: String, text: SharedString, top: Pixels, bottom: Pixels, strong: usize },
     Message { data: MessageRowData, props: RowProps, entering: bool },
     Typing,
 }
@@ -94,7 +94,7 @@ impl Slot {
 
     fn same(&self, other: &Slot) -> bool {
         match (self, other) {
-            (Slot::Caption { text: a, top: at, bottom: ab, .. }, Slot::Caption { text: b, top: bt, bottom: bb, .. }) => a == b && at == bt && ab == bb,
+            (Slot::Caption { text: a, top: at, bottom: ab, strong: aw, .. }, Slot::Caption { text: b, top: bt, bottom: bb, strong: bw, .. }) => a == b && at == bt && ab == bb && aw == bw,
             (Slot::Message { data: a, props: ap, .. }, Slot::Message { data: b, props: bp, .. }) => a == b && ap == bp,
             (Slot::Typing, Slot::Typing) => true,
             _ => false,
@@ -211,7 +211,7 @@ impl RowList {
             let Slots { slots, rows, typing, typing_who, is_group, store, thread } = &mut *guard;
             match slots.get(index) {
                 None => div().into_any_element(),
-                Some(Slot::Caption { text, top, bottom, .. }) => caption(text.clone(), *top, *bottom, cx).into_any_element(),
+                Some(Slot::Caption { text, top, bottom, strong, .. }) => caption(text.clone(), *strong, *top, *bottom, cx).into_any_element(),
                 Some(Slot::Typing) => {
                     let (who, group) = (typing_who.clone(), *is_group);
                     typing.get_or_insert_with(|| cx.new(|_| TypingRow::new(who, group))).clone().into_any_element()
@@ -244,16 +244,28 @@ impl RowList {
     }
 }
 
-fn caption(text: SharedString, top: Pixels, bottom: Pixels, cx: &App) -> Div {
+/// The day half of a `format_separator` label: "Today" of "Today 9:41 AM",
+/// "Sep 2, 2025" of "Sep 2, 2025 at 4:30 PM". Messages sets it heavier than
+/// the time.
+fn separator_day(label: &str) -> &str {
+    match label.find(" at ") {
+        Some(end) => &label[..end],
+        None => label.split_once(' ').map_or(label, |(day, _)| day),
+    }
+}
+
+/// `strong` bytes at the start of `text` are set semibold.
+fn caption(text: SharedString, strong: usize, top: Pixels, bottom: Pixels, cx: &App) -> Div {
     let palette = Theme::get(cx);
+    let strong = strong.min(text.len());
+    let highlights = if strong > 0 { vec![(0..strong, HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })] } else { Vec::new() };
     div().w_full().flex().flex_row().items_center().justify_center().pt(top).pb(bottom).px(spacing::X10).child(
         div()
             .text_size(type_scale::MICRO.font_size)
             .line_height(type_scale::MICRO.line_height)
-            .font_weight(FontWeight::SEMIBOLD)
             .text_color(palette.tertiary)
             .text_center()
-            .child(text),
+            .child(StyledText::new(text).with_highlights(highlights)),
     )
 }
 
@@ -561,9 +573,9 @@ impl Thread {
         }
         rows.iter()
             .map(|row| match row {
-                Row::Separator { key, label } => Slot::Caption { key: key.clone(), text: label.clone().into(), top: spacing::X4, bottom: spacing::X2 },
-                Row::Event { key, text } => Slot::Caption { key: key.clone(), text: text.clone().into(), top: spacing::X3, bottom: spacing::X1 },
-                Row::Loading => Slot::Caption { key: "loading".into(), text: "Loading earlier messages\u{2026}".into(), top: spacing::X3, bottom: spacing::X1 },
+                Row::Separator { key, label } => Slot::Caption { key: key.clone(), text: label.clone().into(), top: spacing::X4, bottom: spacing::X2, strong: separator_day(label).len() },
+                Row::Event { key, text } => Slot::Caption { key: key.clone(), text: text.clone().into(), top: spacing::X3, bottom: spacing::X1, strong: 0 },
+                Row::Loading => Slot::Caption { key: "loading".into(), text: "Loading earlier messages\u{2026}".into(), top: spacing::X3, bottom: spacing::X1, strong: 0 },
                 Row::Typing => Slot::Typing,
                 Row::Message(data) => {
                     let message = &data.message;
@@ -836,5 +848,18 @@ impl Render for Thread {
         // out on its own inside the box the parent gave it, where only a
         // percentage height fills that box.
         div().id("thread").flex_grow(1.).flex_basis(px(0.)).min_h(px(0.)).w_full().h_full().flex().flex_col().children(probe).child(body).children(lightbox)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::separator_day;
+    use std::prelude::v1::test;
+
+    #[test]
+    fn the_day_half_of_a_separator_is_what_gets_the_weight() {
+        assert_eq!(separator_day("Today 9:41 AM"), "Today");
+        assert_eq!(separator_day("Monday 08:15"), "Monday");
+        assert_eq!(separator_day("Sep 2, 2025 at 4:30 PM"), "Sep 2, 2025");
     }
 }

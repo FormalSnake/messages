@@ -826,7 +826,7 @@ impl Render for MessageRow {
             let guid = message.guid.clone();
             div()
                 .id("replies")
-                .pt(px(3.))
+                .pt(spacing::X1)
                 .px(spacing::X1)
                 .cursor_pointer()
                 .hover(|style| style.opacity(0.8))

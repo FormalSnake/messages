@@ -30,6 +30,10 @@ use crate::theme::{Palette, Theme, radius, spacing, type_scale};
 /// My own messages stay editable this long.
 const EDIT_WINDOW_MS: i64 = 15 * 60_000;
 const BANNER_HEIGHT: Pixels = px(34.);
+/// One line of the text field (gpui-component's medium input: 20px line plus
+/// 8px padding each side) inside the pill's 1px border. The buttons beside it
+/// use it as their hit box so their icons centre on the first line.
+const FIELD_HEIGHT: Pixels = px(38.);
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -629,12 +633,12 @@ impl Render for Composer {
                     .gap(spacing::X2)
                     .px(spacing::X4)
                     .py(spacing::X3)
-                    .child(IconButton::new("attach", IconName::Paperclip, "Attach").on_click(cx.listener(|this, _, window, cx| {
+                    .child(IconButton::new("attach", IconName::Paperclip, "Attach").hit(FIELD_HEIGHT).on_click(cx.listener(|this, _, window, cx| {
                         let position = window.mouse_position();
                         this.open_attach_menu(position, window, cx);
                     })))
                     .when(klipy, |el| {
-                        el.child(IconButton::new("gif", IconName::Gif, "GIF").on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        el.child(IconButton::new("gif", IconName::Gif, "GIF").hit(FIELD_HEIGHT).on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
                             let mut position = event.mouse_position().unwrap_or_default();
                             position.y -= spacing::X2;
                             this.toggle_gif_picker(position, window, cx)
@@ -642,7 +646,7 @@ impl Render for Composer {
                     })
                     .when(capabilities.effects && chat.as_ref().is_some_and(|chat| chat.service == Service::IMessage), |el| {
                         el.child(
-                            IconButton::new("effect", IconName::Effect, "iMessage effects").active(self.effect.is_some()).on_click(cx.listener(
+                            IconButton::new("effect", IconName::Effect, "iMessage effects").hit(FIELD_HEIGHT).active(self.effect.is_some()).on_click(cx.listener(
                                 |this, _, window, cx| {
                                     let position = window.mouse_position();
                                     this.open_effect_picker(position, window, cx);
@@ -650,20 +654,35 @@ impl Render for Composer {
                             )),
                         )
                     })
-                    .child(div().flex_grow(1.).min_w(px(0.)).child(Textarea::new(&self.input).bordered(true)))
                     .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_end()
+                            .gap(spacing::X1)
+                            .flex_grow(1.)
+                            .min_w(px(0.))
+                            .min_h(FIELD_HEIGHT)
+                            .rounded(FIELD_HEIGHT / 2.)
+                            .border_1()
+                            .border_color(palette.separator)
+                            .bg(palette.canvas)
+                            .pl(spacing::X1)
+                            .pr(spacing::X1)
+                            .child(div().flex_grow(1.).min_w(px(0.)).child(Textarea::new(&self.input).appearance(false)))
+                            .child(div().h(FIELD_HEIGHT - px(2.)).flex().items_center().flex_shrink_0().child(
                         div()
                             .id("send")
                             .debug_selector(|| "send".into())
-                            .w(px(28.))
-                            .h(px(28.))
-                            .rounded(px(14.))
+                            .w(px(24.))
+                            .h(px(24.))
+                            .rounded(px(12.))
                             .flex()
                             .items_center()
                             .justify_center()
                             .flex_shrink_0()
-                            .when(ready, |el| el.bg(send_color))
-                            .when(!ready, |el| el.opacity(0.4))
+                            .bg(if ready { send_color } else { palette.ghost })
+                            .when(ready, |el| el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)))
                             .when(ready, |el| el.on_click(cx.listener(|this, _, _, cx| this.send(cx))))
                             .when(ready && capabilities.scheduled_messages, |el| {
                                 el.on_mouse_down(
@@ -673,7 +692,8 @@ impl Render for Composer {
                                     }),
                                 )
                             })
-                            .child(Icon::new(if editing { IconName::Check } else { IconName::Send }).size(px(14.)).color(palette.on_accent)),
+                            .child(Icon::new(if editing { IconName::Check } else { IconName::Send }).size(px(14.)).color(if ready { palette.on_accent } else { palette.tertiary }).strong(true)),
+                    )),
                     ),
             )
             .when_some(self.path_field.clone(), |el, field| {

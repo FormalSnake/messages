@@ -617,7 +617,7 @@ pub fn image(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .h(px(height))
         .rounded(radius::BUBBLE)
         .border_1()
-        .border_color(hsla(0., 0., 1., 0.1))
+        .border_color(crate::primitives::image_outline(palette))
         .bg(palette.received)
         .relative()
         .cursor_pointer()

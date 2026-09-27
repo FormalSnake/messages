@@ -883,7 +883,12 @@ impl Render for AppRoot {
         } else if selected {
             main_pane
                 .child(AnyView::from(self.header.clone()).cached(StyleRefinement::default().w_full().h(TITLEBAR_HEIGHT).flex_shrink_0()))
-                .child(AnyView::from(self.thread.clone()).cached(StyleRefinement::default().flex_grow(1.).min_h(px(0.)).w_full()))
+                // Not cached: re-rendering a cached view forces every cached
+                // view inside it to re-render too (gpui's `refreshing`), so a
+                // GIF frame in one row would redraw every visible row. Uncached,
+                // the thread's own render is a pointer comparison and the rows
+                // stay cached.
+                .child(self.thread.clone())
                 .child(self.composer.clone())
         } else {
             main_pane.child(empty_state(status, connection_error, cx))
