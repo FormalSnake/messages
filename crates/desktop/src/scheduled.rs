@@ -76,7 +76,7 @@ impl Render for ScheduledList {
                         .flex_col()
                         .flex_grow(1.)
                         .min_w(px(0.))
-                        .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.text).child(item.text.clone()))
+                        .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.text).line_clamp(2).text_ellipsis().child(item.text.clone()))
                         .child(
                             div()
                                 .text_size(type_scale::MICRO.font_size)

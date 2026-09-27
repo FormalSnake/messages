@@ -19,8 +19,16 @@ pub fn ring(active: bool, color: Hsla, transparent: Hsla) -> (Pixels, Hsla) {
     (px(2.), if active { color } else { transparent })
 }
 
-pub fn overlay_shadows() -> Vec<BoxShadow> {
-    vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))]
+/// A wide soft shadow plus a tight contact one, so a floating surface reads
+/// as lifted rather than smudged. Light palettes need far less of both.
+pub fn overlay_shadows(palette: &Palette) -> Vec<BoxShadow> {
+    let (wide, tight) = if palette.is_dark() { (0.5, 0.3) } else { (0.16, 0.08) };
+    vec![box_shadow(px(0.), px(12.), px(32.), px(0.), hsla(0., 0., 0., wide)), box_shadow(px(0.), px(1.), px(3.), px(0.), hsla(0., 0., 0., tight))]
+}
+
+/// The hairline around a photo: black on light surfaces, white on dark.
+pub fn image_outline(palette: &Palette) -> Hsla {
+    if palette.is_dark() { hsla(0., 0., 1., 0.1) } else { hsla(0., 0., 0., 0.1) }
 }
 
 #[derive(IntoElement)]
@@ -108,7 +116,7 @@ impl RenderOnce for IconButton {
                     .active(move |style| style.bg(if self.active { palette.selected_soft } else { palette.press_wash }))
                     .when_some(self.on_click, |el, handler| {
                         let on_key = handler.clone();
-                        el.tab_index(0).on_click(move |event, window, cx| handler(event, window, cx)).on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        el.tab_index(0).border_2().border_color(palette.transparent).focus_visible(move |style| style.border_color(palette.focus_ring)).on_click(move |event, window, cx| handler(event, window, cx)).on_key_down(move |event: &KeyDownEvent, window, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                 on_key(&ClickEvent::default(), window, cx);
                             }
@@ -164,9 +172,10 @@ impl RenderOnce for Button {
         let (fill, fg) = match self.kind {
             ButtonKind::Primary => (palette.accent, palette.on_accent),
             ButtonKind::Danger => (palette.danger, palette.on_accent),
-            ButtonKind::Secondary => (palette.raised, palette.text),
+            ButtonKind::Secondary => (palette.press_wash, palette.text),
         };
         let disabled = self.disabled;
+        let kind = self.kind;
         let selector = self.id.to_string();
 
         div()
@@ -184,7 +193,7 @@ impl RenderOnce for Button {
             .when(!disabled, |el| {
                 el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)).when_some(self.on_click, |el, handler| {
                     let on_key = handler.clone();
-                    el.tab_index(0).on_click(move |event, window, cx| handler(event, window, cx)).on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    el.tab_index(0).border_2().border_color(palette.transparent).focus_visible(move |style| style.border_color(if kind == ButtonKind::Secondary { palette.focus_ring } else { palette.text })).on_click(move |event, window, cx| handler(event, window, cx)).on_key_down(move |event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             on_key(&ClickEvent::default(), window, cx);
                         }
@@ -201,7 +210,7 @@ const MONOGRAM_MIN: f32 = 18.;
 // None of the elements below register a click or id, so they never capture
 // a click meant for their row: GPUI only hit-tests elements that ask for it.
 
-fn photo_avatar(src: &str, size: Pixels) -> impl IntoElement {
+fn photo_avatar(src: &str, size: Pixels, palette: &Palette) -> impl IntoElement {
     let inner = size - px(2.);
     div()
         .w(size)
@@ -210,7 +219,7 @@ fn photo_avatar(src: &str, size: Pixels) -> impl IntoElement {
         .flex_shrink_0()
         .overflow_hidden()
         .border_1()
-        .border_color(hsla(0., 0., 1., 0.1))
+        .border_color(image_outline(palette))
         .child(img(crate::attachments::sized_image_source(std::path::Path::new(src), inner, inner, ObjectFit::Cover)).w(inner).h(inner).rounded(inner / 2.).object_fit(ObjectFit::Cover))
 }
 
@@ -246,13 +255,13 @@ fn group_avatar(chat: &Chat, size: Pixels, palette: &Palette) -> impl IntoElemen
 fn avatar_for_handle(handle: Option<&Handle>, chat: Option<&Chat>, size: Pixels, palette: &Palette) -> gpui_kit::AnyElement {
     if let Some(chat) = chat {
         if chat.is_group {
-            return if let Some(icon) = chat.icon.as_deref() { photo_avatar(icon, size).into_any_element() } else { group_avatar(chat, size, palette).into_any_element() };
+            return if let Some(icon) = chat.icon.as_deref() { photo_avatar(icon, size, palette).into_any_element() } else { group_avatar(chat, size, palette).into_any_element() };
         }
     }
     let person = handle.or_else(|| chat.and_then(|chat| chat.participants.first()));
     let label = person.map(handle_name).map(str::to_owned).or_else(|| chat.map(chat_title)).unwrap_or_else(|| "?".to_owned());
     if let Some(avatar) = person.and_then(|person| person.avatar.as_deref()) {
-        return photo_avatar(avatar, size).into_any_element();
+        return photo_avatar(avatar, size, palette).into_any_element();
     }
     monogram_avatar(&label, size).into_any_element()
 }

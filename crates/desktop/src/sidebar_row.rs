@@ -441,6 +441,7 @@ impl Render for SidebarRow {
                                 .line_height(type_scale::PREVIEW.line_height)
                                 .text_color(color)
                                 .line_clamp(2)
+                                .text_ellipsis()
                                 .max_h(type_scale::PREVIEW.line_height * 2.)
                                 .overflow_hidden()
                                 .w_full()

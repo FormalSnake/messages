@@ -327,7 +327,7 @@ impl Render for GifPicker {
                                         .text_size(type_scale::CAPTION.font_size)
                                         .line_height(type_scale::CAPTION.line_height)
                                         .text_color(palette.secondary)
-                                        .child(format!("No GIFs for \"{}\"", self.committed)),
+                                        .child(format!("No GIFs for \u{201c}{}\u{201d}", self.committed)),
                                 )
                                 .into_any_element()
                         } else {

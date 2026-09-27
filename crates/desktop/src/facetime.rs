@@ -4,7 +4,6 @@
 //! browser; the Mac itself leaves the call about 15 s after we join
 //! (bluebubbles-helper#38).
 
-use gpui_kit::component::box_shadow;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use messages_core::store::FaceTimeCall;
@@ -12,7 +11,7 @@ use messages_core::store::FaceTimeCall;
 use crate::bridge::{Bridge, StoreHandle, Topic};
 use crate::icons::{Icon, IconName};
 use crate::primitives::{Button, ButtonKind, IconButton};
-use crate::theme::{Theme, spacing, type_scale};
+use crate::theme::{Theme, radius, spacing, type_scale};
 
 /// Sits `offset` in from the right edge: 12 px, or clear of the details
 /// panel while it is open.
@@ -85,20 +84,20 @@ impl Render for FaceTimeBanner {
         div()
             .id("facetime-banner")
             .absolute()
-            .top(px(12.))
+            .top(spacing::X3)
             .right(self.offset)
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(12.))
-            .pl(px(14.))
+            .gap(spacing::X3)
+            .pl(spacing::X4)
             .pr(spacing::X2)
-            .py(px(10.))
-            .rounded(px(12.))
+            .py(spacing::X3)
+            .rounded(radius::CARD)
             .bg(palette.overlay)
             .border_1()
             .border_color(palette.overlay_border)
-            .shadow(vec![box_shadow(px(0.), px(8.), px(24.), px(0.), hsla(0., 0., 0., 0.5))])
+            .shadow(crate::primitives::overlay_shadows(&palette))
             .child(Icon::new(IconName::Video).size(px(20.)).color(if failed { palette.danger } else { palette.online }))
             .child(
                 div()
@@ -106,7 +105,7 @@ impl Render for FaceTimeBanner {
                     .flex_col()
                     .gap(px(1.))
                     .max_w(px(320.))
-                    .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.text).child(who))
+                    .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_ellipsis().child(who))
                     .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child(line)),
             )
             .when(can_answer, |el| {

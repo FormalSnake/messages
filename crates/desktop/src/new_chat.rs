@@ -231,7 +231,7 @@ impl Render for NewChat {
                     .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.accent).child(label))
                     .child(IconButton::new(ElementId::Name(format!("remove-{address}").into()), IconName::Close, format!("Remove {address}")).size(px(11.)).hit(px(18.)).color(palette.accent).on_click(cx.listener(move |this, _, _, cx| this.remove(&address, cx))))
             }))
-            .child(Input::new(&self.to_field).appearance(false));
+            .child(div().flex_grow(1.).flex_basis(px(160.)).min_w(px(0.)).child(Input::new(&self.to_field).appearance(false)));
 
         let list = div().id("new-chat-suggestions").flex().flex_col().flex_grow(1.).min_h(px(0.)).overflow_y_scroll().px(spacing::X2).pt(spacing::X2);
         let list = if !suggestions.is_empty() {
@@ -346,10 +346,9 @@ impl Render for NewChat {
                             .justify_center()
                             .cursor_pointer()
                             .bg(if ready { palette.accent } else { palette.ghost })
-                            .opacity(if ready { 1. } else { 0.5 })
                             .when(ready, |el| el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)))
                             .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
-                            .child(crate::icons::Icon::new(IconName::Send).size(px(14.)).color(palette.on_accent).strong(true)),
+                            .child(crate::icons::Icon::new(IconName::Send).size(px(14.)).color(if ready { palette.on_accent } else { palette.tertiary }).strong(true)),
                     ),
             );
 
@@ -379,7 +378,7 @@ impl Render for NewChat {
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(palette.separator)
-                    .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).text_color(palette.text).flex_grow(1.).child("New message"))
+                    .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).flex_grow(1.).child("New message"))
                     .child(IconButton::new("cancel-new-chat", IconName::Close, "Cancel (Esc)").on_click({
                         let on_close = self.on_close.clone();
                         move |_, window, cx| on_close(window, cx)

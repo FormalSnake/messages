@@ -203,6 +203,14 @@ impl Default for Palette {
     }
 }
 
+impl Palette {
+    /// Light matugen palettes flip this; shadows, scrims and image outlines
+    /// read it because black on black and white on white both vanish.
+    pub fn is_dark(&self) -> bool {
+        self.canvas.l < 0.5
+    }
+}
+
 pub(crate) fn with_alpha(color: Hsla, alpha_byte: u8) -> Hsla {
     Hsla { a: alpha_byte as f32 / 255.0, ..color }
 }
@@ -246,7 +254,7 @@ fn sync_component_theme(cx: &mut App) {
 
     let palette = Theme::get(cx);
     let theme = gpui_kit::component::Theme::global_mut(cx);
-    theme.mode = if palette.canvas.l < 0.5 { ThemeMode::Dark } else { ThemeMode::Light };
+    theme.mode = if palette.is_dark() { ThemeMode::Dark } else { ThemeMode::Light };
     theme.background = palette.canvas;
     theme.foreground = palette.text;
     theme.border = palette.separator;

@@ -142,7 +142,7 @@ impl Render for ConnectScreen {
                                     .gap(spacing::X1)
                                     .flex_grow(1.)
                                     .min_w(px(0.))
-                                    .child(div().text_size(type_scale::LARGE.font_size).line_height(type_scale::LARGE.line_height).text_color(palette.text).child("Connect to your Mac"))
+                                    .child(div().text_size(type_scale::LARGE.font_size).line_height(type_scale::LARGE.line_height).font_weight(FontWeight::BOLD).text_color(palette.text).child("Connect to your Mac"))
                                     .child(
                                         div()
                                             .text_size(type_scale::BODY.font_size)
@@ -249,6 +249,6 @@ fn info_line(label: &'static str, value: impl Into<SharedString>, ok: Option<boo
         .items_center()
         .gap(spacing::X2)
         .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).w(px(88.)).flex_shrink_0().child(label))
-        .when_some(ok, |el, ok| el.child(div().w(px(7.)).h(px(7.)).rounded(px(4.)).flex_shrink_0().bg(if ok { palette.online } else { palette.warning })))
+        .when_some(ok, |el, ok| el.child(div().w(px(8.)).h(px(8.)).rounded(px(4.)).flex_shrink_0().bg(if ok { palette.online } else { palette.warning })))
         .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.text).flex_grow(1.).min_w(px(0.)).child(value))
 }

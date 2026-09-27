@@ -62,7 +62,7 @@ pub fn search_result_row(id: ElementId, message: &Message, chat: &Chat, palette:
                     div()
                         .text_size(type_scale::MICRO.font_size)
                         .line_height(type_scale::MICRO.line_height)
-                        .text_color(palette.tertiary)
+                        .text_color(palette.secondary)
                         .flex_shrink_0()
                         .child(format_list_date(message.date, now_ms())),
                 ),
@@ -73,6 +73,7 @@ pub fn search_result_row(id: ElementId, message: &Message, chat: &Chat, palette:
                 .line_height(type_scale::PREVIEW.line_height)
                 .text_color(palette.secondary)
                 .line_clamp(2)
+                .text_ellipsis()
                 .w_full()
                 .min_w(px(0.))
                 .child(preview_text(Some(message), chat)),

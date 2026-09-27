@@ -2,7 +2,6 @@
 //! entity that renders it. `MenuItem` is the piece D0 owns; D1/D2/D3
 //! construct `Vec<MenuItem>` for their own rows and open a menu through `AppRoot`.
 
-use gpui_kit::component::box_shadow;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -251,7 +250,7 @@ impl Render for ContextMenu {
                     .bg(palette.overlay)
                     .border_1()
                     .border_color(palette.overlay_border)
-                    .shadow(vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))])
+                    .shadow(crate::primitives::overlay_shadows(&palette))
                     .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
                         "escape" => close_for_escape(window, cx),

@@ -1,6 +1,5 @@
 //! One question, two buttons. Enter confirms, Escape or a click outside cancels.
 
-use gpui_kit::component::box_shadow;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -55,7 +54,7 @@ pub fn confirm_dialog(
             .track_focus(focus_handle)
             .w(bounds.width)
             .h(bounds.height)
-            .bg(hsla(0., 0., 0., 0.5))
+            .bg(hsla(0., 0., 0., if palette.is_dark() { 0.5 } else { 0.25 }))
             .flex()
             .items_center()
             .justify_center()
@@ -77,9 +76,9 @@ pub fn confirm_dialog(
                     .bg(palette.overlay)
                     .border_1()
                     .border_color(palette.overlay_border)
-                    .shadow(vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))])
+                    .shadow(crate::primitives::overlay_shadows(&palette))
                     .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
-                    .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).text_color(palette.text).child(request.title.clone()))
+                    .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).child(request.title.clone()))
                     .when_some(request.body.clone(), |el, body| {
                         el.child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child(body))
                     })

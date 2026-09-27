@@ -177,7 +177,7 @@ fn card_view(card: &Card, cx: &mut Context<ConversationHeader>) -> Stateful<Div>
         .bg(palette.overlay)
         .border_1()
         .border_color(palette.overlay_border)
-        .shadow(overlay_shadows())
+        .shadow(overlay_shadows(&palette))
         .child(
             div()
                 .flex()
@@ -271,6 +271,9 @@ impl Render for ConversationHeader {
                     .pl(spacing::X1)
                     .pr(spacing::X2)
                     .rounded(radius::ROW)
+                    .border_2()
+                    .border_color(palette.transparent)
+                    .focus_visible(move |style| style.border_color(palette.focus_ring))
                     .hover(|style| style.bg(palette.hover_wash))
                     .active(|style| style.bg(palette.press_wash))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleInfo), cx))

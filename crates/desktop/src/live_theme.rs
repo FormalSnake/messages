@@ -36,6 +36,7 @@ struct PaletteFile {
     on_accent: Option<String>,
     danger: Option<String>,
     warning: Option<String>,
+    online: Option<String>,
     tapback: Option<String>,
     sms: Option<String>,
     received: Option<String>,
@@ -71,6 +72,7 @@ fn apply(base: Palette, file: &PaletteFile) -> Palette {
     set!(on_accent);
     set!(danger);
     set!(warning);
+    set!(online);
     set!(tapback);
     set!(sms);
     set!(received);

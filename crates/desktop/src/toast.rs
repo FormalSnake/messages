@@ -1,6 +1,5 @@
 //! A non-interactive pill, centred at the bottom, that rises and fades in.
 
-use gpui_kit::component::box_shadow;
 use gpui_kit::*;
 
 use crate::icons::{Icon, IconName};
@@ -35,7 +34,7 @@ pub fn toast(message: &str, cx: &App) -> Div {
                 .bg(palette.overlay)
                 .border_1()
                 .border_color(palette.overlay_border)
-                .shadow(vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))])
+                .shadow(crate::primitives::overlay_shadows(&palette))
                 .max_w(MAX_WIDTH)
                 .child(Icon::new(IconName::Alert).size(px(14.)).color(palette.danger))
                 .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.text).child(message.to_owned())),

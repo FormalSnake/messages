@@ -2,7 +2,6 @@
 //! when the action fires and drops it when `on_close` runs (Escape, a click
 //! outside, or opening a chat).
 
-use gpui_kit::component::box_shadow;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 use messages_core::conversations::conversation_chats;
@@ -87,7 +86,7 @@ impl Render for Switcher {
                 .bg(palette.overlay)
                 .border_1()
                 .border_color(palette.overlay_border)
-                .shadow(vec![box_shadow(px(0.), px(10.), px(28.), px(0.), hsla(0., 0., 0., 0.65))])
+                .shadow(crate::primitives::overlay_shadows(&palette))
                 .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
                 .on_key_down(move |event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" {
@@ -105,7 +104,7 @@ impl Render for Switcher {
                         .border_b_1()
                         .border_color(palette.separator)
                         .child(crate::icons::Icon::new(crate::icons::IconName::Search).size(px(13.)).color(palette.tertiary))
-                        .child(Input::new(&self.query)),
+                        .child(Input::new(&self.query).appearance(false)),
                 )
                 .child({
                     let list = div().flex().flex_col().p(spacing::X1);

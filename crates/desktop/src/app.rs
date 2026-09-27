@@ -671,9 +671,13 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
         }
         cx.background_executor().timer(std::time::Duration::from_millis(2500)).await;
         let _ = cx.update(|window, cx| {
+            if let Ok(scene) = std::env::var("MESSAGES_SCREENSHOT_SCENE") {
+                screenshot_scene(&scene, window, cx);
+            }
             window.refresh();
-            let _ = cx;
         });
+        cx.background_executor().timer(std::time::Duration::from_millis(400)).await;
+        let _ = cx.update(|window, _| window.refresh());
         cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
         let _ = cx.update(|window, cx| {
             match window.render_to_image() {
@@ -692,6 +696,34 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
         });
     })
     .detach();
+}
+
+/// `MESSAGES_SCREENSHOT_SCENE` opens one overlay before the frame is taken,
+/// so each surface can be checked without a pointer.
+#[cfg(feature = "screenshot")]
+fn screenshot_scene(scene: &str, window: &mut Window, cx: &mut App) {
+    let Some(root) = root(cx) else { return };
+    match scene {
+        "switcher" => window.dispatch_action(Box::new(OpenSwitcher), cx),
+        "new-chat" => window.dispatch_action(Box::new(NewChat), cx),
+        "info" => window.dispatch_action(Box::new(ToggleInfo), cx),
+        "settings" => window.dispatch_action(Box::new(OpenSettings), cx),
+        "menu" | "confirm" => {
+            let Some(store) = crate::bridge::store(cx) else { return };
+            let chat = {
+                let state = store.state();
+                state.selected_chat.as_deref().and_then(|guid| state.chat(guid).cloned())
+            };
+            let Some(chat) = chat else { return };
+            if scene == "menu" {
+                let items = crate::sidebar_row::chat_menu(&chat, &store, root.downgrade(), true);
+                AppRoot::open_menu(&root, crate::menus::MenuRequest::at(point(px(200.), px(150.)), items), window, cx);
+            } else {
+                crate::sidebar_row::confirm_delete(&chat, &store, root.downgrade(), cx);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn build_store(config: &Config, runtime: tokio::runtime::Handle) -> MessagesStore {
@@ -752,7 +784,7 @@ fn empty_state(status: ConnectionStatus, reason: Option<String>, cx: &mut Contex
         .gap(spacing::X2)
         .px(spacing::X6)
         .child(Icon::new(IconName::Conversation).size(px(30.)).color(palette.tertiary))
-        .child(div().text_size(px(15.)).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_align(TextAlign::Center).child(title))
+        .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_align(TextAlign::Center).child(title))
         .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child(body))
         .when(online, |el| {
             el.child(div().pt(spacing::X2).child(Button::new("empty-new-message", format!("New message  {}", shortcut("N", false, false))).kind(ButtonKind::Primary).on_click(
