@@ -184,6 +184,7 @@ impl GifPicker {
     fn pick(&mut self, item: Gif, window: &mut Window, cx: &mut Context<Self>) {
         (self.on_close.clone())(window, cx);
         let chat_guid = self.chat_guid.clone();
+        let size = (item.width > 0 && item.height > 0).then_some(messages_core::image::ImageSize { width: item.width, height: item.height });
         let Some(rx) = spawn_on_store(cx, async move {
             let dir = messages_core::config::attachments_dir();
             download_gif(&reqwest::Client::new(), &item, &dir).await
@@ -193,7 +194,7 @@ impl GifPicker {
         cx.spawn(async move |_this, cx| {
             if let Ok(Ok(path)) = rx.await {
                 if let Some(store) = cx.update(|cx| cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone())) {
-                    store.send_attachment(&chat_guid, &path);
+                    store.send_attachment(&chat_guid, &path, size);
                 }
             }
         })

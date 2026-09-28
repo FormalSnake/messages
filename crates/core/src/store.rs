@@ -1726,8 +1726,12 @@ impl MessagesStore {
     }
 
     /// Port of `sendAttachment`. Optimistic row with `local_path` set, then the
-    /// outbox. The file size is read off the caller's thread and patched in.
-    pub fn send_attachment(&self, chat_guid: &str, path: &Path) {
+    /// outbox. `size` is the picture's pixel size when the caller already knows
+    /// it (a staged file whose header was read, a GIF the picker described), so
+    /// the row paints at its final size from the first frame; the byte count,
+    /// and the size when none was given, are read off the caller's thread and
+    /// patched in.
+    pub fn send_attachment(&self, chat_guid: &str, path: &Path, size: Option<crate::image::ImageSize>) {
         let temp_guid = next_temp_guid();
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".into());
         let service = self.inner.service_for(&self.inner.state.read(), chat_guid);
@@ -1743,9 +1747,9 @@ impl MessagesStore {
                 name: name.clone(),
                 mime: mime_for_path(path),
                 bytes: 0,
-                width: None,
-                height: None,
-                measured: false,
+                width: size.map(|size| size.width),
+                height: size.map(|size| size.height),
+                measured: size.is_some(),
                 is_sticker: false,
                 local_path: Some(path.to_owned()),
                 hidden: false,
@@ -1763,31 +1767,37 @@ impl MessagesStore {
         });
         let store = self.clone();
         let (chat_guid, file) = (chat_guid.to_owned(), path.to_owned());
+        let is_image = mime_for_path(path).starts_with("image/");
         self.spawn(async move {
-            if let Ok(meta) = tokio::fs::metadata(&file).await {
-                store.set_optimistic_bytes(&chat_guid, &temp_guid, meta.len());
-            }
+            let bytes = tokio::fs::metadata(&file).await.map(|meta| meta.len()).unwrap_or(0);
+            let measured = if size.is_none() && is_image { crate::image::image_size(&file.to_string_lossy()).await } else { None };
+            store.set_optimistic_file(&chat_guid, &temp_guid, bytes, measured);
         });
     }
 
-    /// Fills in the size of a queued attachment on the row and on the outbox
-    /// copy a failure would put back. A row the server echo already replaced
-    /// carries the server's own size and is left alone.
-    fn set_optimistic_bytes(&self, chat_guid: &str, temp_guid: &str, bytes: u64) {
+    /// Fills in the byte count, and the pixel size when it was not known at
+    /// send time, of a queued attachment on the row and on the outbox copy a
+    /// failure would put back. A row the server echo already replaced carries
+    /// the server's own numbers and is left alone.
+    fn set_optimistic_file(&self, chat_guid: &str, temp_guid: &str, bytes: u64, size: Option<crate::image::ImageSize>) {
+        let patch = |attachment: &mut Attachment| {
+            attachment.bytes = bytes;
+            if let Some(size) = size {
+                attachment.width = Some(size.width);
+                attachment.height = Some(size.height);
+                attachment.measured = true;
+            }
+        };
         self.inner.update(|state, events| {
             {
                 let mut private = self.inner.private.lock();
                 if let Some(item) = private.outbox.iter_mut().find(|item| item.temp_guid == temp_guid) {
-                    for attachment in &mut item.optimistic.attachments {
-                        attachment.bytes = bytes;
-                    }
+                    item.optimistic.attachments.iter_mut().for_each(patch);
                 }
             }
             let Some(row) = state.find_message(chat_guid, temp_guid).cloned() else { return };
             let mut next = (*row).clone();
-            for attachment in &mut next.attachments {
-                attachment.bytes = bytes;
-            }
+            next.attachments.iter_mut().for_each(patch);
             self.inner.replace_message(state, events, next);
         });
     }

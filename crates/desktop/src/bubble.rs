@@ -665,7 +665,7 @@ impl MessageRow {
                             Kind::Sticker => attachments::sticker(attachment),
                             Kind::Audio => attachments::audio(self, index, attachment, tail_color(fill), fill, palette, cx),
                             Kind::Image => attachments::image(self, index, attachment, tail_color(palette.received), palette, cx),
-                            Kind::Video => attachments::video(self, index, attachment, tail_color(palette.received), palette, cx),
+                            Kind::Video => attachments::video(self, index, attachment, tail_color(attachments::video_fill()), palette, cx),
                             Kind::File => attachments::file(self, index, attachment, fill, palette, cx),
                         };
                         let own = matches!(kind, Kind::Sticker | Kind::Audio | Kind::Image | Kind::Video);

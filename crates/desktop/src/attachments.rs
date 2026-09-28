@@ -30,6 +30,10 @@ const PREVIEW_IMAGE_HEIGHT: f32 = 150.;
 pub const MEDIA_MAX_WIDTH: u32 = 320;
 const MEDIA_MAX_HEIGHT: u32 = 420;
 const PLAY_CIRCLE: f32 = 44.;
+/// Behind a video poster, and the tail under one: the letterbox of a player, not a bubble.
+pub fn video_fill() -> Hsla {
+    hsla(240. / 360., 0.03, 0.11, 1.)
+}
 const GRID_GAP: f32 = 2.;
 const GRID_MAX_TILES: usize = 4;
 const TAIL_WIDTH: f32 = 14.;
@@ -490,7 +494,9 @@ fn lobe_and_cut(from_me: bool, lobe: AnyElement, palette: &Palette) -> [AnyEleme
 
 /// The bubble's fill continues past its rounded corner, then a canvas-coloured
 /// quad carves the concave curve back out. Painted before the block, which
-/// covers the half of the lobe that sits inside it.
+/// covers the half of the lobe that sits inside it. A picture block leaves
+/// this corner out of its outline (`outline_except_tail`), so nothing is drawn
+/// across the lobe.
 fn tail(from_me: bool, fill: &TailFill, palette: &Palette) -> [AnyElement; 2] {
     let lobe = match fill {
         TailFill::Color(color) => {
@@ -547,6 +553,30 @@ pub fn tail_box(from_me: bool, fill: Option<TailFill>, palette: &Palette, child:
         .when(!from_me, |el| el.items_start())
         .when_some(fill, |el, fill| el.children(tail(from_me, &fill, palette)))
         .child(child)
+}
+
+/// The picture block's outline, stroked everywhere but the corner its tail
+/// hangs off: the lobe sits under the block, so a stroke round that corner
+/// would run across the tail as a line. Two content masks leave that corner
+/// square unstroked.
+fn outline_except_tail(from_me: bool, radius: Pixels, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let stroke = gpui_kit::outline(bounds, color, BorderStyle::default()).corner_radii(Corners::all(radius));
+            let corner = radius;
+            let above = Bounds { origin: bounds.origin, size: size(bounds.size.width, bounds.size.height - corner) };
+            let strip_origin = if from_me { bounds.origin + point(px(0.), bounds.size.height - corner) } else { bounds.origin + point(corner, bounds.size.height - corner) };
+            let strip = Bounds { origin: strip_origin, size: size(bounds.size.width - corner, corner) };
+            for mask in [above, strip] {
+                window.with_content_mask(Some(ContentMask { bounds: mask }), |window| window.paint_quad(stroke.clone()));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 fn caption(text: impl Into<SharedString>, color: Hsla) -> Div {
@@ -615,18 +645,20 @@ pub fn image(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
             sized_img(&path, width, height, ObjectFit::Contain).rounded(radius::BUBBLE).into_any_element()
         }
     });
+    let outline = crate::primitives::image_outline(palette);
+    let tailed = tail.is_some();
     let body = div()
         .id(("image", index))
         .w(px(width))
         .h(px(height))
         .rounded(radius::BUBBLE)
-        .border_1()
-        .border_color(crate::primitives::image_outline(palette))
+        .when(!tailed, |el| el.border_1().border_color(outline))
         .bg(palette.received)
         .relative()
         .cursor_pointer()
         .on_click(open_lightbox(attachment, &row.model.message))
-        .children(picture);
+        .children(picture)
+        .when(tailed, |el| el.child(outline_except_tail(from_me, radius::BUBBLE, outline)));
     tail_box(from_me, picture_tail(tail, still, &attachment.mime, width, height, false), palette, body).into_any_element()
 }
 
@@ -719,7 +751,7 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .rounded(radius::BUBBLE)
         .relative()
         .cursor_pointer()
-        .bg(hsla(240. / 360., 0.03, 0.11, 1.))
+        .bg(video_fill())
         .hover(|style| style.opacity(0.94))
         .on_click(open_lightbox(attachment, &row.model.message))
         .when_some(poster.clone(), |el, (path, _, _)| el.child(sized_img(&path, width, height, ObjectFit::Contain).rounded(radius::BUBBLE)))

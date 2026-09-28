@@ -86,13 +86,15 @@ struct StagedAttachment {
     path: PathBuf,
     name: String,
     is_image: bool,
+    /// Read from the file header once staged, so the sent row paints at its size at once.
+    size: Option<messages_core::image::ImageSize>,
 }
 
 fn stage(path: PathBuf) -> StagedAttachment {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".to_owned());
     let is_image =
         matches!(path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref(), Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "bmp"));
-    StagedAttachment { path, name, is_image }
+    StagedAttachment { path, name, is_image, size: None }
 }
 
 pub struct Composer {
@@ -303,14 +305,36 @@ impl Composer {
             store.send(&chat, &text, self.effect);
         }
         for attachment in self.staged.drain(..) {
-            store.send_attachment(&chat, &attachment.path);
+            store.send_attachment(&chat, &attachment.path, attachment.size);
         }
         self.effect = None;
         cx.notify();
     }
 
     fn stage_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
-        self.staged.extend(paths.into_iter().map(stage));
+        let Some(store) = Self::store(cx) else { return };
+        for path in paths {
+            let staged = stage(path);
+            if staged.is_image {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let source = staged.path.to_string_lossy().into_owned();
+                store.spawn(async move {
+                    let _ = tx.send(messages_core::image::image_size(&source).await);
+                });
+                let path = staged.path.clone();
+                cx.spawn(async move |this, cx| {
+                    if let Ok(Some(size)) = rx.await {
+                        let _ = this.update(cx, |this, _| {
+                            for item in this.staged.iter_mut().filter(|item| item.path == path) {
+                                item.size = Some(size);
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
+            self.staged.push(staged);
+        }
         cx.notify();
     }
 
