@@ -4089,6 +4089,7 @@ name = "messages"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gpui-base",
  "gpui-kit",
  "image",
  "libc",

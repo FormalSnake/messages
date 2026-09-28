@@ -15,6 +15,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use messages_core::format::{format_time, is_emoji_only};
 use messages_core::open::{TextSegment, split_links};
+
+use crate::selectable::{order, selectable};
 use messages_core::{Attachment, Capabilities, DeliveryState, Message, MessagePart, MessagesStore, RichRun, Service, TextEffect, delivery_state, handle_name};
 
 use crate::app::AppRoot;
@@ -23,7 +25,7 @@ use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::menus::{MenuItem, MenuRequest};
 use crate::motion::{DURATION_BASE, eased_since};
-use crate::theme::{BUBBLE_MAX_WIDTH, Palette, THREAD_INSET, Theme, TypeStyle, font_emoji, radius, spacing, tabular, type_scale};
+use crate::theme::{BUBBLE_MAX_WIDTH, Palette, THREAD_INSET, Theme, TypeStyle, font_emoji, radius, spacing, tabular, type_scale, with_alpha};
 use crate::thread::Thread;
 use crate::thread_rows::{EDIT_WINDOW_MS, MessageRowData, TapbackGroup, UNSEND_WINDOW_MS, bubble_radius, effect_name, now_ms, tapback_groups};
 
@@ -580,29 +582,48 @@ impl MessageRow {
         open_menu(MenuRequest::at(position, items).min_width(px(160.)), window, cx);
     }
 
-    fn text_body(&self, body: &TextBody, color: Hsla, palette: &Palette) -> AnyElement {
+    /// `block` is the body's index among the message's blocks, for the order
+    /// a selection reads across the thread.
+    fn text_body(&self, body: &TextBody, block: usize, color: Hsla, palette: &Palette) -> AnyElement {
         let from_me = self.model.message.from_me;
         // Accent on a blue bubble would be the bubble itself, so mentions take white there.
         let accent = if from_me { palette.on_accent } else { palette.accent };
+        // The lit range on my own bubble is the accent itself, so it takes a white wash there.
+        let selection = if from_me { with_alpha(palette.on_accent, 0x5c) } else { with_alpha(palette.accent, 0x4d) };
+        let date = self.model.message.date;
+        let guid = self.model.message.guid.clone();
+        let id = move |word: usize| ElementId::Name(format!("text-{guid}-{block}-{word}").into());
         match body {
             TextBody::Empty => div().into_any_element(),
-            TextBody::Plain(text) => div().child(crate::emoji_font::styled_text(text.clone(), Vec::new(), color)).into_any_element(),
+            TextBody::Plain(text) => {
+                let styled = crate::emoji_font::styled_text(text.clone(), Vec::new(), color);
+                let selector = self.model.message.guid.clone();
+                div().debug_selector(move || format!("bubble-text-{selector}")).child(selectable(id(0), text.clone(), styled, order(date, block, 0), selection)).into_any_element()
+            }
             TextBody::Rich { text, spans, size } => {
                 let styled = crate::emoji_font::styled_text(text.clone(), spans.iter().map(|(range, span)| (range.clone(), span.highlight(accent, color))).collect(), color);
-                div().when_some(*size, |el, (size, line)| el.text_size(size).line_height(line)).child(styled).into_any_element()
+                let selector = self.model.message.guid.clone();
+                div().debug_selector(move || format!("bubble-text-{selector}")).when_some(*size, |el, (size, line)| el.text_size(size).line_height(line)).child(selectable(id(0), text.clone(), styled, order(date, block, 0), selection)).into_any_element()
             }
-            TextBody::Chunks(lines) => div()
-                .flex()
-                .flex_col()
-                .children(lines.iter().map(|line| {
-                    div().flex().flex_row().flex_wrap().items_end().children(line.iter().map(|(word, span, size)| {
-                        let range = 0..word.len();
-                        div()
-                            .when_some(*size, |el, (size, line)| el.text_size(size).line_height(line))
-                            .child(crate::emoji_font::styled_text(word.clone(), vec![(range, span.highlight(accent, color))], color))
+            TextBody::Chunks(lines) => {
+                let mut word_index = 0usize;
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(lines.iter().map(|line| {
+                        div().flex().flex_row().flex_wrap().items_end().children(line.iter().map(|(word, span, size)| {
+                            let range = 0..word.len();
+                            let styled = crate::emoji_font::styled_text(word.clone(), vec![(range, span.highlight(accent, color))], color);
+                            let word_order = order(date, block, word_index);
+                            let word_id = id(word_index);
+                            word_index += 1;
+                            div()
+                                .when_some(*size, |el, (size, line)| el.text_size(size).line_height(line))
+                                .child(selectable(word_id, word.clone(), styled, word_order, selection))
+                        }))
                     }))
-                }))
-                .into_any_element(),
+                    .into_any_element()
+            }
         }
     }
 
@@ -683,7 +704,7 @@ impl MessageRow {
                             .on_click(move |event, window, cx| click(event, window, cx))
                             .on_mouse_down(MouseButton::Right, cx.listener(|row, event: &MouseDownEvent, window, cx| row.open_message_menu(event.position, window, cx)))
                             .when_some(subject.clone(), |el, subject| el.child(div().font_weight(FontWeight::BOLD).child(subject)))
-                            .child(self.text_body(body, text_color, palette));
+                            .child(self.text_body(body, index, text_color, palette));
                         tail_box(from_me, tail_color(fill), palette, bubble).into_any_element()
                     }
                 }

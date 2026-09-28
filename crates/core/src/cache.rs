@@ -34,6 +34,12 @@ pub struct CachedState {
     pub messages: HashMap<String, Vec<Arc<Message>>>,
     #[serde(default)]
     pub contacts: Arc<Vec<Contact>>,
+    /// Sends that had not reached the server when the snapshot was taken.
+    #[serde(default)]
+    pub outbox: Vec<crate::store::OutboxItem>,
+    /// Chats read here and the newest message date that read covered.
+    #[serde(default)]
+    pub read_at: HashMap<String, Millis>,
 }
 
 type Snapshot = Box<dyn FnOnce() -> CachedState + Send>;
@@ -161,8 +167,9 @@ fn write(file: &Path, temp: &Path, state: &CachedState) -> std::io::Result<()> {
     std::fs::rename(temp, file)
 }
 
-/// Drops in-flight sends (they would come back as ghosts) and keeps the last 100 messages per chat.
-pub fn snapshot_for_cache(state: &AppState) -> CachedState {
+/// Keeps the last 100 settled messages per chat; sends still in flight travel
+/// in `outbox` instead, so they come back as queued rows and not as ghosts.
+pub fn snapshot_for_cache(state: &AppState, outbox: Vec<crate::store::OutboxItem>, read_at: HashMap<String, Millis>) -> CachedState {
     let mut messages = HashMap::with_capacity(state.messages.len());
     for (guid, list) in &state.messages {
         let settled: Vec<Arc<Message>> = list
@@ -183,6 +190,8 @@ pub fn snapshot_for_cache(state: &AppState) -> CachedState {
         chats: state.chats.clone(),
         messages,
         contacts: state.contacts.clone(),
+        outbox,
+        read_at,
     }
 }
 
@@ -236,7 +245,7 @@ mod tests {
         let dir = temp_dir("debounce");
         let cache = StateCache::new(&dir);
         let snapshot = |n: i64| -> Snapshot {
-            Box::new(move || CachedState { version: 1, saved_at: n, selected_chat: None, chats: vec![], messages: HashMap::new(), contacts: Arc::new(vec![]) })
+            Box::new(move || CachedState { version: 1, saved_at: n, selected_chat: None, chats: vec![], messages: HashMap::new(), contacts: Arc::new(vec![]), outbox: vec![], read_at: HashMap::new() })
         };
         cache.schedule(snapshot(1));
         cache.schedule(snapshot(2));
@@ -263,7 +272,7 @@ mod tests {
         rows.push(Arc::new(Message { temp_guid: Some("temp-1".into()), ..message("a", "temp-1", 200) }));
         state.messages.insert("a".into(), rows);
         state.messages.insert("b".into(), vec![Arc::new(Message { temp_guid: Some("temp-2".into()), ..message("b", "temp-2", 1) })]);
-        let snapshot = snapshot_for_cache(&state);
+        let snapshot = snapshot_for_cache(&state, vec![], HashMap::new());
         assert_eq!(snapshot.messages["a"].len(), 100);
         assert_eq!(snapshot.messages["a"][99].guid, "m149");
         assert!(!snapshot.messages.contains_key("b"));
@@ -303,7 +312,7 @@ mod tests {
                 .collect();
             messages.insert(chat.guid.clone(), rows);
         }
-        let state = CachedState { version: 1, saved_at: 0, selected_chat: None, chats, messages, contacts: Arc::new(vec![]) };
+        let state = CachedState { version: 1, saved_at: 0, selected_chat: None, chats, messages, contacts: Arc::new(vec![]), outbox: vec![], read_at: HashMap::new() };
         let bytes = serde_json::to_vec(&state).unwrap();
         let started = std::time::Instant::now();
         let runs = 20;

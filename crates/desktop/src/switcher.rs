@@ -56,7 +56,7 @@ impl Switcher {
         let Some(store) = cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone()) else { return };
         let guid = chat.guid.clone();
         let for_task = store.clone();
-        store.spawn(async move { for_task.select_chat(Some(&guid)).await });
+        store.spawn(async move { for_task.open_chat(&guid).await });
     }
 
     fn open_highlighted(&mut self, window: &mut Window, cx: &mut Context<Self>) {

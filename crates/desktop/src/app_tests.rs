@@ -52,7 +52,15 @@ fn boot(cx: &mut TestAppContext, config: Config) -> (Entity<AppRoot>, &mut Visua
         cx.set_reduce_motion(true);
     });
     let runtime = runtime();
-    let (root, cx) = cx.add_window_view(|window, cx| AppRoot::with_config(runtime, Some(config), window, cx));
+    // Wrapped in gpui-component's Root as main.rs does: it hosts the window
+    // text selection layer the bubbles register with.
+    let mut app_root = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| AppRoot::with_config(runtime, Some(config), window, cx));
+        app_root = Some(view.clone());
+        gpui_kit::component::Root::new(view, window, cx)
+    });
+    let root = app_root.expect("app root");
     wait_until(cx, "the composer", |cx| cx.debug_bounds("composer").is_some());
     (root, cx)
 }
@@ -181,6 +189,37 @@ fn gallery_shows_photos_and_files() {
     cx.dispatch_action(ToggleInfo);
     wait_until(cx, "the gallery photo", |cx| cx.debug_bounds("gallery-photo-demo-att-3").is_some());
     assert!(conversation_messages(&store(cx).state(), NADIA).iter().any(|message| message.attachments.iter().any(|item| item.guid == "demo-att-3")));
+}
+
+#[::core::prelude::v1::test]
+fn dragging_across_a_bubble_selects_its_text_and_copies_it() {
+    let mut app = TestAppContext::single();
+    let cx = &mut app;
+    let (_root, cx) = boot(cx, demo_config(&[]));
+    let guid = {
+        let store = store(cx);
+        let state = store.state();
+        conversation_messages(&state, ALEX).iter().find(|message| message.text == "the buttons are wrong and the layout is broken").map(|message| message.guid.clone()).expect("fixture")
+    };
+    let selector: &'static str = Box::leak(format!("bubble-text-{guid}").into_boxed_str());
+    wait_until(cx, "the bubble", |cx| cx.debug_bounds(selector).is_some());
+    let bounds = cx.debug_bounds(selector).unwrap();
+    let y = bounds.center().y;
+    let (from, to) = (gpui_kit::point(bounds.left() + gpui_kit::px(1.), y), gpui_kit::point(bounds.right() - gpui_kit::px(1.), y));
+    cx.simulate_mouse_down(from, gpui_kit::MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(gpui_kit::point((from.x + to.x) / 2., y), Some(gpui_kit::MouseButton::Left), Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(to, Some(gpui_kit::MouseButton::Left), Modifiers::none());
+    cx.run_until_parked();
+    cx.simulate_mouse_up(to, gpui_kit::MouseButton::Left, Modifiers::none());
+    wait_until(cx, "the selection", |cx| cx.update(|window, cx| gpui_base::TextSelection::selected_text(window, cx)).contains("buttons are wrong"));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-c" } else { "ctrl-c" });
+    cx.run_until_parked();
+    let copied = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
+    assert!(copied.contains("buttons are wrong"), "clipboard holds {copied:?}");
+    cx.dispatch_action(Dismiss);
+    wait_until(cx, "the selection to clear", |cx| !cx.update(|window, cx| gpui_base::TextSelection::has_selection(window, cx)));
 }
 
 #[::core::prelude::v1::test]

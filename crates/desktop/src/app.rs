@@ -356,7 +356,7 @@ impl AppRoot {
         cx.spawn(async move |_, cx| {
             if let Ok(Some(NotifyAction::Open)) = rx.await {
                 let selecting = store.clone();
-                store.spawn(async move { selecting.select_chat(Some(&chat_guid)).await });
+                store.spawn(async move { selecting.open_chat(&chat_guid).await });
                 let _ = window.update(cx, |_, window, _| window.activate_window());
             }
         })
@@ -385,6 +385,10 @@ impl AppRoot {
     /// composer's reply banner, the search field, the lightbox).
     fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         if self.menu.take().is_some() {
+        } else if gpui_base::TextSelection::has_selection(window, cx) {
+            gpui_base::TextSelection::clear(window, cx);
+            cx.notify();
+            return;
         } else if self.confirm.take().is_some() {
         } else if self.switcher.take().is_some() {
         } else if self.new_chat {
@@ -458,10 +462,12 @@ impl AppRoot {
         cx.notify();
     }
 
-    /// A click, scroll or keystroke in the open conversation's pane: the only
-    /// thing that reads it. Selecting it from the sidebar does not.
-    fn engage(&mut self, window: &Window) {
-        if !window.is_window_active() {
+    /// A click, scroll or keystroke in the open conversation's pane reads it,
+    /// as opening it does. A scroll or key in a window that is not active (a
+    /// wheel over it from another app on macOS) does not; a click always
+    /// activates the window, so it counts before the platform says so.
+    fn engage(&mut self, window: &Window, click: bool) {
+        if !click && !window.is_window_active() {
             return;
         }
         let Some(store) = self.store() else { return };
@@ -546,7 +552,7 @@ impl AppRoot {
         self.new_chat = false;
         self.new_chat_view = None;
         cx.notify();
-        store.clone().spawn(async move { store.select_chat(Some(&guid)).await });
+        store.clone().spawn(async move { store.open_chat(&guid).await });
     }
 
     pub fn open_menu(this: &Entity<Self>, request: MenuRequest, window: &mut Window, cx: &mut App) {
@@ -901,9 +907,9 @@ impl Render for AppRoot {
             .min_w(px(0.))
             .h_full()
             .bg(palette.canvas)
-            .capture_any_mouse_down(cx.listener(|this, _, window, _| this.engage(window)))
-            .capture_key_down(cx.listener(|this, _, window, _| this.engage(window)))
-            .on_scroll_wheel(cx.listener(|this, _, window, _| this.engage(window)));
+            .capture_any_mouse_down(cx.listener(|this, _, window, _| this.engage(window, true)))
+            .capture_key_down(cx.listener(|this, _, window, _| this.engage(window, false)))
+            .on_scroll_wheel(cx.listener(|this, _, window, _| this.engage(window, false)));
         let main_pane = if self.new_chat {
             main_pane.when_some(self.new_chat_view.clone(), |el, view| el.child(view))
         } else if selected {

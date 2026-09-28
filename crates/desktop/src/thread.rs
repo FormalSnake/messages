@@ -270,6 +270,21 @@ fn separator_day(label: &str) -> &str {
     }
 }
 
+/// Decodes the thread's GIFs ahead of the scroll, newest first, behind whatever
+/// is on screen. A new thread drops the warms the last one still had queued.
+fn warm_gifs(messages: &[Arc<Message>], reset: bool, cx: &mut App) {
+    if reset {
+        crate::gif::drop_pending_warms(cx);
+    }
+    for message in messages.iter().rev() {
+        let pictures: Vec<&messages_core::Attachment> = message.attachments.iter().filter(|attachment| !attachment.hidden && attachment.mime.starts_with("image/")).collect();
+        let [attachment] = pictures[..] else { continue };
+        let Some(path) = attachment.local_path.as_ref().filter(|path| attachment.mime == "image/gif" && !crate::attachments::is_data_url(path)) else { continue };
+        let (width, height) = crate::attachments::media_dims(attachment, crate::attachments::MEDIA_MAX_WIDTH);
+        crate::gif::warm(std::sync::Arc::from(path.as_path()), width, height, cx);
+    }
+}
+
 /// `strong` bytes at the start of `text` are set semibold, one step brighter.
 fn caption(text: SharedString, strong: usize, top: Pixels, bottom: Pixels, cx: &App) -> Div {
     let palette = Theme::get(cx);
@@ -567,6 +582,7 @@ impl Thread {
             now: now_ms(),
         };
         let built = build_rows(&messages, &options);
+        warm_gifs(&messages, reset, cx);
         let slots = self.slots_for(&built, &guid, &messages, &inputs, is_group, true);
         let typing_who = chat.as_ref().and_then(|chat| chat.participants.first().cloned());
         self.empty = messages.is_empty() && !inputs.loading;

@@ -363,6 +363,10 @@ impl Media {
                 Kind::Image => {
                     let oversized = attachment.width.zip(attachment.height).is_some_and(|(w, h)| w.max(h) > messages_core::media::PREVIEW_MAX_EDGE);
                     let still = oversized && attachment.mime != "image/gif" && !is_data_url(&path);
+                    if attachment.mime == "image/gif" && !is_data_url(&path) && message.attachments.iter().filter(|other| !other.hidden && other.mime.starts_with("image/")).count() == 1 {
+                        let (width, height) = media_dims(attachment, MEDIA_MAX_WIDTH);
+                        crate::gif::warm(Arc::from(path.as_path()), width, height, cx);
+                    }
                     if !still {
                         state.preview = Some(None);
                     } else if state.preview_for.as_ref() != Some(&path) {
@@ -500,7 +504,7 @@ fn tail(from_me: bool, fill: &TailFill, palette: &Palette) -> [AnyElement; 2] {
                     |_, _, _| {},
                     move |bounds, _, window, cx| {
                         let (picture, cover) = match source {
-                            Source::Gif { cover } => (crate::gif::current_frame(&path, cx), cover),
+                            Source::Gif { cover } => (crate::gif::current_frame(&path, box_w, box_h, window.scale_factor(), cx), cover),
                             Source::Still { cover } => (crate::stills::sized_image(&path, px(box_w), px(box_h), if cover { ObjectFit::Cover } else { ObjectFit::Contain }, window, cx).map(|image| (image, 0)), cover),
                         };
                         let Some((image, frame)) = picture else { return };

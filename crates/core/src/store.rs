@@ -22,6 +22,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
 
@@ -379,6 +380,12 @@ fn push_event(events: &mut Vec<StoreEvent>, event: StoreEvent) {
 
 /// The row's own copy of the last message is richer (a downloaded path, a temp
 /// guid), so it is compared by identity of the message, not by shape.
+/// A chat read here stays read while the newest message the server shows is
+/// no newer than that read.
+fn read_here_covers(private: &Private, chat: &Chat) -> bool {
+    private.read_locally.get(&chat.guid).is_some_and(|read_at| chat.last_message.as_ref().is_none_or(|message| message.date <= *read_at))
+}
+
 fn same_chat(a: &Chat, b: &Chat) -> bool {
     let Chat {
         guid,
@@ -485,18 +492,23 @@ struct PendingReaction {
     sender: Option<Handle>,
 }
 
-#[derive(Clone)]
-enum Outgoing {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub(crate) enum Outgoing {
     Text { text: String, reply_to: Option<String>, effect: Option<String> },
     Attachment { path: PathBuf, name: String },
 }
 
-/// A send waiting its turn. Sends go out one at a time, in order, and wait for the connection to come back.
-#[derive(Clone)]
-struct OutboxItem {
+/// A send waiting its turn. Sends go out one at a time, in order, and wait for
+/// the connection to come back. The queue is written to the state cache with
+/// everything else, so a relaunch while offline picks the sends up again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OutboxItem {
     chat_guid: String,
     temp_guid: String,
     optimistic: Message,
+    #[serde(skip)]
     attempts: u32,
     send: Outgoing,
 }
@@ -516,6 +528,10 @@ struct Private {
     typing_sent: HashSet<String>,
     /// Chats marked unread here: the Mac's mark-unread leaves `dateRead` alone, so a re-read of the list would clear the dot.
     forced_unread: HashSet<String>,
+    /// Chats read here, with the date of the newest message that read
+    /// covered. chat.db only records a read when the Mac sends the receipt, so
+    /// without this the next pass over the list would put the dot back.
+    read_locally: HashMap<String, Millis>,
     /// The conversation last clicked, scrolled or typed in, and when. Only it
     /// reads incoming messages, and only for `ENGAGED_FOR` after that, so a
     /// thread left open on an idle screen leaves the phone and watch to ring.
@@ -591,6 +607,14 @@ impl MessagesStore {
 
     pub fn transport(&self) -> &Arc<dyn Transport> {
         &self.inner.transport
+    }
+
+    /// Selects `chat_guid` and reads it: what a click in the sidebar, the
+    /// switcher or a next/previous shortcut means. `select_chat` alone, which
+    /// startup uses, opens without reading.
+    pub async fn open_chat(&self, chat_guid: &str) {
+        self.select_chat(Some(chat_guid)).await;
+        self.engage(chat_guid);
     }
 
     /// The runtime every async method runs on, for work that must be aborted
@@ -723,8 +747,10 @@ impl MessagesStore {
         });
     }
 
-    fn paint_cached(&self, cached: crate::cache::CachedState) {
+    fn paint_cached(&self, mut cached: crate::cache::CachedState) {
         let contacts = cached.contacts.clone();
+        let outbox = std::mem::take(&mut cached.outbox);
+        self.inner.private.lock().read_locally = std::mem::take(&mut cached.read_at);
         *self.inner.owners.write() = Arc::new(contact_owners(&contacts));
         self.inner.update(|state, events| {
             let chats: Vec<Arc<Chat>> = cached.chats.iter().map(|chat| self.inner.with_prefs_arc(chat)).collect();
@@ -745,6 +771,12 @@ impl MessagesStore {
             self.inner.set_chats(state, events, chats);
         });
         self.inner.transport.seed_contacts(&contacts);
+        // Sends that never left: back on their rows and back in the queue, to go
+        // out once the connection is up.
+        for item in outbox {
+            self.apply_message(item.optimistic.clone(), false, false);
+            self.inner.private.lock().outbox.push_back(item);
+        }
     }
 
     fn spawn_event_loop(&self) {
@@ -1091,9 +1123,13 @@ impl MessagesStore {
             }),
             TransportEvent::Read { chat_guid, read } => self.inner.update(|state, events| {
                 let guid = resolve_chat_guid(state, &chat_guid);
+                let mut private = self.inner.private.lock();
                 if read {
-                    self.inner.private.lock().forced_unread.remove(&guid);
+                    private.forced_unread.remove(&guid);
+                } else {
+                    private.read_locally.remove(&guid);
                 }
+                drop(private);
                 self.inner.patch_chat(state, events, &guid, |chat| chat.unread = !read);
             }),
             TransportEvent::FaceTime { call_uuid, status, from, can_answer } => self.inner.update(|state, events| {
@@ -1949,9 +1985,17 @@ impl MessagesStore {
     fn clear_unread(&self, chat_guid: &str) -> Vec<String> {
         self.inner.update(|state, events| {
             let mut unread = Vec::new();
+            let now = now_ms();
             for member in conversation_members(&state.grouping, chat_guid) {
-                self.inner.private.lock().forced_unread.remove(&member);
-                if !state.chat(&member).is_some_and(|chat| chat.unread) {
+                let Some(chat) = state.chat(&member) else { continue };
+                // The Mac's clock can run ahead of this one, so the newest message's own date counts too.
+                let read_at = chat.last_message.as_ref().map_or(now, |message| message.date.max(now));
+                {
+                    let mut private = self.inner.private.lock();
+                    private.forced_unread.remove(&member);
+                    private.read_locally.insert(member.clone(), read_at);
+                }
+                if !chat.unread {
                     continue;
                 }
                 self.inner.patch_chat(state, events, &member, |chat| chat.unread = false);
@@ -2005,7 +2049,11 @@ impl MessagesStore {
     /// Port of `markUnread`. The dot is forced locally because the Mac leaves `dateRead` alone.
     pub async fn mark_unread(&self, chat_guid: &str) {
         let capable = self.inner.update(|state, events| {
-            self.inner.private.lock().forced_unread.insert(chat_guid.to_owned());
+            {
+                let mut private = self.inner.private.lock();
+                private.forced_unread.insert(chat_guid.to_owned());
+                private.read_locally.remove(chat_guid);
+            }
             self.inner.patch_chat(state, events, chat_guid, |chat| chat.unread = true);
             state.capabilities.mark_unread
         });
@@ -2573,7 +2621,14 @@ impl Inner {
         }
         let (Some(cache), Some(me)) = (&self.options.cache, self.me.upgrade()) else { return };
         let _entered = self.runtime.enter();
-        cache.schedule(Box::new(move || snapshot_for_cache(&me.state.read())));
+        cache.schedule(Box::new(move || {
+            let state = me.state.read();
+            let (outbox, read_at) = {
+                let private = me.private.lock();
+                (private.outbox.iter().cloned().collect(), private.read_locally.clone())
+            };
+            snapshot_for_cache(&state, outbox, read_at)
+        }));
     }
 
     fn set_error(&self, error: String) {
@@ -2590,7 +2645,7 @@ impl Inner {
             pinned: is_pinned(prefs),
             muted: prefs.and_then(|prefs| prefs.muted).unwrap_or(false),
             read_receipts: Some(prefs.and_then(|prefs| prefs.read_receipts).unwrap_or(true)),
-            unread: chat.unread || private.forced_unread.contains(&chat.guid),
+            unread: (chat.unread && !read_here_covers(&private, chat)) || private.forced_unread.contains(&chat.guid),
             ..chat.clone()
         }
     }
@@ -3343,6 +3398,31 @@ mod tests {
         }
 
         #[tokio::test(start_paused = true)]
+        async fn sends_queued_offline_survive_a_relaunch() {
+            let dir = std::env::temp_dir().join(format!("messages-store-outbox-{}-{}", std::process::id(), fastrand::u64(..)));
+            let transport = FakeTransport::new(vec![chat("a", 1000)]);
+            let cache = Arc::new(StateCache::new(&dir));
+            let store = started(&transport, StoreOptions { cache: Some(cache.clone()), warm_chats: Some(0), ..options() }).await;
+            transport.emit(TransportEvent::Connection { status: ConnectionStatus::Offline, error: Some("transport close".into()) });
+            settle(&store).await;
+            store.send("a", "while away", None);
+            settle(&store).await;
+            assert_eq!(store.pending_sends(), 1);
+            cache.flush().await;
+            store.stop().await;
+
+            let second = FakeTransport::new(vec![chat("a", 1000)]);
+            let restarted = started(&second, StoreOptions { cache: Some(Arc::new(StateCache::new(&dir))), warm_chats: Some(0), ..options() }).await;
+            settle(&restarted).await;
+            assert_eq!(second.lock().send_calls, ["while away"]);
+            assert_eq!(restarted.pending_sends(), 0);
+            assert!(texts(&restarted, "a").contains(&"while away".to_string()));
+            assert!(restarted.state().messages["a"].iter().all(|item| item.guid.starts_with("msg-")));
+            restarted.stop().await;
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        #[tokio::test(start_paused = true)]
         async fn folds_the_socket_echo_of_a_send_into_the_optimistic_row_when_the_echo_has_no_temp_guid() {
             let transport = FakeTransport::new(vec![chat("a", 1000)]);
             let store = started(&transport, options()).await;
@@ -3782,6 +3862,27 @@ mod tests {
             transport.emit(TransportEvent::Message(Message { date_read: Some(3500), ..incoming }));
             settle(&store).await;
             assert!(!unread(&store, "b"));
+            store.stop().await;
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_chat_read_here_stays_read_while_the_mac_still_says_unread_until_something_new_arrives() {
+            // No private API: the Mac never records the read, so every list it serves keeps the newest incoming message unread.
+            let transport = FakeTransport::new(vec![chat("a", 2000), Chat { unread: true, ..chat("b", 1000) }]);
+            transport.lock().messages.push(Message { date_read: None, ..message("b", "hey", 1500, false) });
+            let store = started(&transport, StoreOptions { warm_chats: Some(0), ..options() }).await;
+            assert!(unread(&store, "b"));
+
+            store.open_chat("b").await;
+            settle(&store).await;
+            assert!(!unread(&store, "b"));
+            store.reconcile().await;
+            assert!(!unread(&store, "b"), "the list came back and put the dot back");
+
+            transport.lock().messages.push(message("b", "one more", now_ms() + 1000, false));
+            store.select_chat(Some("a")).await;
+            store.reconcile().await;
+            assert!(unread(&store, "b"), "a newer message is unread again");
             store.stop().await;
         }
 

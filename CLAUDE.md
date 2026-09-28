@@ -47,7 +47,9 @@ merged thread, unread and typing state. Message actions use the message's own
 `chatGuid`; conversation state (drafts, replying, editing) keys on the primary.
 
 Sends go through an outbox in the store: one at a time, in order, queued
-while the connection is down and flushed on reconnect. A send the server
+while the connection is down and flushed on reconnect. The queue travels in
+the state cache with everything else, so a relaunch while offline puts the
+waiting rows back and sends them once the connection is up. A send the server
 refused (`TransportError`) fails at once; one the network dropped is retried
 a few times. The connection itself is retried with backoff until it comes up.
 The reconcile sweep asks for ten messages at a time and keeps paging, so a
@@ -63,6 +65,12 @@ disk rather than a row of placeholders. `warm_budget` decides what is worth
 pulling: images and audio up to 25 MB, video up to 60 MB, everything else (a
 PDF, a zip) left to a click, which is the bargain the thread already makes.
 `warmChats: 0` in the config turns both off.
+
+A chat is read when it is opened or used (a click, a scroll, a key in its
+pane), and the read is remembered with the date it covered (`read_locally`,
+in the state cache too): chat.db only records a read when the Mac sends the
+receipt, so without that the next pass over the chat list would put the dot
+back. A newer incoming message makes the chat unread again.
 
 A Focus on the other end shows up twice. The message carries it: chat.db's
 `was_delivered_quietly` and `did_notify_recipient` become `delivered_quietly`
@@ -229,14 +237,22 @@ GPUI answers the caption hit test from the last mouse move it saw, so a
   than its pixels through `sized_image_source` (`stills.rs`), which decodes
   at on-screen size off the UI thread into an LRU. GPUI's SVG renderer has
   no system fonts, so SVG text names the app's UI font.
-- GIFs are decoded once per shared file and stepped by one clock per file;
+- GIFs are decoded once per shared file and box size (device pixels, a 64 px
+  step), never above the file's own size, and stepped by one clock per entry;
   only the row showing the GIF is notified, and only while the window is
-  active.
+  active. Three decodes run at a time, paints ahead of the warms the thread
+  queues for its GIFs, a decode over 48 MB keeps every other frame with the
+  delays folded, and a failed decode is retried after a few seconds.
 - A lone UTF-16 surrogate in server text is repaired before parsing
   (`repair_lone_surrogates`); graphemes, not bytes, are indexed
   (`first_grapheme`).
 - A file already on disk paints at once; a header re-read (`measured`)
   happens beside it, never before it.
+- Bubble text is `selectable.rs`, a `StyledText` that registers with the
+  window text selection gpui-base runs under gpui-component's `Root` (the
+  layer lives there, so a test window has to be wrapped in `Root` too).
+  Cmd+C copies through `Root`, Escape clears. Reading order comes from the
+  message date, so a drag down the thread copies in thread order.
 
 ## Server quirks worth knowing
 

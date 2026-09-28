@@ -231,7 +231,7 @@ impl Sidebar {
         let Some(store) = current_store(cx) else { return };
         let guid = guid.to_owned();
         let for_task = store.clone();
-        store.spawn(async move { for_task.select_chat(Some(&guid)).await });
+        store.spawn(async move { for_task.open_chat(&guid).await });
     }
 
     /// Moves the keyboard cursor to `next_guid`: un-cursors the row that had

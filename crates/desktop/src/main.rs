@@ -30,6 +30,7 @@ mod bubble;
 mod gif;
 mod lightbox;
 mod reply_thread;
+mod selectable;
 mod stills;
 mod thread;
 mod thread_rows;

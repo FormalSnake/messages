@@ -100,7 +100,7 @@ pub fn chat_menu(chat: &Chat, store: &messages_core::MessagesStore, app: WeakEnt
         items.push(MenuItem::item("Open conversation", move |_, _| {
             let guid = guid.clone();
             let for_task = store.clone();
-            store.spawn(async move { for_task.select_chat(Some(&guid)).await });
+            store.spawn(async move { for_task.open_chat(&guid).await });
         }).icon(IconName::Conversation));
     }
     {
@@ -154,7 +154,7 @@ pub fn chat_menu(chat: &Chat, store: &messages_core::MessagesStore, app: WeakEnt
             MenuItem::item("Show details", move |_, cx| {
                 let guid = guid.clone();
                 let for_task = store.clone();
-                store.spawn(async move { for_task.select_chat(Some(&guid)).await });
+                store.spawn(async move { for_task.open_chat(&guid).await });
                 if let Some(app) = app.upgrade() {
                     AppRoot::open_info(&app, cx);
                 }
