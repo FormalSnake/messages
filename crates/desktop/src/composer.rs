@@ -6,11 +6,13 @@
 //! is `set_draft`, which is synchronous and touches only `Draft(guid)`
 //! watchers, so a keystroke never wakes the thread or the sidebar.
 
+use std::cell::Cell;
 use std::path::PathBuf;
-
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState, MoveUp, Textarea, TextareaState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use messages_core::conversations::{conversation_guid, conversation_messages};
@@ -23,7 +25,7 @@ use crate::gif_picker::GifPicker;
 use crate::icons::{Icon, IconName};
 use crate::menus::{MenuItem, MenuRequest, shortcut};
 use crate::motion::{self, DURATION_BASE, Presence};
-use crate::primitives::{Button, IconButton, new_input_state};
+use crate::primitives::{Button, Chip, IconButton, TOOLTIP_DELAY, new_input_state};
 use crate::scheduled::ScheduledList;
 use crate::theme::{Palette, Theme, radius, spacing, type_scale};
 
@@ -37,6 +39,29 @@ const FIELD_HEIGHT: Pixels = px(38.);
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// The last painted bounds of a button that opens a menu.
+type ButtonBounds = Rc<Cell<Option<Bounds<Pixels>>>>;
+
+/// Wraps `child` so its painted bounds land in `slot`. Prepaint is the only
+/// place GPUI hands an element its bounds, and a click handler runs later.
+fn tracked(slot: &ButtonBounds, child: impl IntoElement) -> Div {
+    let slot = slot.clone();
+    div().flex_shrink_0().on_children_prepainted(move |bounds, _, _| slot.set(bounds.first().copied())).child(child)
+}
+
+/// Where a menu opened from a button hangs: the pointer when the click came
+/// from inside the button, else the button's top-left corner, since a
+/// keyboard press has no pointer (`ClickEvent::default()` is a keyboard
+/// click) and the mouse may be anywhere.
+fn menu_anchor(event: &ClickEvent, button: Option<Bounds<Pixels>>, window: &Window) -> Point<Pixels> {
+    let pointer = event.mouse_position().filter(|position| button.is_none_or(|bounds| bounds.contains(position)));
+    match (pointer, button) {
+        (Some(position), _) => position,
+        (None, Some(bounds)) => point(bounds.origin.x, bounds.origin.y - spacing::X1),
+        (None, None) => window.mouse_position(),
+    }
 }
 
 /// The 13 iOS expressive-send effects, bundle id then label. The first four
@@ -82,6 +107,9 @@ pub struct Composer {
     clipboard_notice: bool,
     gif_picker: Option<Entity<GifPicker>>,
     scheduled: Entity<ScheduledList>,
+    attach_bounds: ButtonBounds,
+    gif_bounds: ButtonBounds,
+    effect_bounds: ButtonBounds,
     /// The store's draft as this view last saw or wrote it; a different value
     /// in the store (a send, an edit, another client) is loaded into the field.
     last_draft: String,
@@ -115,6 +143,9 @@ impl Composer {
             clipboard_notice: false,
             gif_picker: None,
             scheduled,
+            attach_bounds: ButtonBounds::default(),
+            gif_bounds: ButtonBounds::default(),
+            effect_bounds: ButtonBounds::default(),
             last_draft: String::new(),
             focused_for: (None, None, None),
             reply_shown: Presence::new(DURATION_BASE),
@@ -410,12 +441,15 @@ impl Composer {
         AppRoot::open_menu(&app, if above { request.above() } else { request }, window, cx);
     }
 
-    /// Attach menu: "Choose files…", "Paste from clipboard", "Type a path…".
+    /// Attach menu: "Choose files…", "Paste from clipboard", "Type a path…",
+    /// "Send later…".
     fn open_attach_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         let choose = weak.clone();
         let paste = weak.clone();
         let path = weak.clone();
+        let later = weak.clone();
+        let can_schedule = Self::store(cx).is_some_and(|store| store.state().capabilities.scheduled_messages) && self.current_chat.is_some() && !self.input.read(cx).value().trim().is_empty();
         let items = vec![
             MenuItem::item("Choose files…", move |_window, cx| {
                 let _ = choose.update(cx, |this, cx| this.open_file_picker(cx));
@@ -436,8 +470,23 @@ impl Composer {
                 let _ = window;
             })
             .icon(IconName::Edit),
+            MenuItem::item("Send later…", move |_window, cx| {
+                let _ = later.update_in(cx, |this, window, cx| this.open_schedule_field(window, cx));
+            })
+            .icon(IconName::Schedule)
+            .disabled(!can_schedule),
         ];
         self.open_menu(position, items, true, window, cx);
+    }
+
+    /// The typed-time panel under the field, shared by "Send at…" on the
+    /// send button and "Send later…" in the attach menu.
+    fn open_schedule_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let field = new_input_state(window, cx, "HH:MM, tomorrow HH:MM, or YYYY-MM-DD HH:MM", false);
+        window.focus(&field.focus_handle(cx), cx);
+        self.schedule_field = Some(field);
+        self.schedule_error = None;
+        cx.notify();
     }
 
     fn add_typed_path(&mut self, cx: &mut Context<Self>) {
@@ -503,15 +552,8 @@ impl Composer {
         }
         {
             let weak = weak.clone();
-            items.push(MenuItem::item("Send at…", move |window, cx| {
-                let _ = weak.update_in(cx, |this, window, cx| {
-                    let field = new_input_state(window, cx, "HH:MM, tomorrow HH:MM, or YYYY-MM-DD HH:MM", false);
-                    window.focus(&field.focus_handle(cx), cx);
-                    this.schedule_field = Some(field);
-                    this.schedule_error = None;
-                    cx.notify();
-                });
-                let _ = window;
+            items.push(MenuItem::item("Send at…", move |_window, cx| {
+                let _ = weak.update_in(cx, |this, window, cx| this.open_schedule_field(window, cx));
             }));
         }
         self.open_menu(position, items, true, window, cx);
@@ -610,9 +652,14 @@ impl Render for Composer {
             }))
             .when(!self.staged.is_empty(), |el| {
                 el.child(
-                    div().flex().flex_row().flex_wrap().gap(spacing::X2).px(spacing::X4).py(spacing::X2).children(self.staged.iter().enumerate().map(
-                        |(index, item)| staged_chip(&palette, item, cx.listener(move |this, _, _, cx| this.remove_staged(index, cx))),
-                    )),
+                    div().flex().flex_row().flex_wrap().gap(spacing::X2).px(spacing::X4).py(spacing::X2).children(self.staged.iter().enumerate().map(|(index, item)| {
+                        let leading = if item.is_image {
+                            crate::attachments::sized_img(&item.path, 18., 18., ObjectFit::Cover).rounded(px(9.)).into_any_element()
+                        } else {
+                            div().w(px(18.)).h(px(18.)).flex().items_center().justify_center().child(Icon::new(IconName::File).size(px(13.)).color(palette.accent)).into_any_element()
+                        };
+                        Chip::new(ElementId::Name(format!("staged-{index}").into()), item.name.clone()).leading(leading).on_remove(cx.listener(move |this, _, _, cx| this.remove_staged(index, cx)))
+                    })),
                 )
             })
             .when(self.clipboard_notice, |el| {
@@ -633,26 +680,31 @@ impl Render for Composer {
                     .gap(spacing::X2)
                     .px(spacing::X4)
                     .py(spacing::X3)
-                    .child(IconButton::new("attach", IconName::Paperclip, "Attach").hit(FIELD_HEIGHT).on_click(cx.listener(|this, _, window, cx| {
-                        let position = window.mouse_position();
-                        this.open_attach_menu(position, window, cx);
-                    })))
+                    .child(tracked(
+                        &self.attach_bounds,
+                        IconButton::new("attach", IconName::Paperclip, "Attach").hit(FIELD_HEIGHT).on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                            let position = menu_anchor(event, this.attach_bounds.get(), window);
+                            this.open_attach_menu(position, window, cx);
+                        })),
+                    ))
                     .when(klipy, |el| {
-                        el.child(IconButton::new("gif", IconName::Gif, "GIF").hit(FIELD_HEIGHT).on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
-                            let mut position = event.mouse_position().unwrap_or_default();
-                            position.y -= spacing::X2;
-                            this.toggle_gif_picker(position, window, cx)
-                        })))
+                        el.child(tracked(
+                            &self.gif_bounds,
+                            IconButton::new("gif", IconName::Gif, "GIF").hit(FIELD_HEIGHT).on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                let mut position = menu_anchor(event, this.gif_bounds.get(), window);
+                                position.y -= spacing::X2;
+                                this.toggle_gif_picker(position, window, cx)
+                            })),
+                        ))
                     })
                     .when(capabilities.effects && chat.as_ref().is_some_and(|chat| chat.service == Service::IMessage), |el| {
-                        el.child(
-                            IconButton::new("effect", IconName::Effect, "iMessage effects").hit(FIELD_HEIGHT).active(self.effect.is_some()).on_click(cx.listener(
-                                |this, _, window, cx| {
-                                    let position = window.mouse_position();
-                                    this.open_effect_picker(position, window, cx);
-                                },
-                            )),
-                        )
+                        el.child(tracked(
+                            &self.effect_bounds,
+                            IconButton::new("effect", IconName::Effect, "iMessage effects").hit(FIELD_HEIGHT).active(self.effect.is_some()).on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                                let position = menu_anchor(event, this.effect_bounds.get(), window);
+                                this.open_effect_picker(position, window, cx);
+                            })),
+                        ))
                     })
                     .child(
                         div()
@@ -682,8 +734,25 @@ impl Render for Composer {
                             .justify_center()
                             .flex_shrink_0()
                             .bg(if ready { send_color } else { palette.ghost })
-                            .when(ready, |el| el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)))
-                            .when(ready, |el| el.on_click(cx.listener(|this, _, _, cx| this.send(cx))))
+                            .when(ready, |el| {
+                                let tip: SharedString = if capabilities.scheduled_messages { "Send (Enter). Right-click to schedule.".into() } else { "Send (Enter)".into() };
+                                el.cursor_pointer()
+                                    .tab_index(0)
+                                    .border_2()
+                                    .border_color(palette.transparent)
+                                    .focus_visible(move |style| style.border_color(palette.focus_ring))
+                                    .hover(|style| style.opacity(0.88))
+                                    .active(|style| style.opacity(0.7))
+                                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                                    .tooltip_show_delay(TOOLTIP_DELAY)
+                                    .on_click(cx.listener(|this, _, _, cx| this.send(cx)))
+                                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                            this.send(cx);
+                                            cx.stop_propagation();
+                                        }
+                                    }))
+                            })
                             .when(ready && capabilities.scheduled_messages, |el| {
                                 el.on_mouse_down(
                                     MouseButton::Right,
@@ -748,41 +817,6 @@ fn banner(palette: &Palette, id: &'static str, title: SharedString, body: Shared
                 .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_ellipsis().child(body)),
         )
         .child(IconButton::new(SharedString::from(format!("{id}-close")), IconName::Close, "Cancel").size(px(12.)).hit(px(24.)).on_click(on_close))
-}
-
-fn staged_chip(palette: &Palette, item: &StagedAttachment, on_remove: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement {
-    div()
-        .relative()
-        .w(px(56.))
-        .h(px(56.))
-        .rounded(radius::CONTROL)
-        .overflow_hidden()
-        .bg(palette.raised)
-        .flex_shrink_0()
-        .when(item.is_image, |el| el.child(crate::attachments::sized_img(&item.path, 56., 56., ObjectFit::Cover)))
-        .when(!item.is_image, |el| {
-            el.flex().items_center().justify_center().p(spacing::X1).child(
-                div().flex().flex_col().items_center().gap(px(2.)).child(Icon::new(IconName::File).size(px(16.)).color(palette.secondary)).child(
-                    div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).child(item.name.clone()),
-                ),
-            )
-        })
-        .child(
-            div()
-                .id(ElementId::Name(format!("remove-{}", item.name).into()))
-                .absolute()
-                .top(px(2.))
-                .right(px(2.))
-                .w(px(16.))
-                .h(px(16.))
-                .rounded(px(8.))
-                .bg(hsla(0., 0., 0., 0.6))
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_click(on_remove)
-                .child(Icon::new(IconName::Close).size(px(10.)).color(white())),
-        )
 }
 
 fn path_panel(

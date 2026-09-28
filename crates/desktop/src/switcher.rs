@@ -61,9 +61,19 @@ impl Switcher {
 
     fn open_highlighted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let results = self.results(cx);
-        if let Some(chat) = results.get(self.highlighted).cloned() {
+        if let Some(chat) = results.get(self.highlighted.min(results.len().saturating_sub(1))).cloned() {
             self.open(&chat, window, cx);
         }
+    }
+
+    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let count = self.results(cx).len();
+        if count == 0 {
+            return;
+        }
+        let current = self.highlighted.min(count - 1) as isize;
+        self.highlighted = (current + delta).rem_euclid(count as isize) as usize;
+        cx.notify();
     }
 }
 
@@ -88,11 +98,18 @@ impl Render for Switcher {
                 .border_color(palette.overlay_border)
                 .shadow(crate::primitives::overlay_shadows(&palette))
                 .on_mouse_down_out(move |_, window, cx| close_for_outside(window, cx))
-                .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        close_for_escape(window, cx);
+                .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| match event.keystroke.key.as_str() {
+                    "escape" => close_for_escape(window, cx),
+                    "up" => {
+                        this.move_highlight(-1, cx);
+                        cx.stop_propagation();
                     }
-                })
+                    "down" => {
+                        this.move_highlight(1, cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }))
                 .child(
                     div()
                         .flex()

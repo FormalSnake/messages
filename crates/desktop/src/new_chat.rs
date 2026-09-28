@@ -12,7 +12,7 @@ use messages_core::format::format_address;
 
 use crate::bridge::StoreHandle;
 use crate::icons::IconName;
-use crate::primitives::{IconButton, avatar};
+use crate::primitives::{Chip, IconButton, avatar};
 use crate::theme::{TITLEBAR_HEIGHT, Theme, radius, spacing, type_scale};
 
 fn is_address(value: &str) -> bool {
@@ -52,6 +52,8 @@ pub struct NewChat {
     to_field: Entity<InputState>,
     draft: Entity<TextareaState>,
     recipients: Vec<Recipient>,
+    /// The suggestion Enter commits; arrows move it, hover follows the pointer.
+    highlighted: usize,
     busy: bool,
     error: bool,
     _subscriptions: Vec<Subscription>,
@@ -64,10 +66,13 @@ impl NewChat {
         let draft = cx.new(|cx| TextareaState::new(window, cx).placeholder("Add someone first").auto_grow(1, 6));
         window.focus(&to_field.focus_handle(cx), cx);
 
-        let to_sub = cx.subscribe_in(&to_field, window, |this: &mut Self, _state, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.commit_query(window, cx);
+        let to_sub = cx.subscribe_in(&to_field, window, |this: &mut Self, _state, event: &InputEvent, window, cx| match event {
+            InputEvent::Change => {
+                this.highlighted = 0;
+                cx.notify();
             }
+            InputEvent::PressEnter { .. } => this.commit_query(window, cx),
+            _ => {}
         });
         let draft_sub = cx.subscribe_in(&draft, window, |this: &mut Self, _state, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { secondary: false, shift: false }) {
@@ -75,7 +80,7 @@ impl NewChat {
             }
         });
 
-        Self { on_close, to_field, draft, recipients: Vec::new(), busy: false, error: false, _subscriptions: vec![to_sub, draft_sub] }
+        Self { on_close, to_field, draft, recipients: Vec::new(), highlighted: 0, busy: false, error: false, _subscriptions: vec![to_sub, draft_sub] }
     }
 
     #[cfg(test)]
@@ -134,12 +139,23 @@ impl NewChat {
             return;
         }
         let suggestions = self.suggestions(cx);
-        if let Some(first) = suggestions.into_iter().next() {
-            self.add(first.address, first.name, window, cx);
+        let index = self.highlighted.min(suggestions.len().saturating_sub(1));
+        if let Some(chosen) = suggestions.into_iter().nth(index) {
+            self.add(chosen.address, chosen.name, window, cx);
         } else if is_address(&value) {
             let address = normalize(&value);
             self.add(address, None, window, cx);
         }
+    }
+
+    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let count = self.suggestions(cx).len();
+        if count == 0 {
+            return;
+        }
+        let current = self.highlighted.min(count - 1) as isize;
+        self.highlighted = (current + delta).rem_euclid(count as isize) as usize;
+        cx.notify();
     }
 
     fn remove(&mut self, address: &str, cx: &mut Context<Self>) {
@@ -207,35 +223,36 @@ impl Render for NewChat {
             .flex_shrink_0()
             .border_b_1()
             .border_color(palette.sidebar_border)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                if event.keystroke.key == "backspace" && this.to_field.read(cx).value().is_empty() && !this.recipients.is_empty() {
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| match event.keystroke.key.as_str() {
+                "backspace" if this.to_field.read(cx).value().is_empty() && !this.recipients.is_empty() => {
                     this.recipients.pop();
                     cx.notify();
                 }
+                "up" => {
+                    this.move_highlight(-1, cx);
+                    cx.stop_propagation();
+                }
+                "down" => {
+                    this.move_highlight(1, cx);
+                    cx.stop_propagation();
+                }
+                _ => {}
             }))
             .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.secondary).flex_shrink_0().child("To:"))
             .children(self.recipients.iter().map(|item| {
                 let label = item.name.clone().unwrap_or_else(|| format_address(&item.address));
                 let address = item.address.clone();
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2.))
-                    .h(px(24.))
-                    .pl(spacing::X2)
-                    .pr(spacing::X1)
-                    .rounded(px(12.))
-                    .bg(palette.selected_soft)
-                    .flex_shrink_0()
-                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.accent).child(label))
-                    .child(IconButton::new(ElementId::Name(format!("remove-{address}").into()), IconName::Close, format!("Remove {address}")).size(px(11.)).hit(px(18.)).color(palette.accent).on_click(cx.listener(move |this, _, _, cx| this.remove(&address, cx))))
+                Chip::new(ElementId::Name(format!("recipient-{address}").into()), label).on_remove(cx.listener(move |this, _, _, cx| this.remove(&address, cx)))
             }))
             .child(div().flex_grow(1.).flex_basis(px(160.)).min_w(px(0.)).child(Input::new(&self.to_field).appearance(false)));
 
         let list = div().id("new-chat-suggestions").flex().flex_col().flex_grow(1.).min_h(px(0.)).overflow_y_scroll().px(spacing::X2).pt(spacing::X2);
+        let highlighted = self.highlighted.min(suggestions.len().saturating_sub(1));
         let list = if !suggestions.is_empty() {
-            list.children(suggestions.into_iter().map(|item| {
+            list.children(suggestions.into_iter().enumerate().map(|(index, item)| {
+                let active = index == highlighted;
+                let fg = if active { palette.on_accent } else { palette.text };
+                let muted = if active { palette.on_accent_soft } else { palette.secondary };
                 let label = item.name.clone().unwrap_or_else(|| format_address(&item.address));
                 let subtitle = item.name.clone().map(|_| format_address(&item.address));
                 let address = item.address.clone();
@@ -251,9 +268,15 @@ impl Render for NewChat {
                     .rounded(radius::ROW)
                     .cursor_pointer()
                     .flex_shrink_0()
-                    .hover(move |style| style.bg(palette.raised))
-                    .active(move |style| style.bg(palette.raised_hover))
+                    .when(active, |el| el.bg(palette.accent))
+                    .when(!active, |el| el.active(move |style| style.bg(palette.raised_hover)))
                     .on_click(cx.listener(move |this, _, window, cx| this.add(address.clone(), name.clone(), window, cx)))
+                    .on_hover(cx.listener(move |this, hovered, _window, cx| {
+                        if *hovered && this.highlighted != index {
+                            this.highlighted = index;
+                            cx.notify();
+                        }
+                    }))
                     .child(avatar(Some(&messages_core::Handle { address: item.address.clone(), service: messages_core::Service::IMessage, name: item.name.clone(), avatar: None }), None, px(30.), cx))
                     .child(
                         div()
@@ -261,9 +284,9 @@ impl Render for NewChat {
                             .flex_col()
                             .flex_grow(1.)
                             .min_w(px(0.))
-                            .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.text).text_ellipsis().child(label))
+                            .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(fg).text_ellipsis().child(label))
                             .when_some(subtitle, |el, subtitle| {
-                                el.child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).text_ellipsis().child(subtitle))
+                                el.child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(muted).text_ellipsis().child(subtitle))
                             }),
                     )
             }))

@@ -77,7 +77,8 @@ pub enum FindMyState {
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub status: ConnectionStatus,
-    /// Why the last connection attempt failed, while `status` is not Online.
+    /// Why the last connection attempt failed while `status` is not Online; while
+    /// Online, that the last few reconcile passes failed, cleared by the next that completes.
     pub connection_error: Option<String>,
     /// A failed action worth a toast. Connection trouble stays in `connection_error`.
     pub error: Option<String>,
@@ -307,6 +308,9 @@ const DRAFT_SYNC_DEBOUNCE_MS: u64 = 2000;
 const EXPORT_MAX_MESSAGES: usize = 2000;
 const CHAT_PAGE: u32 = 200;
 const CHAT_LIMIT: u32 = 5000;
+/// Passes in a row that have to fail before the footer says so; one is usually a request the server dropped.
+const RECONCILE_FAILURES: u32 = 3;
+const RECONCILE_FAILED: &str = "Could not refresh from the Mac.";
 
 /// Wall clock in epoch milliseconds. Tests read tokio's clock instead, so a
 /// paused runtime moves `Date.now()` the way vitest's fake timers did.
@@ -524,7 +528,11 @@ struct Private {
     reconciling: bool,
     /// Passes claimed so far, so `start` can tell the reconnect already began one.
     reconcile_passes: u64,
+    /// Passes in a row that ended in an error; reset by the first that completes.
+    reconcile_failures: u32,
     warming: bool,
+    /// Attachments the background pass could not download this connection. The server answers the same way every 30 s, so they wait for a reconnect or a click.
+    warm_failed: HashSet<String>,
     warming_focus: bool,
     locations_timer: Option<AbortHandle>,
     locations_stream: Option<AbortHandle>,
@@ -583,6 +591,12 @@ impl MessagesStore {
 
     pub fn transport(&self) -> &Arc<dyn Transport> {
         &self.inner.transport
+    }
+
+    /// The runtime every async method runs on, for work that must be aborted
+    /// as a unit rather than fired and forgotten (video playback).
+    pub fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.inner.runtime
     }
 
     /// Runs `future` on the store's runtime. The UI uses this for every async method.
@@ -1007,9 +1021,10 @@ impl MessagesStore {
     /// Keeps an answer for the most recent one-to-one chats so the sidebar can
     /// show the moon without each thread being opened first.
     async fn warm_focus(&self) {
+        let capable = self.inner.state.read().capabilities.focus_status;
         {
             let mut private = self.inner.private.lock();
-            if private.warming_focus || !self.inner.state.read().capabilities.focus_status {
+            if private.warming_focus || !capable {
                 return;
             }
             private.warming_focus = true;
@@ -1044,9 +1059,11 @@ impl MessagesStore {
                 });
                 if status == ConnectionStatus::Online && was_offline {
                     self.inner.wake.notify_waiters();
+                    self.inner.private.lock().warm_failed.clear();
+                    let has_chats = !self.inner.state.read().chats.is_empty();
                     // The slot is claimed here, before the task runs, so a `reconcile`
                     // that `start` calls next finds it taken rather than running a second pass.
-                    if !self.inner.state.read().chats.is_empty() && self.claim_reconcile() {
+                    if has_chats && self.claim_reconcile() {
                         let store = self.clone();
                         self.spawn(async move { store.reconcile_claimed().await });
                     }
@@ -1130,15 +1147,37 @@ impl MessagesStore {
 
     async fn reconcile_claimed(&self) {
         let started_at = now_ms();
-        if let Err(error) = self.reconcile_pass(started_at).await {
+        let outcome = self.reconcile_pass(started_at).await;
+        if let Err(error) = &outcome {
             tracing::warn!("reconcile: {error}");
         }
+        self.note_reconcile(outcome.is_ok());
         self.inner.private.lock().reconciling = false;
         self.trim_messages();
         let store = self.clone();
         self.spawn(async move { store.warm_threads().await });
         let store = self.clone();
         self.spawn(async move { store.warm_focus().await });
+    }
+
+    /// Three failed passes in a row put a line in the footer without touching
+    /// `status`: the socket is up, the REST side is not answering.
+    fn note_reconcile(&self, completed: bool) {
+        let failures = {
+            let mut private = self.inner.private.lock();
+            private.reconcile_failures = if completed { 0 } else { private.reconcile_failures + 1 };
+            private.reconcile_failures
+        };
+        self.inner.update(|state, events| {
+            if state.status != ConnectionStatus::Online {
+                return;
+            }
+            let next = (failures >= RECONCILE_FAILURES).then(|| RECONCILE_FAILED.to_owned());
+            if state.connection_error != next {
+                state.connection_error = next;
+                push_event(events, StoreEvent::Connection);
+            }
+        });
     }
 
     async fn reconcile_pass(&self, started_at: Millis) -> Result<(), TransportError> {
@@ -1235,11 +1274,13 @@ impl MessagesStore {
                     continue;
                 }
                 let budget = warm_budget(&attachment.mime);
-                if budget == 0 || attachment.bytes > budget {
+                if budget == 0 || attachment.bytes > budget || self.inner.private.lock().warm_failed.contains(&attachment.guid) {
                     continue;
                 }
-                // A file the server cannot produce is left to the next pass, or to the click on the placeholder.
-                let _ = self.attachment_src(chat_guid, &message.guid, &attachment.guid, &attachment.name, Some(&attachment.mime)).await;
+                // A file the server cannot produce is left to the click on the placeholder.
+                if self.attachment_src(chat_guid, &message.guid, &attachment.guid, &attachment.name, Some(&attachment.mime)).await.is_err() {
+                    self.inner.private.lock().warm_failed.insert(attachment.guid.clone());
+                }
                 self.pause(WARM_MEDIA_GAP_MS).await;
             }
         }
@@ -1277,11 +1318,14 @@ impl MessagesStore {
 
     /// Port of `refreshChats`: pages of 200 up to 5000, keeps unchanged rows' Arcs.
     pub async fn refresh_chats(&self) -> Result<(), crate::transport::TransportError> {
+        let started_at = now_ms();
         let mut chats: Vec<Chat> = Vec::new();
         let mut offset = 0;
+        let mut complete = false;
         while offset < CHAT_LIMIT {
             let page = self.inner.transport.list_chats(ListChatsOptions { limit: Some(CHAT_PAGE), offset: Some(offset) }).await?;
             chats.extend(page.items);
+            complete = !page.has_more;
             // On first load the first page is enough to paint. A refresh keeps the
             // full list on screen until the new one is complete.
             if offset == 0 {
@@ -1322,9 +1366,11 @@ impl MessagesStore {
                     _ => next.push(Arc::new(fresh)),
                 }
             }
-            // Chats that arrived through the socket since the pass started stay.
+            // A row the server no longer lists was deleted on the Mac, unless the
+            // socket brought it in after the pass started. A list cut short by
+            // `CHAT_LIMIT` says nothing about the rows past its end.
             for chat in &state.chats {
-                if !seen.contains(&chat.guid) {
+                if !seen.contains(&chat.guid) && (!complete || chat.last_activity > started_at) {
                     next.push(chat.clone());
                 }
             }
@@ -1643,11 +1689,11 @@ impl MessagesStore {
         }
     }
 
-    /// Port of `sendAttachment`. Optimistic row with `local_path` set, then the outbox.
+    /// Port of `sendAttachment`. Optimistic row with `local_path` set, then the
+    /// outbox. The file size is read off the caller's thread and patched in.
     pub fn send_attachment(&self, chat_guid: &str, path: &Path) {
         let temp_guid = next_temp_guid();
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "attachment".into());
-        let bytes = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
         let service = self.inner.service_for(&self.inner.state.read(), chat_guid);
         let optimistic = Message {
             guid: temp_guid.clone(),
@@ -1660,7 +1706,7 @@ impl MessagesStore {
                 guid: temp_guid.clone(),
                 name: name.clone(),
                 mime: mime_for_path(path),
-                bytes,
+                bytes: 0,
                 width: None,
                 height: None,
                 measured: false,
@@ -1674,10 +1720,39 @@ impl MessagesStore {
         self.apply_message(optimistic.clone(), false, false);
         self.enqueue(OutboxItem {
             chat_guid: chat_guid.to_owned(),
-            temp_guid,
+            temp_guid: temp_guid.clone(),
             optimistic,
             attempts: 0,
             send: Outgoing::Attachment { path: path.to_owned(), name },
+        });
+        let store = self.clone();
+        let (chat_guid, file) = (chat_guid.to_owned(), path.to_owned());
+        self.spawn(async move {
+            if let Ok(meta) = tokio::fs::metadata(&file).await {
+                store.set_optimistic_bytes(&chat_guid, &temp_guid, meta.len());
+            }
+        });
+    }
+
+    /// Fills in the size of a queued attachment on the row and on the outbox
+    /// copy a failure would put back. A row the server echo already replaced
+    /// carries the server's own size and is left alone.
+    fn set_optimistic_bytes(&self, chat_guid: &str, temp_guid: &str, bytes: u64) {
+        self.inner.update(|state, events| {
+            {
+                let mut private = self.inner.private.lock();
+                if let Some(item) = private.outbox.iter_mut().find(|item| item.temp_guid == temp_guid) {
+                    for attachment in &mut item.optimistic.attachments {
+                        attachment.bytes = bytes;
+                    }
+                }
+            }
+            let Some(row) = state.find_message(chat_guid, temp_guid).cloned() else { return };
+            let mut next = (*row).clone();
+            for attachment in &mut next.attachments {
+                attachment.bytes = bytes;
+            }
+            self.inner.replace_message(state, events, next);
         });
     }
 
@@ -1782,7 +1857,9 @@ impl MessagesStore {
             .is_some_and(|row| Some(row.guid.as_str()) != row.temp_guid.as_deref())
     }
 
-    /// Port of `retry`: drops the failed row and sends its text or first attachment again.
+    /// Port of `retry`: drops the failed row and queues it again as a fresh
+    /// optimistic row with the same text, reply and effect. The composer is not
+    /// involved: what is being typed and replied to stays as it is.
     pub fn retry(&self, chat_guid: &str, message_guid: &str) {
         let failed = self.inner.update(|state, events| {
             let failed = state.find_message(chat_guid, message_guid).filter(|message| message.error.is_some()).cloned()?;
@@ -1793,10 +1870,17 @@ impl MessagesStore {
             Some(failed)
         });
         let Some(failed) = failed else { return };
-        match failed.attachments.first().and_then(|attachment| attachment.local_path.clone()) {
-            Some(path) => self.send_attachment(chat_guid, &path),
-            None => self.send(chat_guid, &failed.text, failed.effect.as_deref()),
+        let send = match failed.attachments.first().and_then(|attachment| attachment.local_path.clone().map(|path| (path, attachment.name.clone()))) {
+            Some((path, name)) => Outgoing::Attachment { path, name },
+            None => Outgoing::Text { text: failed.text.clone(), reply_to: failed.reply_to.clone(), effect: failed.effect.clone() },
+        };
+        let temp_guid = next_temp_guid();
+        let mut optimistic = Message { guid: temp_guid.clone(), temp_guid: Some(temp_guid.clone()), date: now_ms(), error: None, ..(*failed).clone() };
+        for attachment in optimistic.attachments.iter_mut().filter(|attachment| attachment.guid == failed.guid) {
+            attachment.guid = temp_guid.clone();
         }
+        self.apply_message(optimistic.clone(), false, false);
+        self.enqueue(OutboxItem { chat_guid: failed.chat_guid.clone(), temp_guid, optimistic, attempts: 0, send });
     }
 
     fn find_message(&self, chat_guid: &str, message_guid: &str) -> Option<Arc<Message>> {
@@ -1880,10 +1964,12 @@ impl MessagesStore {
     /// A click, scroll or keystroke in the open thread or its composer. Reads
     /// the conversation and keeps reading what arrives in it for `ENGAGED_FOR`.
     pub fn engage(&self, chat_guid: &str) {
-        let primary = conversation_guid(&self.inner.state.read().grouping, chat_guid).to_owned();
-        let unread = conversation_members(&self.inner.state.read().grouping, &primary)
-            .iter()
-            .any(|member| self.inner.state.read().chat(member).is_some_and(|chat| chat.unread));
+        let (primary, unread) = {
+            let state = self.inner.state.read();
+            let primary = conversation_guid(&state.grouping, chat_guid).to_owned();
+            let unread = conversation_members(&state.grouping, &primary).iter().any(|member| state.chat(member).is_some_and(|chat| chat.unread));
+            (primary, unread)
+        };
         self.inner.private.lock().engaged = Some((primary.clone(), tokio::time::Instant::now()));
         if unread {
             let store = self.clone();
@@ -2866,7 +2952,10 @@ mod tests {
         messages: Vec<Message>,
         attachment_source: Option<String>,
         send_calls: Vec<String>,
+        /// The `reply_to` of each text send, in order.
+        reply_calls: Vec<Option<String>>,
         send_failures: VecDeque<Failure>,
+        list_failure: Option<TransportError>,
         search_calls: Vec<u32>,
         load_calls: Vec<String>,
         attachment_calls: Vec<String>,
@@ -2874,7 +2963,7 @@ mod tests {
         delete_failure: Option<TransportError>,
         rename_failure: Option<TransportError>,
         cancel_failure: Option<TransportError>,
-        /// Holds a delete or rename open, so a test can look at the optimistic state.
+        /// Holds a delete, a rename or the chat list open, so a test can look at the state in between.
         action_delay_ms: u64,
         focus_calls: Vec<String>,
         focus: FocusStatus,
@@ -2898,7 +2987,9 @@ mod tests {
                 messages: Vec::new(),
                 attachment_source: None,
                 send_calls: Vec::new(),
+                reply_calls: Vec::new(),
                 send_failures: VecDeque::new(),
+                list_failure: None,
                 search_calls: Vec::new(),
                 load_calls: Vec::new(),
                 attachment_calls: Vec::new(),
@@ -2973,7 +3064,11 @@ mod tests {
 
         /// Like the real server, every row carries its newest message.
         async fn list_chats(&self, _options: ListChatsOptions) -> TransportResult<Page<Chat>> {
+            self.delay().await;
             let fake = self.lock();
+            if let Some(error) = fake.list_failure.clone() {
+                return Err(error);
+            }
             let items = fake
                 .chats
                 .iter()
@@ -3023,9 +3118,10 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn send_text(&self, chat_guid: &str, text: &str, _options: SendTextOptions) -> TransportResult<Message> {
+        async fn send_text(&self, chat_guid: &str, text: &str, options: SendTextOptions) -> TransportResult<Message> {
             let mut fake = self.lock();
             fake.send_calls.push(text.into());
+            fake.reply_calls.push(options.reply_to);
             match fake.send_failures.pop_front() {
                 Some(Failure::Network) => return Err(TransportError::Network("fetch failed".into())),
                 Some(Failure::Server) => return Err(TransportError::Server { status: 400, message: "the server said no".into() }),
@@ -3293,6 +3389,35 @@ mod tests {
             assert!(store.state().messages["a"].iter().filter(|item| item.text == "refused").all(|item| item.error.is_none()));
             store.stop().await;
         }
+
+        #[tokio::test(start_paused = true)]
+        async fn try_again_keeps_the_reply_and_leaves_the_composer_alone() {
+            let transport = FakeTransport::new(vec![chat("a", 1000)]);
+            let earlier = message("a", "context", 500, false);
+            transport.lock().messages.push(earlier.clone());
+            let store = started(&transport, options()).await;
+            transport.lock().send_failures = VecDeque::from([Failure::Server]);
+            store.set_replying_to("a", Some(&earlier.guid));
+            store.send("a", "refused", None);
+            settle(&store).await;
+            let refused = store.state().messages["a"].iter().find(|item| item.text == "refused").cloned().unwrap();
+            assert_eq!(refused.error.as_deref(), Some("the server said no"));
+            assert_eq!(refused.reply_to.as_deref(), Some(earlier.guid.as_str()));
+
+            store.set_draft("a", "half typed");
+            store.set_replying_to("a", Some(&earlier.guid));
+            let mut events = store.events();
+            store.retry("a", &refused.guid);
+            let queued = store.state().messages["a"].iter().find(|item| item.text == "refused").cloned().unwrap();
+            assert_eq!(queued.error, None);
+            assert_eq!(queued.reply_to.as_deref(), Some(earlier.guid.as_str()));
+            settle(&store).await;
+            assert_eq!(transport.lock().reply_calls.last().cloned().flatten().as_deref(), Some(earlier.guid.as_str()));
+            assert_eq!(store.state().drafts.get("a").map(String::as_str), Some("half typed"));
+            assert_eq!(store.state().replying_to.get("a").map(String::as_str), Some(earlier.guid.as_str()));
+            assert!(!drain(&mut events).iter().any(|event| matches!(event, StoreEvent::Draft(_) | StoreEvent::ComposerMode(_))));
+            store.stop().await;
+        }
     }
 
     mod reading {
@@ -3427,6 +3552,48 @@ mod tests {
             assert_eq!(transport.lock().search_calls, [10, 10, 10]);
             assert_eq!(texts(&store, "a").iter().filter(|text| text.starts_with("missed")).count(), 25);
             assert!(store.state().last_sync_at > base + 25);
+            store.stop().await;
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn drops_a_chat_deleted_on_the_mac_and_keeps_one_the_socket_added_during_the_pass() {
+            let transport = FakeTransport::new(vec![chat("a", 2000), chat("b", 1000)]);
+            let store = started(&transport, StoreOptions { warm_chats: Some(0), ..options() }).await;
+            {
+                let mut fake = transport.lock();
+                fake.chats.retain(|chat| chat.guid != "b");
+                fake.action_delay_ms = 10;
+            }
+            let pass = store.reconcile();
+            tokio::pin!(pass);
+            assert!(futures_util::poll!(pass.as_mut()).is_pending());
+            // The list is in flight when a chat started on the phone lands through the socket.
+            tokio::time::advance(Duration::from_millis(1)).await;
+            transport.emit(TransportEvent::Chat(chat("c", now_ms())));
+            pass.await;
+            let guids: Vec<String> = store.state().chats.iter().map(|chat| chat.guid.clone()).collect();
+            assert_eq!(guids, ["c", "a"]);
+            store.stop().await;
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn says_so_after_three_failed_passes_and_clears_it_on_the_next() {
+            let transport = FakeTransport::new(vec![chat("a", 1000)]);
+            let store = started(&transport, StoreOptions { warm_chats: Some(0), ..options() }).await;
+            transport.lock().list_failure = Some(TransportError::Network("fetch failed".into()));
+            let mut events = store.events();
+            store.reconcile().await;
+            store.reconcile().await;
+            assert_eq!(store.state().connection_error, None);
+            store.reconcile().await;
+            assert_eq!(store.state().status, ConnectionStatus::Online);
+            assert_eq!(store.state().connection_error.as_deref(), Some("Could not refresh from the Mac."));
+            assert!(drain(&mut events).contains(&StoreEvent::Connection));
+
+            transport.lock().list_failure = None;
+            store.reconcile().await;
+            assert_eq!(store.state().connection_error, None);
+            assert!(drain(&mut events).contains(&StoreEvent::Connection));
             store.stop().await;
         }
     }

@@ -21,7 +21,7 @@ use crate::confirm::ConfirmRequest;
 use crate::icons::IconName;
 use crate::menus::{MenuItem, MenuRequest};
 use crate::primitives::{avatar, ring};
-use crate::theme::{AVATAR_ROW, ROW_HEIGHT, Theme, radius, spacing, type_scale};
+use crate::theme::{AVATAR_ROW, ROW_HEIGHT, Theme, radius, spacing, tabular, type_scale};
 
 /// The dot column and the row's right inset, so every row lines up on two edges.
 pub(crate) const DOT_COLUMN: Pixels = px(16.);
@@ -429,6 +429,7 @@ impl Render for SidebarRow {
                                     div()
                                         .text_size(type_scale::MICRO.font_size)
                                         .line_height(type_scale::MICRO.line_height)
+                                        .font_features(tabular())
                                         .text_color(muted_color)
                                         .flex_shrink_0()
                                         .child(if chat.last_activity > 0 { messages_core::format::format_list_date(chat.last_activity, now_ms()) } else { String::new() }),

@@ -222,7 +222,11 @@ impl InfoPanel {
         .detach();
     }
 
-    fn open_file(message: &Message, attachment: &Attachment, cx: &mut App) {
+    fn open_file(message: &Message, attachment: &Attachment, window: &mut Window, cx: &mut App) {
+        if attachment.mime.starts_with("video/") {
+            crate::lightbox::open(&message.chat_guid, &attachment.guid, window, cx);
+            return;
+        }
         if let Some(path) = &attachment.local_path {
             messages_core::open::open_external(&path.to_string_lossy());
             return;
@@ -411,7 +415,7 @@ impl Render for InfoPanel {
         self.locations.retain(|address, _| shown_cards.contains(address));
         if find_my_unavailable {
             people_column = people_column.child(
-                div().pl(spacing::X2).pt(spacing::X1).text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child("Locations need the Mac agent. See the README to set it up."),
+                div().pl(spacing::X2).pt(spacing::X1).text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child("Set up the Mac agent to see locations."),
             );
         }
 
@@ -422,10 +426,11 @@ impl Render for InfoPanel {
         let gallery = (!images.is_empty() || !files.is_empty() || has_older).then(|| {
             let thumbs = images.iter().map(|(message, attachment)| {
                 let tile = self.thumbs.get(&attachment.guid).and_then(|thumb| thumb.tile.clone());
-                let (chat_guid, attachment_guid) = (message.chat_guid.clone(), attachment.guid.clone());
+                let (for_click, for_key) = ((message.chat_guid.clone(), attachment.guid.clone()), (message.chat_guid.clone(), attachment.guid.clone()));
                 div()
                     .id(SharedString::from(format!("gallery-photo-{}", attachment.guid)))
                     .debug_selector(|| format!("gallery-photo-{}", attachment.guid))
+                    .tab_index(0)
                     .w(px(GALLERY_THUMB))
                     .h(px(GALLERY_THUMB))
                     .rounded(radius::CONTROL)
@@ -433,8 +438,14 @@ impl Render for InfoPanel {
                     .bg(palette.raised)
                     .border_1()
                     .border_color(crate::primitives::image_outline(&palette))
+                    .focus_visible(move |style| style.border_color(palette.focus_ring))
                     .hover(|style| style.opacity(0.9))
-                    .on_click(move |_, window, cx| crate::lightbox::open(&chat_guid, &attachment_guid, window, cx))
+                    .on_click(move |_, window, cx| crate::lightbox::open(&for_click.0, &for_click.1, window, cx))
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            crate::lightbox::open(&for_key.0, &for_key.1, window, cx);
+                        }
+                    })
                     .when_some(tile, |el, tile| el.child(img(crate::attachments::sized_image_source(&tile, px(GALLERY_THUMB), px(GALLERY_THUMB), ObjectFit::Contain)).w(px(GALLERY_THUMB)).h(px(GALLERY_THUMB)).object_fit(ObjectFit::Contain)))
             });
             let file_rows = files.iter().map(|(message, attachment)| {
@@ -456,10 +467,10 @@ impl Render for InfoPanel {
                     .focus_visible(move |style| style.border_color(palette.focus_ring))
                     .hover(move |style| style.bg(palette.hover_wash))
                     .active(move |style| style.bg(palette.press_wash))
-                    .on_click(move |_, _, cx| Self::open_file(&for_click.0, &for_click.1, cx))
-                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                    .on_click(move |_, window, cx| Self::open_file(&for_click.0, &for_click.1, window, cx))
+                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            Self::open_file(&for_key.0, &for_key.1, cx);
+                            Self::open_file(&for_key.0, &for_key.1, window, cx);
                         }
                     })
                     .child(Icon::new(if message.is_audio { IconName::Audio } else { IconName::File }).size(px(15.)).color(palette.secondary))
@@ -519,6 +530,7 @@ impl Render for InfoPanel {
         let pinned = chat.pinned;
         let muted = chat.muted;
         let receipts_off = chat.read_receipts == Some(false);
+        let unread = chat.unread;
         let subtitle = if chat.is_group { format!("{} people · {}", chat.participants.len(), service_label(chat.service)) } else { service_label(chat.service).to_owned() };
 
         div()
@@ -602,13 +614,23 @@ impl Render for InfoPanel {
                                     run(move |store| store.toggle_read_receipts(&guid))
                                 },
                             ))
-                            .child(action_row(&palette, "unread", IconName::MarkUnread, "Mark as unread", None, false, {
-                                let guid = guid.clone();
-                                spawn_store(move |store| {
+                            .child(action_row(
+                                &palette,
+                                "unread",
+                                if unread { IconName::MarkRead } else { IconName::MarkUnread },
+                                if unread { "Mark as read" } else { "Mark as unread" },
+                                (!unread).then(|| shortcut("U", true, false).into()),
+                                false,
+                                {
                                     let guid = guid.clone();
-                                    async move { store.mark_unread(&guid).await }
-                                })
-                            })),
+                                    spawn_store(move |store| {
+                                        let guid = guid.clone();
+                                        async move {
+                                            if unread { store.mark_read(&guid).await } else { store.mark_unread(&guid).await }
+                                        }
+                                    })
+                                },
+                            )),
                     )
                     .child(section_divider(&palette))
                     .child(section_label(if chat.is_group { "People" } else { "Contact" }, palette.tertiary, spacing::X4))

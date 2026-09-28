@@ -23,6 +23,8 @@ pub const TAIL_HEIGHT: u32 = 16;
 /// Frame delays under this are shown at SLOW_FRAME, as browsers do.
 pub const GIF_MIN_DELAY: Duration = Duration::from_millis(20);
 pub const GIF_SLOW_FRAME: Duration = Duration::from_millis(100);
+/// An ffmpeg run past this is killed: it holds one of the two slots, so a hang on a corrupt file would stall every preview.
+const FFMPEG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One animated GIF, decoded once per shared path. Frames are BGRA as GPUI's
 /// `RenderImage` wants them. The desktop keeps these in a bounded LRU.
@@ -100,23 +102,21 @@ impl MediaWorker {
         result
     }
 
-    async fn run_ffmpeg_still(&self, source: &Path, filter: &str, quality: u8, target: &Path) -> Option<PathBuf> {
+    /// Runs `command` in one of the two slots, killed after FFMPEG_TIMEOUT or when the caller drops the future.
+    async fn run_ffmpeg(&self, mut command: tokio::process::Command, target: &Path) -> Option<PathBuf> {
         let _permit = self.slot.acquire().await.ok()?;
-        let status = tokio::process::Command::new("ffmpeg")
-            .args(["-y", "-noautorotate", "-i"])
-            .arg(source)
-            .args(["-vf", filter, "-frames:v", "1", "-q:v", &quality.to_string()])
-            .arg(target)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .ok()?;
+        let status = tokio::time::timeout(FFMPEG_TIMEOUT, command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).status()).await.ok()?.ok()?;
         if status.success() && tokio::fs::try_exists(target).await.unwrap_or(false) {
             Some(target.to_path_buf())
         } else {
             None
         }
+    }
+
+    async fn run_ffmpeg_still(&self, source: &Path, filter: &str, quality: u8, target: &Path) -> Option<PathBuf> {
+        let mut command = tokio::process::Command::new("ffmpeg");
+        command.args(["-y", "-noautorotate", "-i"]).arg(source).args(["-vf", filter, "-frames:v", "1", "-q:v", &quality.to_string()]).arg(target);
+        self.run_ffmpeg(command, target).await
     }
 
     /// A still whose long edge exceeds PREVIEW_MAX_EDGE, EXIF-uprighted and scaled down; None when it needs none.
@@ -194,22 +194,9 @@ impl MediaWorker {
         let video = video.to_path_buf();
         let target_job = target.clone();
         self.once(&target, async move {
-            let _permit = self.slot.acquire().await.ok()?;
-            let status = tokio::process::Command::new("ffmpeg")
-                .args(["-y", "-ss", "0.5", "-i"])
-                .arg(&video)
-                .args(["-frames:v", "1", "-vf", "scale=640:-1"])
-                .arg(&target_job)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await
-                .ok()?;
-            if status.success() && tokio::fs::try_exists(&target_job).await.unwrap_or(false) {
-                Some(target_job.clone())
-            } else {
-                None
-            }
+            let mut command = tokio::process::Command::new("ffmpeg");
+            command.args(["-y", "-ss", "0.5", "-i"]).arg(&video).args(["-frames:v", "1", "-vf", "scale=640:-1"]).arg(&target_job);
+            self.run_ffmpeg(command, &target_job).await
         })
         .await
     }

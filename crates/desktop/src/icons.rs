@@ -64,6 +64,11 @@ pub enum IconName {
     Schedule,
     Heart,
     Silenced,
+    Play,
+    Pause,
+    Replay,
+    SoundOn,
+    SoundOff,
 }
 
 /// Resolves to the bundled glyph. `Trash` lands on Lucide's single `trash` can
@@ -124,6 +129,11 @@ pub fn glyph(name: IconName) -> Glyph {
         Schedule => Glyph::Clock,
         Heart => Glyph::Heart,
         Silenced => Glyph::Moon,
+        Play => Glyph::Play,
+        Pause => Glyph::Pause,
+        Replay => Glyph::RotateCcw,
+        SoundOn => Glyph::Volume2,
+        SoundOff => Glyph::VolumeX,
     }
 }
 

@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod assistant;
+pub mod audio;
 pub mod bluebubbles;
 pub mod cache;
 pub mod clipboard;
@@ -23,6 +24,7 @@ pub mod open;
 pub mod search;
 pub mod store;
 pub mod transport;
+pub mod video;
 #[cfg(test)]
 mod testing;
 #[cfg(windows)]

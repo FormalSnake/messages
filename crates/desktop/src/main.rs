@@ -33,6 +33,7 @@ mod reply_thread;
 mod stills;
 mod thread;
 mod thread_rows;
+mod video;
 
 // D3 header and composer
 mod composer;

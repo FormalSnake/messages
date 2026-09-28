@@ -26,6 +26,7 @@
             libxi
             libxrandr
             libglvnd
+            alsa-lib
           ];
         in
         {

@@ -9,7 +9,7 @@
 //! generation on every open/close flip and the helpers fold it into the id:
 //! each flip replays from its start, and nothing animates while idle.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{Animation, AnimationExt as _, AnyElement, App, Context, ElementId, IntoElement, Pixels, SharedString, Styled, px};
 
@@ -57,6 +57,21 @@ pub fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32) -> impl Fn(f32) -> f32 {
 
 fn curve((x1, y1, x2, y2): (f32, f32, f32, f32)) -> impl Fn(f32) -> f32 {
     cubic_bezier(x1, y1, x2, y2)
+}
+
+/// Where a hand-stepped EASE_OUT fade that began at `started` is now: `None`
+/// once it has settled, and at once when the platform asks for reduced
+/// motion, which `with_animation` honours on its own but a caller stepping
+/// its own clock would not.
+pub fn eased_since(started: Instant, duration: Duration, cx: &App) -> Option<f32> {
+    if cx.reduce_motion() {
+        return None;
+    }
+    let elapsed = started.elapsed();
+    if elapsed >= duration {
+        return None;
+    }
+    Some(curve(EASE_OUT)(elapsed.as_secs_f32() / duration.as_secs_f32()))
 }
 
 /// `usePresence` plus `useHeld`: whether something is shown, whether it is

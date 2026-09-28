@@ -6,7 +6,7 @@
 //! change swaps the colours in place and calls `cx.refresh_windows()` so every
 //! open window repaints with the new values.
 
-use gpui_kit::{App, Global, Hsla, Pixels, SharedString, px, rgb};
+use gpui_kit::{App, FontFeatures, Global, Hsla, Pixels, SharedString, px, rgb};
 
 // ---------------------------------------------------------------------------
 // Fonts
@@ -102,6 +102,12 @@ pub mod type_scale {
     pub const MICRO: TypeStyle = TypeStyle { font_size: px(11.), line_height: px(14.), font_weight: 400. };
 }
 
+/// Tabular figures for any time or count that repaints in place, so the
+/// digits keep their column when one of them changes.
+pub fn tabular() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}
+
 pub const SIDEBAR_WIDTH: Pixels = px(300.);
 /// Below this the sidebar would leave the thread too narrow to read.
 pub const SIDEBAR_WIDTH_COMPACT: Pixels = px(248.);
@@ -162,6 +168,10 @@ pub struct Palette {
     /// Washes for hover and press over a dark surface, so one value works on any fill.
     pub hover_wash: Hsla,
     pub press_wash: Hsla,
+    /// A dark wash laid over a photo or video, and the text on it. Pictures
+    /// are any colour, so these stay dark and light whatever the palette.
+    pub scrim: Hsla,
+    pub on_scrim: Hsla,
     pub transparent: Hsla,
 }
 
@@ -204,6 +214,8 @@ impl Default for Palette {
             focus_ring: accent,
             hover_wash: with_alpha(text, 0x14),
             press_wash: with_alpha(text, 0x26),
+            scrim: with_alpha(Hsla::from(rgb(0x000000)), 0x80),
+            on_scrim: Hsla::from(rgb(0xffffff)),
             transparent: Hsla::transparent_black(),
         }
     }

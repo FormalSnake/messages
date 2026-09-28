@@ -22,6 +22,8 @@ const MIN_DELAY: Duration = Duration::from_millis(20);
 const SLOW_FRAME: Duration = Duration::from_millis(100);
 /// Decoded frames kept across every GIF; the least recently painted go first.
 const BUDGET_BYTES: usize = 64 * 1024 * 1024;
+/// Decoded frames one file may hold; past this it is painted as a still of its first frame.
+const FILE_CAP_BYTES: usize = BUDGET_BYTES;
 
 enum Load {
     Loading,
@@ -71,11 +73,11 @@ fn registry(cx: &mut App) -> &mut GifRegistry {
 /// forty copies of one GIF are one decode and one set of textures.
 fn start_decode(path: Arc<Path>, cx: &mut App) {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<Arc<RenderImage>>>();
-    let renderer = cx.svg_renderer();
     let job_path = path.clone();
     let job = move || {
         let bytes = std::fs::read(&*job_path).ok()?;
-        Image::from_bytes(ImageFormat::Gif, bytes).to_image_data(renderer).ok()
+        let frames = decode_frames(&bytes, FILE_CAP_BYTES)?;
+        Some(Arc::new(RenderImage::new(frames)))
     };
     match cx.try_global::<crate::bridge::StoreHandle>().and_then(|handle| handle.0.clone()) {
         Some(store) => store.spawn(async move {
@@ -93,6 +95,33 @@ fn start_decode(path: Arc<Path>, cx: &mut App) {
         cx.update(|cx| finish_decode(path, result, cx));
     })
     .detach();
+}
+
+/// Frames in BGRA, decoded one at a time. Every frame is the logical screen
+/// size, so the next one's cost is known before it is decoded: once the file
+/// would pass `cap` only the first frame is kept and it paints as a still. None
+/// when not even one frame fits.
+fn decode_frames(bytes: &[u8], cap: usize) -> Option<Vec<image::Frame>> {
+    use image::{AnimationDecoder, ImageDecoder};
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+    let (width, height) = decoder.dimensions();
+    let per_frame = width as usize * height as usize * 4;
+    let mut source = decoder.into_frames();
+    let mut frames: Vec<image::Frame> = Vec::new();
+    let mut decoded = 0usize;
+    loop {
+        if decoded.saturating_add(per_frame) > cap {
+            frames.truncate(1);
+            break;
+        }
+        let Some(Ok(mut frame)) = source.next() else { break };
+        for pixel in frame.buffer_mut().chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        decoded += frame.buffer().len();
+        frames.push(frame);
+    }
+    if frames.is_empty() { None } else { Some(frames) }
 }
 
 fn finish_decode(path: Arc<Path>, image: Option<Arc<RenderImage>>, cx: &mut App) {
@@ -271,6 +300,34 @@ mod tests {
         assert_eq!(clamp_delay(Duration::from_millis(10)), SLOW_FRAME);
         assert_eq!(clamp_delay(Duration::from_millis(20)), Duration::from_millis(20));
         assert_eq!(clamp_delay(Duration::from_millis(70)), Duration::from_millis(70));
+    }
+
+    fn gif_bytes(colors: &[[u8; 4]]) -> Vec<u8> {
+        use image::codecs::gif::GifEncoder;
+        let mut bytes = Vec::new();
+        let mut encoder = GifEncoder::new(&mut bytes);
+        for color in colors {
+            encoder.encode_frame(image::Frame::new(image::RgbaImage::from_pixel(2, 2, image::Rgba(*color)))).unwrap();
+        }
+        drop(encoder);
+        bytes
+    }
+
+    #[test]
+    fn a_gif_under_the_cap_keeps_every_frame_in_bgra() {
+        let frames = decode_frames(&gif_bytes(&[[255, 0, 0, 255], [0, 0, 255, 255], [0, 255, 0, 255]]), FILE_CAP_BYTES).unwrap();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(&frames[0].buffer().as_raw()[0..4], &[0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_gif_over_the_cap_is_cut_to_its_first_frame() {
+        let bytes = gif_bytes(&[[255, 0, 0, 255], [0, 0, 255, 255], [0, 255, 0, 255], [9, 9, 9, 255]]);
+        let two_frames = 2 * 2 * 4 * 2;
+        let frames = decode_frames(&bytes, two_frames).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(&frames[0].buffer().as_raw()[0..4], &[0, 0, 255, 255]);
+        assert!(decode_frames(&bytes, two_frames / 2 - 1).is_none());
     }
 
     #[test]

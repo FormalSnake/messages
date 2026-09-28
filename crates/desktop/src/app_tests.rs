@@ -184,6 +184,27 @@ fn gallery_shows_photos_and_files() {
 }
 
 #[::core::prelude::v1::test]
+fn a_video_plays_in_the_lightbox_and_stops_with_it() {
+    if !messages_core::video::available() {
+        return;
+    }
+    let mut app = TestAppContext::single();
+    let cx = &mut app;
+    let (_root, cx) = boot(cx, demo_config(&[]));
+    wait_until(cx, "the video poster", |cx| cx.debug_bounds("video-demo-video-1").is_some());
+    click(cx, "video-demo-video-1");
+    wait_until(cx, "the lightbox", |cx| cx.debug_bounds("lightbox").is_some());
+    wait_until(cx, "the first frame", |cx| cx.debug_bounds("video-playing").is_some());
+    wait_until(cx, "the clip to end", |cx| cx.debug_bounds("video-ended").is_some());
+    cx.simulate_keystrokes("space");
+    wait_until(cx, "the replay", |cx| cx.debug_bounds("video-playing").is_some());
+    cx.simulate_keystrokes("space");
+    wait_until(cx, "the pause", |cx| cx.debug_bounds("video-paused").is_some());
+    cx.dispatch_action(Dismiss);
+    wait_until(cx, "the lightbox to leave", |cx| cx.debug_bounds("lightbox").is_none() && cx.debug_bounds("video-paused").is_none());
+}
+
+#[::core::prelude::v1::test]
 fn reply_shows_the_banner_and_sending_clears_it() {
     let mut app = TestAppContext::single();
     let cx = &mut app;

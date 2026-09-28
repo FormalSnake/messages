@@ -61,6 +61,18 @@ impl Bridge {
         cx.global_mut::<Bridge>().watchers.entry(topic).or_default().push(entity);
     }
 
+    /// Drops `entity`'s interest in `topic`, and the topic itself once nobody
+    /// watches it, so a view that moves between chats stops repainting for
+    /// the ones it left.
+    pub fn unwatch(cx: &mut App, topic: &Topic, entity: &AnyWeakEntity) {
+        let watchers = &mut cx.global_mut::<Bridge>().watchers;
+        let Some(entities) = watchers.get_mut(topic) else { return };
+        entities.retain(|weak| weak.entity_id() != entity.entity_id() && weak.is_upgradable());
+        if entities.is_empty() {
+            watchers.remove(topic);
+        }
+    }
+
     /// app.rs's single handler for `StoreEvent::Incoming`: post a desktop
     /// notification when the window is not focused, per
     /// docs/rust-parity.md "Notification click activates the window...".
@@ -103,9 +115,14 @@ impl Bridge {
     }
 
     fn dispatch(cx: &mut App, topic: &Topic) {
-        let Some(entities) = cx.global_mut::<Bridge>().watchers.get_mut(topic) else { return };
+        let watchers = &mut cx.global_mut::<Bridge>().watchers;
+        let Some(entities) = watchers.get_mut(topic) else { return };
         entities.retain(|weak| weak.is_upgradable());
-        for weak in entities.clone() {
+        let entities = entities.clone();
+        if entities.is_empty() {
+            watchers.remove(topic);
+        }
+        for weak in entities {
             cx.notify(weak.entity_id());
         }
     }

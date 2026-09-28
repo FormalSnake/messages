@@ -22,8 +22,8 @@ use crate::attachments::{self, Kind, Media, TailFill, kind_of, same_url, tail_bo
 use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::menus::{MenuItem, MenuRequest};
-use crate::motion::{DURATION_BASE, EASE_OUT, cubic_bezier};
-use crate::theme::{BUBBLE_MAX_WIDTH, Palette, THREAD_INSET, Theme, TypeStyle, font_emoji, radius, spacing, type_scale};
+use crate::motion::{DURATION_BASE, eased_since};
+use crate::theme::{BUBBLE_MAX_WIDTH, Palette, THREAD_INSET, Theme, TypeStyle, font_emoji, radius, spacing, tabular, type_scale};
 use crate::thread::Thread;
 use crate::thread_rows::{EDIT_WINDOW_MS, MessageRowData, TapbackGroup, UNSEND_WINDOW_MS, bubble_radius, effect_name, now_ms, tapback_groups};
 
@@ -340,15 +340,6 @@ pub fn open_menu(request: MenuRequest, window: &mut Window, cx: &mut App) {
     AppRoot::open_menu(&app, request, window, cx);
 }
 
-fn eased(started: Instant, duration: Duration) -> Option<f32> {
-    let elapsed = started.elapsed();
-    if elapsed >= duration {
-        return None;
-    }
-    let (x1, y1, x2, y2) = EASE_OUT;
-    Some(cubic_bezier(x1, y1, x2, y2)(elapsed.as_secs_f32() / duration.as_secs_f32()))
-}
-
 /// What the thread's list needs to lay a row out without rendering it. A
 /// cached view takes its size from outside and lays its content out inside
 /// that box, so the list hands a settled row its last natural height.
@@ -405,7 +396,9 @@ impl MessageRow {
     pub fn set(&mut self, data: MessageRowData, props: RowProps, cx: &mut Context<Self>) {
         let changed = !Arc::ptr_eq(&data.message, &self.model.message);
         if changed && data.message.guid != self.model.message.guid {
-            { let entity = cx.entity().downgrade().into(); Bridge::watch(cx, Topic::Message(data.message.guid.clone()), entity); }
+            let entity: AnyWeakEntity = cx.entity().downgrade().into();
+            Bridge::unwatch(cx, &Topic::Message(self.model.message.guid.clone()), &entity);
+            Bridge::watch(cx, Topic::Message(data.message.guid.clone()), entity);
         }
         self.data = data;
         self.props = props;
@@ -713,7 +706,7 @@ impl MessageRow {
             .enumerate()
             .map(|(index, group)| {
                 let seen = *self.tapback_seen.entry(group.glyph.clone()).or_insert_with(|| fresh.then(Instant::now));
-                let opacity = seen.and_then(|seen| eased(seen, DURATION_BASE));
+                let opacity = seen.and_then(|seen| eased_since(seen, DURATION_BASE, cx));
                 animating |= opacity.is_some();
                 let fg = if group.mine { palette.on_accent } else { palette.text };
                 div()
@@ -759,7 +752,7 @@ impl Render for MessageRow {
         let has_tapbacks = !self.model.tapbacks.is_empty();
         let failed = self.failed();
 
-        let row_opacity = self.entered_at.and_then(|started| eased(started, DURATION_BASE));
+        let row_opacity = self.entered_at.and_then(|started| eased_since(started, DURATION_BASE, cx));
         if row_opacity.is_some() {
             window.request_animation_frame();
         } else {
@@ -775,6 +768,7 @@ impl Render for MessageRow {
                 .whitespace_nowrap()
                 .text_size(type_scale::MICRO.font_size)
                 .line_height(type_scale::MICRO.line_height)
+                .font_features(tabular())
                 .text_color(palette.tertiary)
                 .when(align_right, |el| el.text_right())
                 .opacity(0.)
@@ -842,6 +836,7 @@ impl Render for MessageRow {
             let micro = |text: SharedString, color: Hsla| div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(color).child(text);
             let store = self.store.clone();
             let (primary, guid) = (self.props.primary.clone(), message.guid.clone());
+            let retry = (store.clone(), primary.clone(), guid.clone());
             div()
                 .flex()
                 .flex_row()
@@ -855,7 +850,17 @@ impl Render for MessageRow {
                 .when_some(self.model.effect.clone(), |el, effect| el.child(micro(effect, palette.tertiary)))
                 .when(failed, |el| el.child(Icon::new(IconName::Alert).size(px(12.)).color(palette.danger)))
                 .when_some(receipt, |el, receipt| {
-                    el.child(micro(receipt.text.into(), if receipt.failed { palette.danger } else { palette.tertiary }).font_weight(FontWeight::SEMIBOLD))
+                    el.child(micro(receipt.text.into(), if receipt.failed { palette.danger } else { palette.secondary }).font_weight(FontWeight::SEMIBOLD).font_features(tabular()))
+                })
+                .when(failed, |el| {
+                    el.child(
+                        div()
+                            .id("retry")
+                            .cursor_pointer()
+                            .hover(|style| style.opacity(0.8))
+                            .on_click(move |_, _, _| retry.0.retry(&retry.1, &retry.2))
+                            .child(micro("Try again".into(), palette.accent).font_weight(FontWeight::SEMIBOLD)),
+                    )
                 })
                 .when(notify, |el| {
                     el.child(

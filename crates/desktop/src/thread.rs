@@ -141,6 +141,13 @@ impl RowList {
         self.slots.borrow().slots.iter().position(|slot| matches!(slot, Slot::Message { data, .. } if data.message.guid == message_guid))
     }
 
+    /// A row leaving the list takes its bridge topic with it; the entity
+    /// itself is dropped by the map, but the topic key would outlive it.
+    fn release(row: &Entity<MessageRow>, cx: &mut App) {
+        let guid = row.read(cx).model.message.guid.clone();
+        Bridge::unwatch(cx, &Topic::Message(guid), &AnyWeakEntity::from(row.downgrade()));
+    }
+
     /// Replaces the slots, keeping measured heights and scroll position for
     /// rows that did not move. `reset` starts over at the bottom (a new chat).
     pub(crate) fn apply(&self, next: Vec<Slot>, is_group: bool, typing_who: Option<Handle>, reset: bool, cx: &mut App) {
@@ -149,6 +156,9 @@ impl RowList {
         slots.is_group = is_group;
         slots.typing_who = typing_who;
         if reset {
+            for row in slots.rows.values() {
+                Self::release(row, cx);
+            }
             slots.rows.clear();
             slots.typing = None;
             self.state.reset(next.len());
@@ -176,7 +186,13 @@ impl RowList {
             self.state.remeasure_items(index..index + 1);
         }
         let keys: HashSet<&str> = next.iter().map(Slot::key).collect();
-        slots.rows.retain(|key, _| keys.contains(key.as_str()));
+        slots.rows.retain(|key, row| {
+            let kept = keys.contains(key.as_str());
+            if !kept {
+                Self::release(row, cx);
+            }
+            kept
+        });
         if !next.iter().any(|slot| matches!(slot, Slot::Typing)) {
             slots.typing = None;
         }
@@ -254,11 +270,11 @@ fn separator_day(label: &str) -> &str {
     }
 }
 
-/// `strong` bytes at the start of `text` are set semibold.
+/// `strong` bytes at the start of `text` are set semibold, one step brighter.
 fn caption(text: SharedString, strong: usize, top: Pixels, bottom: Pixels, cx: &App) -> Div {
     let palette = Theme::get(cx);
     let strong = strong.min(text.len());
-    let highlights = if strong > 0 { vec![(0..strong, HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })] } else { Vec::new() };
+    let highlights = if strong > 0 { vec![(0..strong, HighlightStyle { color: Some(palette.secondary), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })] } else { Vec::new() };
     div().w_full().flex().flex_row().items_center().justify_center().pt(top).pb(bottom).px(spacing::X10).child(
         div()
             .text_size(type_scale::MICRO.font_size)
@@ -315,16 +331,10 @@ impl Render for TypingRow {
         if self.timer.is_none() {
             self.start(cx);
         }
-        let opacity = {
-            let elapsed = self.entered.elapsed();
-            if elapsed < crate::motion::DURATION_BASE {
-                window.request_animation_frame();
-                let (x1, y1, x2, y2) = crate::motion::EASE_OUT;
-                Some(crate::motion::cubic_bezier(x1, y1, x2, y2)(elapsed.as_secs_f32() / crate::motion::DURATION_BASE.as_secs_f32()))
-            } else {
-                None
-            }
-        };
+        let opacity = crate::motion::eased_since(self.entered, crate::motion::DURATION_BASE, cx);
+        if opacity.is_some() {
+            window.request_animation_frame();
+        }
         let lit = self.lit;
         div()
             .flex()
@@ -382,6 +392,8 @@ pub struct Thread {
     /// Rows other state (translations, highlight, reply thread) depends on changed.
     dirty: bool,
     empty: bool,
+    /// Nothing in memory yet and the first page is on its way.
+    loading_empty: bool,
     opened_at: i64,
     message_count: usize,
     requested_older: bool,
@@ -417,6 +429,7 @@ impl Thread {
             rows: None,
             dirty: true,
             empty: false,
+            loading_empty: false,
             opened_at: now_ms(),
             message_count: 0,
             requested_older: false,
@@ -437,6 +450,13 @@ impl Thread {
     fn watch(&mut self, topic: Topic, cx: &mut Context<Self>) {
         if self.watched.insert(topic.clone()) {
             { let entity = cx.entity().downgrade().into(); Bridge::watch(cx, topic, entity); }
+        }
+    }
+
+    fn unwatch(&mut self, topic: Topic, cx: &mut Context<Self>) {
+        if self.watched.remove(&topic) {
+            let entity = cx.entity().downgrade().into();
+            Bridge::unwatch(cx, &topic, &entity);
         }
     }
 
@@ -466,7 +486,11 @@ impl Thread {
             let Some(guid) = primary.clone() else {
                 drop(state);
                 if self.primary.is_some() || self.dirty {
-                    self.primary = None;
+                    if let Some(previous) = self.primary.take() {
+                        self.unwatch(Topic::Thread(previous.clone()), cx);
+                        self.unwatch(Topic::Typing(previous.clone()), cx);
+                        self.unwatch(Topic::Chat(previous), cx);
+                    }
                     self.chat = None;
                     self.inputs = Inputs::default();
                     if let Some(rows) = &self.rows {
@@ -506,6 +530,11 @@ impl Thread {
             (inputs, (guid, chat, messages, key, has_older))
         };
         let (guid, chat, messages, key, _has_older) = build;
+        if let Some(previous) = self.primary.clone().filter(|previous| *previous != guid) {
+            self.unwatch(Topic::Thread(previous.clone()), cx);
+            self.unwatch(Topic::Typing(previous.clone()), cx);
+            self.unwatch(Topic::Chat(previous), cx);
+        }
         self.watch(Topic::Thread(guid.clone()), cx);
         self.watch(Topic::Typing(guid.clone()), cx);
         self.watch(Topic::Chat(guid.clone()), cx);
@@ -541,6 +570,7 @@ impl Thread {
         let slots = self.slots_for(&built, &guid, &messages, &inputs, is_group, true);
         let typing_who = chat.as_ref().and_then(|chat| chat.participants.first().cloned());
         self.empty = messages.is_empty() && !inputs.loading;
+        self.loading_empty = messages.is_empty() && inputs.loading;
         if let Some(rows) = &self.rows {
             rows.apply(slots, is_group, typing_who, reset, cx);
         }
@@ -838,6 +868,8 @@ impl Render for Thread {
             view.into_any_element()
         } else if self.empty {
             self.render_empty(cx)
+        } else if self.loading_empty {
+            div().flex_grow(1.).min_h(px(0.)).flex().flex_col().items_center().justify_center().child(caption("Loading earlier messages\u{2026}".into(), 0, px(0.), px(0.), cx)).into_any_element()
         } else if let Some(rows) = &self.rows {
             rows.element().flex_grow(1.).w_full().pb(spacing::X2).into_any_element()
         } else {

@@ -98,6 +98,25 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+/// One plain sentence for the toast. `TransportError`'s Display drops the
+/// HTTP status, so the store's text is all there is to go on; the raw text
+/// goes to stderr for anyone debugging.
+fn toast_text(raw: &str) -> SharedString {
+    let text = raw.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|needle| text.contains(needle));
+    if has(&["timed out", "timeout", "connection refused", "error sending request", "dns error", "connection reset", "network unreachable", "no route to host", "connection closed"]) {
+        "Could not reach the Mac.".into()
+    } else if has(&["status 401", "status 403", "password", "unauthori", "forbidden"]) {
+        "The server password was rejected.".into()
+    } else if has(&["status 404", "chat does not exist", "not found"]) {
+        "The Mac could not find that chat.".into()
+    } else {
+        // Anything else is a hint from the server itself ("Turn off Encrypt
+        // communications"), which reads better than a generic line.
+        raw.to_owned().into()
+    }
+}
+
 /// The error toast stays up this long, then `clear_error`.
 const TOAST_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 
@@ -148,6 +167,9 @@ pub struct AppRoot {
     root_focus: FocusHandle,
     /// The error being shown, and which timer owns its dismissal.
     toast: Option<SharedString>,
+    /// The raw transport text the toast stands for, so the same failure
+    /// reported twice does not restart the timer.
+    toast_for: Option<String>,
     toast_epoch: u64,
     toast_shown: Presence<SharedString>,
     info_shown: Presence<()>,
@@ -225,6 +247,7 @@ impl AppRoot {
             confirm_focus,
             root_focus,
             toast: None,
+            toast_for: None,
             toast_epoch: 0,
             toast_shown: Presence::new(DURATION_FAST),
             info_shown: Presence::new(DURATION_PANEL),
@@ -586,9 +609,11 @@ impl AppRoot {
     fn sync_toast(&mut self, show_connect: bool, cx: &mut Context<Self>) {
         let error = self.store().and_then(|store| store.state().error.clone());
         if !self.settings_open {
-            if let Some(message) = error {
-                if self.toast.as_deref() != Some(message.as_str()) {
-                    self.toast = Some(message.into());
+            if let Some(raw) = error {
+                if self.toast_for.as_deref() != Some(raw.as_str()) {
+                    eprintln!("transport: {raw}");
+                    self.toast_for = Some(raw.clone());
+                    self.toast = Some(toast_text(&raw));
                     self.toast_epoch += 1;
                     let epoch = self.toast_epoch;
                     let store = self.store().cloned();
@@ -602,6 +627,7 @@ impl AppRoot {
                                 store.clear_error();
                             }
                             this.toast = None;
+                            this.toast_for = None;
                             cx.notify();
                         });
                     })

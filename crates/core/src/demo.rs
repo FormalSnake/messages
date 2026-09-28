@@ -185,6 +185,46 @@ fn wave(guid: &str) -> Attachment {
     }
 }
 
+/// A three second test-pattern clip with a tone, rendered once by ffmpeg into
+/// the cache, so the demo has a video to play. None without ffmpeg.
+fn clip_mp4() -> Option<PathBuf> {
+    let path = crate::config::cache_dir().join("demo").join("clip.mp4");
+    if path.exists() {
+        return Some(path);
+    }
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let tmp = path.with_extension("mp4.tmp");
+    let status = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "mpeg4", "-q:v", "4", "-c:a", "aac", "-shortest", "-f", "mp4"])
+        .arg(&tmp)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    }
+    std::fs::rename(&tmp, &path).ok()?;
+    Some(path)
+}
+
+fn clip(guid: &str) -> Attachment {
+    Attachment {
+        guid: guid.into(),
+        name: "IMG_2210.MOV".into(),
+        mime: "video/mp4".into(),
+        bytes: 148_212,
+        width: Some(320),
+        height: Some(240),
+        measured: false,
+        is_sticker: false,
+        local_path: clip_mp4(),
+        hidden: false,
+        duration_ms: Some(3000.0),
+    }
+}
+
 fn sticker(guid: &str) -> Attachment {
     Attachment { name: "sticker.png".into(), bytes: 24_110, width: Some(240), height: Some(200), is_sticker: true, ..attachment(guid, "", 0, 0) }
 }
@@ -278,6 +318,7 @@ fn seeds(p: &People, now: Millis) -> Vec<Seed> {
                 row("the buttons are wrong and the layout is broken", 26 * MIN, None),
                 row("bring the charger this time 🔌", 12 * MIN, alex).with(|m| m.reply_to = Some("demo-msg-0006".into())),
                 row("", 11 * MIN, alex).with(|m| m.attachments = vec![wave("demo-gif-1")]),
+                row("", 10 * MIN, alex).with(|m| m.attachments = vec![clip("demo-video-1")]),
             ],
         },
         Seed {
@@ -1072,7 +1113,8 @@ mod tests {
         assert_eq!(chats.len(), 9);
         assert_eq!(chats[0].guid, "iMessage;-;+14155550134");
         let alex = demo.load_messages("iMessage;-;+14155550134", LoadMessagesOptions { limit: 50, before: None }).await.unwrap();
-        assert_eq!(alex.items.len(), 13);
+        assert_eq!(alex.items.len(), 14);
+        assert_eq!(alex.items[13].attachments[0].mime, "video/mp4");
         assert_eq!(alex.items[12].attachments[0].mime, "image/gif");
         assert_eq!(alex.items[11].reply_to.as_deref(), Some("demo-msg-0006"));
         assert_eq!(alex.items[5].guid, "demo-msg-0006");
@@ -1107,6 +1149,6 @@ mod tests {
         let now = now_ms();
         let recent = demo.search_messages("", &SearchFilters { after: Some(now - 30 * MIN), ..SearchFilters::default() }).await.unwrap();
         assert!(recent.iter().all(|message| message.date > now - 30 * MIN));
-        assert_eq!(recent.len(), 7);
+        assert_eq!(recent.len(), 8);
     }
 }

@@ -1,4 +1,4 @@
-//! Avatar, IconButton, Button, Divider, SectionLabel and the
+//! Avatar, IconButton, Button, Chip, Divider, SectionLabel and the
 //! password-masking text field wrapper.
 
 use gpui_kit::component::box_shadow;
@@ -201,6 +201,59 @@ impl RenderOnce for Button {
                 })
             })
             .child(div().text_color(fg).font_weight(FontWeight::SEMIBOLD).text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).child(self.label))
+    }
+}
+
+/// A removable token: a recipient in the To: row, a staged attachment. The
+/// remove button keeps the 24 px hit target the banners use, so every close
+/// control in the composer area is the same size.
+#[derive(IntoElement)]
+pub struct Chip {
+    id: ElementId,
+    label: SharedString,
+    leading: Option<AnyElement>,
+    remove_label: SharedString,
+    on_remove: Option<std::rc::Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl Chip {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        Self { id: id.into(), remove_label: format!("Remove {label}").into(), label, leading: None, on_remove: None }
+    }
+
+    pub fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
+        self
+    }
+
+    pub fn on_remove(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_remove = Some(std::rc::Rc::new(handler));
+        self
+    }
+}
+
+impl RenderOnce for Chip {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let palette = Theme::get(cx);
+        let remove_id: SharedString = format!("{}-remove", self.id).into();
+        div()
+            .id(self.id)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(spacing::X1)
+            .h(px(24.))
+            .max_w(px(220.))
+            .pl(if self.leading.is_some() { px(3.) } else { spacing::X2 })
+            .rounded(radius::PILL)
+            .bg(palette.selected_soft)
+            .flex_shrink_0()
+            .children(self.leading)
+            .child(div().min_w(px(0.)).text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.accent).text_ellipsis().child(self.label))
+            .when_some(self.on_remove, |el, handler| {
+                el.child(IconButton::new(remove_id, IconName::Close, self.remove_label).size(px(11.)).hit(px(24.)).color(palette.accent).on_click(move |event, window, cx| handler(event, window, cx)))
+            })
     }
 }
 

@@ -38,8 +38,10 @@ enum Row {
     Chat(Arc<Chat>),
     ResultsHeader,
     Result(Message, Arc<Chat>),
-    Note { title: SharedString, body: SharedString },
+    Note { title: SharedString, body: Option<SharedString> },
 }
+
+const SEARCH_FAILED: &str = "Search failed. Try again.";
 
 const OPERATOR_TIPS: [&str; 4] = ["from:name or from:me", "has:photo, has:video, has:file or has:link", "before:2024-01-01, after:2024-01-01", "in:chat name"];
 
@@ -47,6 +49,8 @@ pub struct Sidebar {
     app: WeakEntity<AppRoot>,
     search_state: Entity<InputState>,
     results: Vec<Message>,
+    /// Set when the last search request failed; shown where the empty state would be.
+    search_error: Option<String>,
     search_epoch: u64,
     cursor: Option<String>,
     selected: Option<String>,
@@ -100,6 +104,7 @@ impl Sidebar {
             app,
             search_state,
             results: Vec::new(),
+            search_error: None,
             search_epoch: 0,
             cursor: None,
             selected: None,
@@ -159,11 +164,15 @@ impl Sidebar {
         let has_filter =
             parsed.from_me || !parsed.senders.is_empty() || parsed.attachments.is_some() || parsed.links || parsed.before.is_some() || parsed.after.is_some() || !parsed.chat_names.is_empty();
         if free_text.len() < 2 && !has_filter {
-            if !self.results.is_empty() {
+            if !self.results.is_empty() || self.search_error.is_some() {
                 self.results.clear();
+                self.search_error = None;
                 cx.notify();
             }
             return;
+        }
+        if self.search_error.take().is_some() {
+            cx.notify();
         }
         let (query_text, mut filters) = {
             let state = store.state();
@@ -177,14 +186,23 @@ impl Sidebar {
             let _ = tx.send(result);
         });
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(messages)) = rx.await {
-                let _ = this.update(cx, |this, cx| {
-                    if this.search_epoch == epoch {
+            let outcome = rx.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.search_epoch != epoch {
+                    return;
+                }
+                match outcome {
+                    Ok(Ok(messages)) => {
                         this.results = messages;
-                        cx.notify();
+                        this.search_error = None;
                     }
-                });
-            }
+                    _ => {
+                        this.results.clear();
+                        this.search_error = Some(SEARCH_FAILED.to_owned());
+                    }
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -271,7 +289,7 @@ impl Render for Sidebar {
         let has_filter =
             parsed.from_me || !parsed.senders.is_empty() || parsed.attachments.is_some() || parsed.links || parsed.before.is_some() || parsed.after.is_some() || !parsed.chat_names.is_empty();
 
-        let (people, host, status, pending, selected_chat, chats_empty) = match &store {
+        let (people, host, status, connection_error, pending, selected_chat, chats_empty) = match &store {
             Some(store) => {
                 let state = store.state();
                 let people = conversation_chats(&state);
@@ -285,9 +303,9 @@ impl Render for Sidebar {
                     String::new()
                 };
                 let empty = state.chats.is_empty();
-                (people, host, state.status, store.pending_sends(), state.selected_chat.clone(), empty)
+                (people, host, state.status, state.connection_error.clone(), store.pending_sends(), state.selected_chat.clone(), empty)
             }
-            None => (Vec::new(), String::new(), ConnectionStatus::Connecting, 0, None, true),
+            None => (Vec::new(), String::new(), ConnectionStatus::Connecting, None, 0, None, true),
         };
         self.selected = selected_chat;
 
@@ -316,7 +334,8 @@ impl Render for Sidebar {
         self.order = pinned.iter().chain(rest.iter()).map(|chat| chat.guid.clone()).collect();
         // Rows nobody placed this pass are gone from the sidebar (deleted,
         // filtered out); dropping them stops the topic watches for good.
-        self.rows.retain(|guid, _| self.order.contains(guid));
+        let placed: HashSet<&str> = self.order.iter().map(String::as_str).collect();
+        self.rows.retain(|guid, _| placed.contains(guid.as_str()));
 
         let show_tips = has_query && !has_filter && rest.is_empty() && pinned.is_empty() && self.results.is_empty() && query.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
 
@@ -338,10 +357,13 @@ impl Render for Sidebar {
             }
         }
         if has_query && rest.is_empty() && pinned.is_empty() && self.results.is_empty() {
-            items.push(Row::Note { title: format!("No results for \u{201c}{query}\u{201d}").into(), body: "Try a name, number or a word from a message.".into() });
+            items.push(match &self.search_error {
+                Some(error) => Row::Note { title: error.clone().into(), body: None },
+                None => Row::Note { title: format!("No results for \u{201c}{query}\u{201d}").into(), body: Some("Try a name, number or a word from a message.".into()) },
+            });
         }
         if !has_query && chats_empty && matches!(status, ConnectionStatus::Online) {
-            items.push(Row::Note { title: "No conversations yet".into(), body: "Start one with the compose button.".into() });
+            items.push(Row::Note { title: "No conversations yet".into(), body: Some("Start one with the compose button.".into()) });
         }
         self.items = items;
 
@@ -477,7 +499,11 @@ impl Render for Sidebar {
         let (status_color, status_label) = {
             let queued = if pending > 0 { format!(" \u{b7} {}", messages_core::format::pluralize(pending, "message waiting", Some("messages waiting"))) } else { String::new() };
             match status {
-                ConnectionStatus::Online => (palette.online, format!("{host}{queued}")),
+                // Online with an error is a socket that is up while the REST side keeps failing to refresh.
+                ConnectionStatus::Online => match &connection_error {
+                    Some(error) => (palette.warning, format!("{error}{queued}")),
+                    None => (palette.online, format!("{host}{queued}")),
+                },
                 ConnectionStatus::Connecting => (palette.warning, format!("Connecting\u{2026}{queued}")),
                 ConnectionStatus::Offline => (palette.offline, format!("Offline, retrying\u{2026}{queued}")),
             }
@@ -559,7 +585,9 @@ fn render_row(sidebar: &mut Sidebar, index: usize, window: &mut Window, cx: &mut
                 .pt(spacing::X10)
                 .px(spacing::X4)
                 .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_align(TextAlign::Center).child(title.clone()))
-                .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child(body.clone()))
+                .when_some(body.clone(), |el, body| {
+                    el.child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child(body))
+                })
                 .into_any_element()
         }
     }

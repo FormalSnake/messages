@@ -138,6 +138,22 @@ A change calls `refresh_windows`, which redraws cached views too.
 The composer's GIF picker talks to the Klipy GIF API through `KlipyClient` in
 `crates/core/src/gifs.rs`, shown only when `config.klipy` (an `apiKey`) is set.
 
+Videos play in the lightbox, not in an external player. `crates/core/src/video.rs`
+probes the file with ffprobe (size with the container rotation applied, frame
+rate, duration, whether there is sound) and runs two ffmpeg processes per
+`Playback`: one decodes the picture to raw BGRA frames at the size the lightbox
+shows them, piped through stdout; the other decodes the sound to f32 at the
+device's own rate for `audio.rs`, a cpal output stream on its own thread. The
+frame task paces itself on the sample frames the device has played (wall time
+when there is no track or no device), drops frames it is late for, and hands
+the rest to `crates/desktop/src/video.rs` through a bounded channel, where each
+becomes a `RenderImage` painted on a canvas and the previous texture is
+released. Pausing stops the clock and stops reading the pipes, so ffmpeg
+blocks on a full pipe; a seek is a new `Playback` at the position, and the
+first frame goes through even while paused so the picture lands. Dropping the
+`Playback` kills both processes. On Linux cpal links `alsa-lib`, which the
+dev shell provides; without a device the video still plays, silent.
+
 `crates/core/src/assistant.rs` (`CanaryLlmClient`) backs the summarize,
 translate and transcribe buttons in the desktop UI; every call is triggered by
 a click, never a timer or an incoming message, sends at most the last 200
@@ -169,8 +185,8 @@ GPUI's profiler, so it stays out of normal builds). Config lives in
 `$XDG_CACHE_HOME/messages/attachments`.
 
 On NixOS, build and run inside the dev shell (`nix develop -c cargo run ...`):
-it provides pkg-config, the headers, and the dlopened Wayland, Vulkan and
-fontconfig libraries on `LD_LIBRARY_PATH`. Keep `flake.nix` git-tracked or
+it provides pkg-config, the headers, alsa-lib for cpal, and the dlopened
+Wayland, Vulkan and fontconfig libraries on `LD_LIBRARY_PATH`. Keep `flake.nix` git-tracked or
 the flake is invisible. `scripts/install-linux.sh` installs the desktop entry
 and icon so GNOME and Hyprland match the window's app id
 (`es.canarycoders.messages`).

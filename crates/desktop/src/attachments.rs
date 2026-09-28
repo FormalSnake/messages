@@ -660,11 +660,11 @@ pub fn photo_grid(row: &MessageRow, photos: &[Attachment], tail: Option<TailFill
                         .top_0()
                         .left_0()
                         .size_full()
-                        .bg(hsla(0., 0., 0., 0.5))
+                        .bg(palette.scrim)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(white()).children(row.model.more.clone()))
+                        .child(div().text_size(px(22.)).line_height(px(28.)).font_weight(FontWeight::SEMIBOLD).text_color(palette.on_scrim).children(row.model.more.clone()))
                 });
                 let tile_el = div()
                     .id(("tile", tile.index))
@@ -707,9 +707,9 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         return tail_box(from_me, tail, palette, body).into_any_element();
     }
     let duration = row.model.labels.get(&attachment.guid).and_then(|labels| labels.duration.clone()).filter(|_| poster.is_none());
-    let attachment_for_open = attachment.clone();
     let body = div()
         .id(("video", index))
+        .debug_selector(|| format!("video-{}", attachment.guid))
         .w(px(width))
         .h(px(height))
         .rounded(radius::BUBBLE)
@@ -717,9 +717,7 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
         .cursor_pointer()
         .bg(hsla(240. / 360., 0.03, 0.11, 1.))
         .hover(|style| style.opacity(0.94))
-        .on_click(cx.listener(move |row, _, _, cx| {
-            open_attachment(row, &attachment_for_open, cx);
-        }))
+        .on_click(open_lightbox(attachment, &row.model.message))
         .when_some(poster.clone(), |el, (path, _, _)| el.child(sized_img(&path, width, height, ObjectFit::Contain).rounded(radius::BUBBLE)))
         .child(
             div()
@@ -729,14 +727,14 @@ pub fn video(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
                 .w(px(PLAY_CIRCLE))
                 .h(px(PLAY_CIRCLE))
                 .rounded(px(PLAY_CIRCLE / 2.))
-                .bg(hsla(0., 0., 0., 0.5))
+                .bg(palette.scrim)
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(svg().path(gpui_kit::assets::IconName::Play.path()).size(px(18.)).ml(px(2.)).text_color(white())),
+                .child(svg().path(gpui_kit::assets::IconName::Play.path()).size(px(18.)).ml(px(2.)).text_color(palette.on_scrim)),
         )
         .when_some(duration, |el, duration| {
-            el.child(div().absolute().bottom(px(8.)).right(px(10.)).text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).font_weight(FontWeight::SEMIBOLD).text_color(white()).child(duration))
+            el.child(div().absolute().bottom(px(8.)).right(px(10.)).text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.on_scrim).child(duration))
         });
     tail_box(from_me, picture_tail(tail, poster.map(|(path, _, _)| path), "", width, height, false), palette, body).into_any_element()
 }
@@ -877,7 +875,7 @@ pub fn audio(row: &MessageRow, index: usize, attachment: &Attachment, tail: Opti
                 .w(px(32.))
                 .h(px(32.))
                 .rounded(px(16.))
-                .bg(if from_me { hsla(0., 0., 1., 0.16) } else { palette.ghost })
+                .bg(if from_me { crate::theme::with_alpha(palette.on_accent, 0x29) } else { palette.ghost })
                 .flex()
                 .items_center()
                 .justify_center()
@@ -952,7 +950,7 @@ pub fn file(row: &MessageRow, index: usize, attachment: &Attachment, fill: Hsla,
                 .flex_col()
                 .min_w(px(0.))
                 .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).font_weight(FontWeight::SEMIBOLD).text_color(fg).whitespace_nowrap().text_ellipsis().child(name))
-                .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(if from_me { hsla(0., 0., 1., 0.7) } else { palette.secondary }).children(row.model.labels.get(&attachment.guid).map(|labels| labels.size.clone()))),
+                .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(if from_me { palette.on_accent_soft } else { palette.secondary }).children(row.model.labels.get(&attachment.guid).map(|labels| labels.size.clone()))),
         )
         .into_any_element()
 }
