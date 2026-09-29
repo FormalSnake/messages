@@ -27,6 +27,7 @@ mod switcher;
 // D2 thread
 mod attachments;
 mod bubble;
+mod swipe;
 mod gif;
 mod lightbox;
 mod reply_thread;

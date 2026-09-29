@@ -267,6 +267,38 @@ fn reply_shows_the_banner_and_sending_clears_it() {
 }
 
 #[::core::prelude::v1::test]
+fn a_two_finger_swipe_right_on_a_bubble_replies_to_it() {
+    let mut app = TestAppContext::single();
+    let cx = &mut app;
+    let (_root, cx) = boot(cx, demo_config(&[]));
+    let guid = {
+        let store = store(cx);
+        let state = store.state();
+        conversation_messages(&state, ALEX).iter().find(|message| message.text == "the buttons are wrong and the layout is broken").map(|message| message.guid.clone()).expect("fixture")
+    };
+    let selector: &'static str = Box::leak(format!("bubble-text-{guid}").into_boxed_str());
+    wait_until(cx, "the bubble", |cx| cx.debug_bounds(selector).is_some());
+    let scroll = |cx: &mut VisualTestContext, dx: f32, dy: f32, touch_phase| {
+        let position = cx.debug_bounds(selector).expect("the bubble").center();
+        cx.simulate_event(gpui_kit::ScrollWheelEvent { position, delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(dx), gpui_kit::px(dy))), modifiers: Modifiers::none(), touch_phase });
+        cx.run_until_parked();
+    };
+
+    scroll(cx, 0., 0., gpui_kit::TouchPhase::Started);
+    scroll(cx, 0., 30., gpui_kit::TouchPhase::Moved);
+    scroll(cx, 0., 0., gpui_kit::TouchPhase::Ended);
+    assert!(!store(cx).state().replying_to.contains_key(ALEX), "a vertical scroll replied");
+
+    scroll(cx, 0., 0., gpui_kit::TouchPhase::Started);
+    for _ in 0..4 {
+        scroll(cx, 20., 1., gpui_kit::TouchPhase::Moved);
+    }
+    scroll(cx, 0., 0., gpui_kit::TouchPhase::Ended);
+    assert_eq!(store(cx).state().replying_to.get(ALEX), Some(&guid));
+    wait_until(cx, "the reply banner", |cx| cx.debug_bounds("reply-banner").is_some());
+}
+
+#[::core::prelude::v1::test]
 fn escape_closes_the_topmost_overlay_first() {
     let mut app = TestAppContext::single();
     let cx = &mut app;

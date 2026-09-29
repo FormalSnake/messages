@@ -25,6 +25,7 @@ use crate::bridge::{Bridge, Topic};
 use crate::icons::{Icon, IconName};
 use crate::menus::{MenuItem, MenuRequest};
 use crate::motion::{DURATION_BASE, eased_since};
+use crate::swipe::{self, Step, Swipe};
 use crate::theme::{BUBBLE_MAX_WIDTH, Palette, THREAD_INSET, Theme, TypeStyle, font_emoji, radius, spacing, tabular, type_scale, with_alpha};
 use crate::thread::Thread;
 use crate::thread_rows::{EDIT_WINDOW_MS, MessageRowData, TapbackGroup, UNSEND_WINDOW_MS, bubble_radius, effect_name, now_ms, tapback_groups};
@@ -40,6 +41,7 @@ const TIME_COLUMN: f32 = 54.;
 const FRESH_AFTER: Duration = Duration::from_millis(500);
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const ROW_GROUP: &str = "message-row";
+const REPLY_ARROW: f32 = 16.;
 
 const BIG: TypeStyle = TypeStyle { font_size: px(22.), line_height: px(28.), font_weight: 400. };
 const SMALL: TypeStyle = TypeStyle { font_size: px(11.), line_height: px(15.), font_weight: 400. };
@@ -369,6 +371,11 @@ pub struct MessageRow {
     /// When each tapback glyph first showed, so a pill that lands on an open thread fades in.
     tapback_seen: HashMap<String, Option<Instant>>,
     last_click: Option<Instant>,
+    swipe: Swipe,
+    /// Ends a swipe whose stream went quiet without an Ended phase.
+    swipe_timer: Option<Task<()>>,
+    /// When a released swipe started easing back, and from where.
+    settle: Option<(Instant, f32)>,
 }
 
 impl MessageRow {
@@ -388,6 +395,9 @@ impl MessageRow {
             mounted_at: Instant::now(),
             tapback_seen,
             last_click: None,
+            swipe: Swipe::default(),
+            swipe_timer: None,
+            settle: None,
         };
         Media::sync(&mut row, cx);
         row
@@ -460,6 +470,46 @@ impl MessageRow {
         if double {
             self.open_picker(event.position(), window, cx);
         }
+    }
+
+    fn can_reply(&self) -> bool {
+        self.capabilities().replies && !self.failed()
+    }
+
+    fn on_scroll(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_reply() {
+            return;
+        }
+        let delta = event.delta.pixel_delta(window.line_height());
+        let before = self.swipe.offset();
+        match self.swipe.feed(f32::from(delta.x), f32::from(delta.y), event.touch_phase, Instant::now()) {
+            Step::Pass => return,
+            Step::Track if self.swipe.active() => {
+                self.settle = None;
+                self.swipe_timer = Some(cx.spawn(async move |row, cx| {
+                    cx.background_executor().timer(swipe::QUIET).await;
+                    let _ = row.update(cx, |row, cx| {
+                        let from = row.swipe.offset();
+                        if let Some(reply) = row.swipe.expire(Instant::now()) {
+                            row.release(from, reply, cx);
+                        }
+                    });
+                }));
+            }
+            Step::Track => {}
+            Step::Release { reply } => self.release(before, reply, cx),
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn release(&mut self, from: f32, reply: bool, cx: &mut Context<Self>) {
+        self.settle = (from > 0.).then(|| (Instant::now(), from));
+        self.swipe_timer = None;
+        if reply {
+            self.store.set_replying_to(&self.props.primary, Some(&self.model.message.guid));
+        }
+        cx.notify();
     }
 
     fn open_message_menu(&mut self, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -898,8 +948,29 @@ impl Render for MessageRow {
                 })
         });
 
+        let settling = self.settle.and_then(|(started, from)| eased_since(started, DURATION_BASE, cx).map(|progress| from * (1. - progress)));
+        if settling.is_some() {
+            window.request_animation_frame();
+        } else {
+            self.settle = None;
+        }
+        let offset = settling.unwrap_or_else(|| self.swipe.offset());
+        let reply_arrow = (offset > 0.).then(|| {
+            let progress = (offset / swipe::REPLY_AT).min(1.);
+            let armed = self.swipe.active() && progress >= 1.;
+            div()
+                .absolute()
+                .left(px(-REPLY_ARROW - 8.))
+                .top_0()
+                .bottom_0()
+                .flex()
+                .items_center()
+                .opacity(progress)
+                .child(Icon::new(IconName::Reply).size(px(REPLY_ARROW)).color(if armed { palette.accent } else { palette.secondary }))
+        });
+
         let align = |el: Div| if from_me { el.items_end() } else { el.items_start() };
-        let content = align(div().flex().flex_col().max_w(relative(0.62)).min_w(px(0.))).child(
+        let content = align(div().relative().left(px(offset)).flex().flex_col().max_w(relative(0.62)).min_w(px(0.))).children(reply_arrow).child(
             align(div().flex().flex_col().max_w(BUBBLE_MAX_WIDTH).min_w(px(0.)))
                 .children(quote)
                 .child(align(div().relative().max_w_full().flex().flex_col().when(has_tapbacks && !quoted, |el| el.mt(px(TAPBACK_LIFT)))).child(blocks).children(tapbacks))
@@ -952,6 +1023,7 @@ impl Render for MessageRow {
         div()
             .id("message-row")
             .group(ROW_GROUP)
+            .on_scroll_wheel(cx.listener(Self::on_scroll))
             .relative()
             .child(measure)
             .flex()
