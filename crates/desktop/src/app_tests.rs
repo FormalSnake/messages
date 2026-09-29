@@ -398,3 +398,35 @@ fn reads_a_conversation_only_once_its_thread_is_used() {
     cx.simulate_click(gpui_kit::point(bounds.center().x + gpui_kit::px(200.), bounds.center().y + gpui_kit::px(300.)), Modifiers::none());
     wait_until(cx, "Morgan read", |_| !unread(&live));
 }
+
+#[::core::prelude::v1::test]
+fn a_quoted_reply_narrows_with_the_window() {
+    let mut app = TestAppContext::single();
+    let cx = &mut app;
+    let (root, cx) = boot(cx, demo_config(&[]));
+    wait_until(cx, "family row", |cx| cx.debug_bounds("chat-iMessage;+;chat240119384759").is_some());
+    click(cx, "chat-iMessage;+;chat240119384759");
+    wait_until(cx, "family", |cx| selected_title(&root, cx).is_some());
+    cx.simulate_input("kan je justine mss ook wat nudgen voor de befit2sail ToS info? befit hangt even vast op apple en legal docs");
+    click(cx, "send");
+    wait_until(cx, "the quoted message", |cx| texts(cx, FAMILY).iter().any(|text| text.starts_with("kan je justine")));
+    let mut reply = {
+        let store = store(cx);
+        let state = store.state();
+        let messages = conversation_messages(&state, FAMILY);
+        let target = messages.iter().find(|message| message.text.starts_with("kan je justine")).map(|message| message.guid.clone());
+        let mut reply = (**messages.iter().rev().find(|message| !message.from_me).expect("fixture")).clone();
+        reply.reply_to = target;
+        reply
+    };
+    reply.guid = "quoted-reply".into();
+    reply.text = "Genereer zelf een startpunt en laat dat dan even nalezen door justine".into();
+    reply.date = crate::thread_rows::now_ms();
+    store(cx).apply_message(reply, true, true);
+    wait_until(cx, "the reply", |cx| cx.debug_bounds("bubble-text-quoted-reply").is_some());
+
+    cx.simulate_resize(gpui_kit::size(gpui_kit::px(700.), gpui_kit::px(900.)));
+    cx.run_until_parked();
+    let text = cx.debug_bounds("bubble-text-quoted-reply").expect("the reply");
+    assert!(text.right() <= gpui_kit::px(700.), "the reply runs off the window: {text:?}");
+}

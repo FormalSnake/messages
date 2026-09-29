@@ -853,25 +853,19 @@ impl Render for MessageRow {
             div()
                 .id("quote")
                 .flex()
-                .flex_row()
-                .gap(spacing::X2)
+                .flex_col()
                 .mb(spacing::X1)
                 .max_w_full()
+                .pl(spacing::X2)
+                .border_l_2()
+                .border_color(if from_me { palette.imessage } else { palette.tertiary })
                 .cursor_pointer()
                 .hover(|style| style.opacity(0.8))
                 .on_click(move |_, _, cx| {
                     let _ = thread.update(cx, |thread, cx| thread.jump_to(&target, cx));
                 })
-                .child(div().w(px(2.)).rounded(px(1.)).flex_shrink_0().bg(if from_me { palette.imessage } else { palette.tertiary }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_shrink(1.)
-                        .min_w(px(0.))
-                        .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.secondary).child(quote.who))
-                        .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).line_clamp(2).child(quote.body)),
-                )
+                .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.secondary).child(quote.who))
+                .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).line_clamp(2).child(quote.body))
         });
 
         let blocks = self.render_blocks(&palette, cx);
