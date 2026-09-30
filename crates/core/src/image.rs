@@ -212,7 +212,7 @@ pub fn is_heif(bytes: &[u8]) -> bool {
 pub async fn heif_to_png(source: &Path, target: &Path) -> bool {
     let attempts: [&[&str]; 2] = [&["-filter_complex", "[0:v:0][0:v:1]alphamerge"], &[]];
     for filter in attempts {
-        let status = tokio::process::Command::new("ffmpeg")
+        let status = crate::process::async_command("ffmpeg")
             .args(["-y", "-v", "error", "-i"])
             .arg(source)
             .args(filter)

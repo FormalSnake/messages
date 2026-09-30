@@ -55,7 +55,7 @@ pub async fn probe(path: &Path) -> Option<VideoInfo> {
     if !available() {
         return None;
     }
-    let output = tokio::process::Command::new("ffprobe")
+    let output = crate::process::async_command("ffprobe")
         .args(["-v", "error", "-show_entries", "stream=codec_type,width,height,avg_frame_rate,r_frame_rate:stream_side_data=rotation:format=duration", "-of", "json"])
         .arg(path)
         .stdin(Stdio::null())
@@ -249,7 +249,7 @@ impl Drop for Playback {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_video(path: PathBuf, start: f64, fps: f64, width: u32, height: u32, clock: Arc<Clock>, mut paused: watch::Receiver<bool>, frames: mpsc::Sender<VideoFrame>, position: Arc<AtomicU64>, ended: Arc<AtomicBool>) {
-    let spawned = tokio::process::Command::new("ffmpeg")
+    let spawned = crate::process::async_command("ffmpeg")
         .args(["-v", "error", "-nostdin", "-ss", &format!("{start:.3}"), "-i"])
         .arg(&path)
         .args(["-map", "0:v:0", "-an", "-fps_mode", "cfr", "-r", &format!("{fps:.4}"), "-vf", &format!("scale={width}:{height}"), "-pix_fmt", "bgra", "-f", "rawvideo", "pipe:1"])
@@ -311,7 +311,7 @@ async fn run_audio(path: PathBuf, start: f64, clock: Arc<Clock>) {
     let sink = Arc::new(sink);
     let format = sink.format();
     clock.set_sink(sink.clone());
-    let spawned = tokio::process::Command::new("ffmpeg")
+    let spawned = crate::process::async_command("ffmpeg")
         .args(["-v", "error", "-nostdin", "-ss", &format!("{start:.3}"), "-i"])
         .arg(&path)
         .args(["-map", "0:a:0", "-vn", "-f", "f32le", "-ac", &format.channels.to_string(), "-ar", &format.rate.to_string(), "pipe:1"])

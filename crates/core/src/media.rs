@@ -114,7 +114,7 @@ impl MediaWorker {
     }
 
     async fn run_ffmpeg_still(&self, source: &Path, filter: &str, quality: u8, target: &Path) -> Option<PathBuf> {
-        let mut command = tokio::process::Command::new("ffmpeg");
+        let mut command = crate::process::async_command("ffmpeg");
         command.args(["-y", "-noautorotate", "-i"]).arg(source).args(["-vf", filter, "-frames:v", "1", "-q:v", &quality.to_string()]).arg(target);
         self.run_ffmpeg(command, target).await
     }
@@ -194,7 +194,7 @@ impl MediaWorker {
         let video = video.to_path_buf();
         let target_job = target.clone();
         self.once(&target, async move {
-            let mut command = tokio::process::Command::new("ffmpeg");
+            let mut command = crate::process::async_command("ffmpeg");
             command.args(["-y", "-ss", "0.5", "-i"]).arg(&video).args(["-frames:v", "1", "-vf", "scale=640:-1"]).arg(&target_job);
             self.run_ffmpeg(command, &target_job).await
         })

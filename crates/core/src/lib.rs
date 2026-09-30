@@ -21,6 +21,7 @@ pub mod media;
 pub mod model;
 pub mod notify;
 pub mod open;
+pub mod process;
 pub mod search;
 pub mod store;
 pub mod transport;

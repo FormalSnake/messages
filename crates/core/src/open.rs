@@ -13,7 +13,7 @@ pub fn open_external(target: &str) {
     let result = if cfg!(target_os = "macos") {
         Command::new("open").arg(target).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
     } else if cfg!(windows) {
-        Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(target).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+        crate::process::command("rundll32").arg("url.dll,FileProtocolHandler").arg(target).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
     } else {
         Command::new("xdg-open").arg(target).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
     };
@@ -89,7 +89,7 @@ pub fn play_audio(path: &Path) -> bool {
         if which::which(bin).is_err() {
             continue;
         }
-        let mut cmd = Command::new(bin);
+        let mut cmd = crate::process::command(bin);
         cmd.args(&command[1..]).arg(path).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
             Ok(child) => {
