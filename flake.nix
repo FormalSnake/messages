@@ -1,14 +1,25 @@
 {
-  description = "Messages: dev shell with the libraries the GPUI client needs on Linux";
+  description = "Messages: an iMessage client for Linux, backed by BlueBubbles";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+      linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
+      packages = nixpkgs.lib.genAttrs linuxSystems (system: rec {
+        messages = nixpkgs.legacyPackages.${system}.callPackage ./nix/package.nix { };
+        default = messages;
+      });
+
+      overlays.default = final: _: { messages = final.callPackage ./nix/package.nix { }; };
+
+      homeModules.default = import ./nix/hm-module.nix self;
+      homeManagerModules.default = self.homeModules.default;
+
       devShells = forAll (pkgs:
         let
           # gpui-pre links libxkbcommon and freetype at build time and dlopens

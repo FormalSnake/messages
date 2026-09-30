@@ -3,8 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// Resolved against the source tree, which only holds for a binary built from
-/// a checkout; a packaged build has to ship this file and point here at it.
+/// A packaged build sets `MESSAGES_ICON_PATH` at compile time to where it
+/// installs the icon; a build from a checkout reads it from the source tree.
 pub fn icon_svg_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/linux/es.canarycoders.messages.svg")
+    match option_env!("MESSAGES_ICON_PATH") {
+        Some(path) => PathBuf::from(path),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/linux/es.canarycoders.messages.svg"),
+    }
 }

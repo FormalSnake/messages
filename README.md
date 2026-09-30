@@ -2,7 +2,7 @@
 
 iMessage on Linux, rendered on the GPU, with a Mac doing the talking to Apple.
 
-![The app on Linux, running under Hyprland on the demo conversations](docs/linux.png)
+![A group thread with formatted text, a mention, a tapback and a big-text effect](docs/screenshots/thread.png)
 
 This is a hobby project. It exists because I wanted iMessage on my Linux
 laptop and the existing options felt like a bandaid: threads that only refresh
@@ -38,7 +38,7 @@ header it touches, so the window idles at 0% CPU, and the message list stays
 smooth with years of history because only visible rows exist. It runs on
 Linux (GNOME and Hyprland on Wayland), Windows and macOS.
 
-![A group thread with a photo, formatted text, a mention and a tapback](docs/mac-rich.png)
+![A family group with a photo and the details panel open](docs/screenshots/details.png)
 
 Bubbles render what Messages puts in them: bold, strikethrough, underlined
 links, mentions, the big and small text effects, photos between lines of text,
@@ -46,7 +46,7 @@ stickers, audio messages, videos, files and link previews. Right-click a bubble
 for tapbacks, reply, copy, edit and unsend; double-click it for the tapback
 picker.
 
-![The message context menu with the tapback row](docs/mac-menu.png)
+![The conversation switcher, Ctrl+K](docs/screenshots/switcher.png)
 
 ## What works
 
@@ -216,15 +216,62 @@ incoming message, and no attachment bytes ever leave the machine, only text,
 sender name and time. Nothing is sent to anyone; the gateway only reads what
 you ask it to.
 
+## Nix
+
+The flake builds the client for `x86_64-linux` and `aarch64-linux`. The
+binary finds ffmpeg, `notify-send` and `xdg-open` through a wrapper, and the
+libraries GPUI loads at runtime through its rpath, so it does not care what
+the host has installed.
+
+```
+nix run github:FormalSnake/messages
+MESSAGES_DEMO=1 nix run github:FormalSnake/messages   # fixtures, no Mac needed
+```
+
+### Home Manager
+
+The flake exports a module that installs the app with its desktop entry and
+icon, and can start it with the session:
+
+```nix
+{
+  inputs.messages = {
+    url = "github:FormalSnake/messages";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  # in your home-manager configuration
+  imports = [ inputs.messages.homeModules.default ];
+
+  programs.messages = {
+    enable = true;
+    autostart = true;                                # systemd user unit on graphical-session.target
+    environmentFile = "/run/agenix/messages.env";    # optional, see below
+    theme = { accent = "#6099c0"; };                 # optional, writes ~/.config/messages/theme.json
+  };
+}
+```
+
+The server address and password normally go through the connect screen,
+which writes `~/.config/messages/config.json` itself, so the module leaves
+that file alone. To keep them declarative without putting them in the store,
+point `environmentFile` at a secret with `MESSAGES_SERVER_URL` and
+`MESSAGES_SERVER_PASSWORD` (plus `MESSAGES_AGENT_URL`/`MESSAGES_AGENT_TOKEN`,
+`MESSAGES_KLIPY_KEY` or `MESSAGES_CANARYLLM_KEY` if you use them); it is read
+by the autostart unit. Leave `theme` empty if matugen or another tool writes
+`theme.json`.
+
+Without flakes, `overlays.default` adds `pkgs.messages`.
+
 ## Install on Linux
 
 You need a Rust toolchain (edition 2024, so 1.85 or newer) and a GPU with
 Vulkan. `ffmpeg` on `PATH` is
 optional: without it a video is a dark box with a play button instead of a
 poster frame, and the tiles of a photo grid letterbox the whole picture
-instead of filling their box. On NixOS the installer builds inside
-`flake.nix`'s dev shell, which also provides the system libraries the window
-loads at runtime.
+instead of filling their box. On NixOS use the flake above, or let the
+installer build inside `flake.nix`'s dev shell, which also provides the
+system libraries the window loads at runtime.
 
 ```
 git clone https://github.com/FormalSnake/messages ~/Developer/messages
@@ -308,9 +355,12 @@ scripts/screenshot.sh                             # screenshots/messages.png fro
 `crates/core` is the backend: types, the `Transport` trait, the BlueBubbles
 client, the store, the demo fixtures. `crates/desktop` is the window.
 `apps/mac-agent` is the TypeScript agent that runs on the Mac (`bun run
-agent`). `CLAUDE.md` has the details that bit me while building it, including
+agent`). The screenshots above are `scripts/screenshot.sh` on macOS with
+`MESSAGES_SCREENSHOT_CHAT` set to a demo chat guid and
+`MESSAGES_SCREENSHOT_SCENE` set to `info` or `switcher`. `CLAUDE.md` has the details that bit me while building it, including
 the GPUI rules.
 
 ## License
 
-MIT.
+[MIT](LICENSE). The bundled Noto Sans faces in `packaging/fonts` are under
+the SIL Open Font License (`packaging/fonts/OFL.txt`).

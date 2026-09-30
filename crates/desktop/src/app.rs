@@ -686,7 +686,8 @@ impl AppRoot {
     }
 }
 
-/// `bun run screenshot`: once the demo has a conversation open, give the
+/// `scripts/screenshot.sh`: once the demo has a conversation open (or the one
+/// `MESSAGES_SCREENSHOT_CHAT` names), give the
 /// images a moment to decode, render the frame offscreen (animations jumped to
 /// their end) and write it as a PNG, then quit.
 #[cfg(feature = "screenshot")]
@@ -700,6 +701,11 @@ fn screenshot(out: std::path::PathBuf, window: &mut Window, cx: &mut Context<App
             if ready || started.elapsed() > std::time::Duration::from_secs(30) {
                 break;
             }
+        }
+        if let Ok(guid) = std::env::var("MESSAGES_SCREENSHOT_CHAT")
+            && let Ok(Some(store)) = cx.update(|_, cx| crate::bridge::store(cx))
+        {
+            store.select_chat(Some(&guid)).await;
         }
         cx.background_executor().timer(std::time::Duration::from_millis(2500)).await;
         let _ = cx.update(|window, cx| {

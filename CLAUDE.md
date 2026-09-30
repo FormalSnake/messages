@@ -181,6 +181,7 @@ MESSAGES_DEMO=1 cargo run --release -p messages        # fixtures, no Mac needed
 cargo test --workspace                                 # core tests, then GPUI app tests on the demo transport
 scripts/screenshot.sh                                  # screenshots/messages.png from the demo data
 bun run agent                                          # the Mac agent, on the Mac
+nix build .#messages                                   # the Linux package (nix/package.nix), build it on a Linux box
 ```
 
 Env overrides: `MESSAGES_SERVER_URL` + `MESSAGES_SERVER_PASSWORD`,
@@ -191,6 +192,12 @@ capture, macOS only) and `frame-overlay` (F12 frame timings; it turns on
 GPUI's profiler, so it stays out of normal builds). Config lives in
 `$XDG_CONFIG_HOME/messages/config.json`, the attachment cache in
 `$XDG_CACHE_HOME/messages/attachments`.
+
+`nix/package.nix` is the flake's package and `nix/hm-module.nix` its Home
+Manager module (`programs.messages`). The package bakes `MESSAGES_ICON_PATH`
+in at compile time so notifications find the installed icon, and never owns
+`config.json`, which the app writes itself. README screenshots come from
+`scripts/screenshot.sh` with `MESSAGES_SCREENSHOT_CHAT=<demo guid>`.
 
 On NixOS, build and run inside the dev shell (`nix develop -c cargo run ...`):
 it provides pkg-config, the headers, alsa-lib for cpal, and the dlopened

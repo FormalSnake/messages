@@ -4,7 +4,7 @@ members = ["crates/core", "crates/desktop"]
 
 [workspace.package]
 edition = "2024"
-license = "Apache-2.0"
+license = "MIT"
 
 [workspace.dependencies]
 messages-core = { path = "crates/core" }
