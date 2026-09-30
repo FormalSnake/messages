@@ -13,6 +13,7 @@ mod live_theme;
 mod menus;
 mod motion;
 mod primitives;
+mod single_instance;
 mod theme;
 mod toast;
 mod trace;
@@ -74,6 +75,7 @@ fn window_options(cx: &App) -> WindowOptions {
 
 fn main() {
     trace::init();
+    let single_instance::Launch::First(activations) = single_instance::claim() else { return };
     // Every network call, timer, file read or write, JSON parse, image decode
     // and ffmpeg run happens here, never on the GPUI foreground thread.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -121,13 +123,21 @@ fn main() {
         let runtime_handle = runtime_handle.clone();
         cx.spawn(async move |cx| {
             let options = cx.update(|cx| window_options(cx));
-            cx.open_window(options, |window, cx| {
-                trace::log_if_enabled("window created");
-                let view = cx.new(|cx| AppRoot::new(runtime_handle, window, cx));
-                trace::log_if_enabled("views built");
-                cx.new(|cx| Root::new(view, window, cx))
-            })
-            .expect("open window");
+            let window = cx
+                .open_window(options, |window, cx| {
+                    trace::log_if_enabled("window created");
+                    let view = cx.new(|cx| AppRoot::new(runtime_handle, window, cx));
+                    trace::log_if_enabled("views built");
+                    cx.new(|cx| Root::new(view, window, cx))
+                })
+                .expect("open window");
+            let Some(mut activations) = activations else { return };
+            while activations.recv().await.is_some() {
+                cx.update(|cx| cx.activate(true));
+                if window.update(cx, |_, window, _| window.activate_window()).is_err() {
+                    break;
+                }
+            }
         })
         .detach();
     });

@@ -196,7 +196,9 @@ GPUI's profiler, so it stays out of normal builds). Config lives in
 `nix/package.nix` is the flake's package and `nix/hm-module.nix` its Home
 Manager module (`programs.messages`). The package bakes `MESSAGES_ICON_PATH`
 in at compile time so notifications find the installed icon, and never owns
-`config.json`, which the app writes itself. README screenshots come from
+`config.json`, which the app writes itself. A second launch hands over to the first
+(`single_instance.rs`: a lock and a socket in `$XDG_RUNTIME_DIR/messages`)
+and exits; demo and screenshot runs skip it. README screenshots come from
 `scripts/screenshot.sh` with `MESSAGES_SCREENSHOT_CHAT=<demo guid>`.
 
 On NixOS, build and run inside the dev shell (`nix develop -c cargo run ...`):
