@@ -1,4 +1,4 @@
-<img src="packaging/linux/es.canarycoders.messages.png" width="96" align="right" alt="">
+<p align="center"><img src="packaging/linux/es.canarycoders.messages.png" width="160" alt="Messages icon"></p>
 
 # Messages
 
