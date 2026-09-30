@@ -57,14 +57,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   env = {
     CARGO_PROFILE_RELEASE_DEBUG = "false";
-    MESSAGES_ICON_PATH = "${placeholder "out"}/share/icons/hicolor/scalable/apps/${appId}.svg";
+    MESSAGES_ICON_PATH = "${placeholder "out"}/share/icons/hicolor/512x512/apps/${appId}.png";
   };
 
   # The GPUI tests need a window server and the core tests shell out to ffmpeg.
   doCheck = false;
 
   postInstall = ''
-    install -Dm644 packaging/linux/${appId}.svg -t $out/share/icons/hicolor/scalable/apps
+    install -Dm644 packaging/linux/${appId}.png -t $out/share/icons/hicolor/512x512/apps
     install -Dm644 packaging/linux/${appId}.desktop -t $out/share/applications
   '';
 

@@ -1,3 +1,5 @@
+<img src="packaging/linux/es.canarycoders.messages.png" width="96" align="right" alt="">
+
 # Messages
 
 iMessage on Linux. A native Rust client (GPUI) that talks to a

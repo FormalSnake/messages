@@ -15,7 +15,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS_DIR="$DATA_DIR/applications"
-ICON_DIR="$DATA_DIR/icons/hicolor/scalable/apps"
+ICON_DIR="$DATA_DIR/icons/hicolor/512x512/apps"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/messages"
 APP_ID=es.canarycoders.messages
 
@@ -41,7 +41,9 @@ exec "$REPO_DIR/target/release/messages" "\$@"
 LAUNCHER
 chmod +x "$BIN_DIR/messages"
 
-cp "$REPO_DIR/packaging/linux/$APP_ID.svg" "$ICON_DIR/$APP_ID.svg"
+cp "$REPO_DIR/packaging/linux/$APP_ID.png" "$ICON_DIR/$APP_ID.png"
+# Earlier versions installed a scalable SVG, which the theme would pick over the PNG.
+rm -f "$DATA_DIR/icons/hicolor/scalable/apps/$APP_ID.svg"
 sed "s|^Exec=messages|Exec=$BIN_DIR/messages|" "$REPO_DIR/packaging/linux/$APP_ID.desktop" > "$APPS_DIR/$APP_ID.desktop"
 
 # Earlier versions installed messages.desktop, which would now list the app twice.

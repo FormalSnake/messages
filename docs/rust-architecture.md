@@ -145,7 +145,7 @@ Platform code sits behind `cfg` in core, with a Linux path for each:
 
 The window uses gpui-kit `TitleBar::window_options()`, app id
 `es.canarycoders.messages`, and ships `packaging/linux/es.canarycoders.messages.desktop`
-plus `packaging/linux/es.canarycoders.messages.svg`. On Windows and
+plus `packaging/linux/es.canarycoders.messages.png`. On Windows and
 client-decorated Linux, `chrome.rs` draws the caption buttons (gpui-kit's
 `TitleBar`, pinned top-right in the root view) and one drag strip across the
 title rows. The strip lives in the root view because gpui-pre 0.3.6 drops a

@@ -347,7 +347,7 @@ impl AppRoot {
         }
         let chat = incoming.chat.clone();
         let message = incoming.message.clone();
-        let options = NotifyOptions { target: incoming.target.as_deref().cloned(), icon: Some(crate::assets::icon_svg_path()) };
+        let options = NotifyOptions { target: incoming.target.as_deref().cloned(), icon: Some(crate::assets::icon_path()) };
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.runtime.spawn(async move {
             let _ = tx.send(notify_incoming(&chat, &message, options).await);
