@@ -909,8 +909,9 @@ impl Transport for BlueBubblesTransport {
 
     async fn send_attachment(&self, chat_guid: &str, path: &Path, options: SendAttachmentOptions) -> TransportResult<Message> {
         let name = options.name.unwrap_or_else(|| file_name(path));
+        let upload = crate::image::fit_gif_for_send(path, &self.inner.attachments_dir).await;
         let mut form = reqwest::multipart::Form::new()
-            .part("attachment", file_part(path, name.clone()).await?)
+            .part("attachment", file_part(&upload, name.clone()).await?)
             .text("chatGuid", chat_guid.to_owned())
             .text("method", self.inner.send_method())
             .text("name", name);

@@ -115,14 +115,12 @@ struct KlipyResponse {
 }
 
 fn to_gif(item: &KlipyItem) -> Option<Gif> {
-    let full = item
-        .file
-        .hd
-        .as_ref()
-        .and_then(|s| s.gif.as_ref())
-        .or_else(|| item.file.md.as_ref().and_then(|s| s.gif.as_ref()))
-        .or_else(|| item.file.sm.as_ref().and_then(|s| s.gif.as_ref()))
-        .or_else(|| item.file.xs.as_ref().and_then(|s| s.gif.as_ref()))?;
+    // `hd` is not always the biggest: Klipy sometimes serves `md` at a larger
+    // size. Ties go to `hd`, which carries the better palette.
+    let full = [&item.file.xs, &item.file.sm, &item.file.md, &item.file.hd]
+        .into_iter()
+        .filter_map(|size| size.as_ref().and_then(|s| s.gif.as_ref()))
+        .max_by_key(|file| u64::from(file.width) * u64::from(file.height))?;
     let preview = item.file.sm.as_ref().and_then(|s| s.gif.as_ref()).or_else(|| item.file.md.as_ref().and_then(|s| s.gif.as_ref())).unwrap_or(full);
     Some(Gif { id: item.id.clone(), preview_url: preview.url.clone(), gif_url: full.url.clone(), width: full.width, height: full.height })
 }
@@ -255,6 +253,16 @@ mod tests {
         let page = parse_klipy_response("trending", 200, &body).unwrap();
         assert!(!page.has_more);
         assert_eq!(page.items, vec![Gif { id: "1".to_owned(), preview_url: "https://static.klipy.com/1/sm.gif".to_owned(), gif_url: "https://static.klipy.com/1/hd.gif".to_owned(), width: 200, height: 200 }]);
+    }
+
+    #[test]
+    fn sends_the_biggest_size_even_when_it_is_not_hd() {
+        let mut item = klipy_item_json(1, None, None);
+        item["file"]["md"]["gif"]["width"] = 572.into();
+        item["file"]["md"]["gif"]["height"] = 640.into();
+        let page = parse_klipy_response("trending", 200, &klipy_response_json(vec![item], false)).unwrap();
+        assert_eq!(page.items[0].gif_url, "https://static.klipy.com/1/md.gif");
+        assert_eq!((page.items[0].width, page.items[0].height), (572, 640));
     }
 
     #[test]

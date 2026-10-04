@@ -233,6 +233,82 @@ pub async fn heif_to_png(source: &Path, target: &Path) -> bool {
     false
 }
 
+/// Above Apple's high quality size limit Messages transcodes a GIF itself and
+/// the other side gets a smeared, shrunken copy. The limit comes from Apple's
+/// server bag (`hq-photo-size-limit`), so this stays under it with room to spare.
+pub const GIF_SEND_BUDGET: u64 = 3 * 1024 * 1024;
+
+/// (frame rate cap, longest side cap), gentlest first. Frames go before
+/// pixels: a choppier GIF reads fine, a smaller one is what looked pixelated.
+const GIF_STEPS: [(Option<u32>, Option<u32>); 9] = [
+    (None, None),
+    (Some(15), None),
+    (Some(12), None),
+    (Some(10), None),
+    (Some(10), Some(400)),
+    (Some(10), Some(360)),
+    (Some(10), Some(320)),
+    (Some(8), Some(280)),
+    (Some(8), Some(240)),
+];
+
+/// A GIF Messages will send as it is: `source` when it already fits the
+/// budget, otherwise a re-encode in `dir` (palette per file, frames dropped
+/// before pixels) reused across retries. `source` again when ffmpeg is
+/// missing or fails, so a send never stalls on this.
+pub async fn fit_gif_for_send(source: &Path, dir: &Path) -> std::path::PathBuf {
+    let Ok(meta) = tokio::fs::metadata(source).await else { return source.to_owned() };
+    let is_gif = source.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("gif"));
+    if !is_gif || meta.len() <= GIF_SEND_BUDGET {
+        return source.to_owned();
+    }
+    let stem = source.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+    let target = dir.join(format!("{stem}-{}.send.gif", meta.len()));
+    if tokio::fs::metadata(&target).await.is_ok() {
+        return target;
+    }
+    if tokio::fs::create_dir_all(dir).await.is_err() {
+        return source.to_owned();
+    }
+    let part = target.with_extension("gif.part");
+    let mut fitted = false;
+    for (fps, side) in GIF_STEPS {
+        let mut filters = Vec::new();
+        if let Some(fps) = fps {
+            filters.push(format!("fps={fps}"));
+        }
+        if let Some(side) = side {
+            filters.push(format!("scale=w='min({side},iw)':h='min({side},ih)':force_original_aspect_ratio=decrease:flags=lanczos"));
+        }
+        filters.push("split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a:diff_mode=rectangle".into());
+        let status = crate::process::async_command("ffmpeg")
+            .args(["-y", "-v", "error", "-i"])
+            .arg(source)
+            .args(["-filter_complex", &filters.join(","), "-f", "gif"])
+            .arg(&part)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status()
+            .await;
+        let Ok(status) = status else { break };
+        let Ok(encoded) = tokio::fs::metadata(&part).await else { break };
+        if !status.success() {
+            break;
+        }
+        fitted = true;
+        if encoded.len() <= GIF_SEND_BUDGET {
+            break;
+        }
+    }
+    if fitted && tokio::fs::rename(&part, &target).await.is_ok() {
+        return target;
+    }
+    let _ = tokio::fs::remove_file(&part).await;
+    source.to_owned()
+}
+
 /// Reads at most the first 256 KiB. Accepts a path or a `data:` URL.
 pub async fn image_size(source: &str) -> Option<ImageSize> {
     if let Some(rest) = source.strip_prefix("data:") {
@@ -312,6 +388,43 @@ pub fn square_thumbnail(bytes: &[u8], side: u32) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-home/fit-gif").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn a_gif_under_the_budget_is_sent_as_it_is() {
+        let dir = test_dir("small");
+        let source = dir.join("small.gif");
+        std::fs::write(&source, b"GIF89a").unwrap();
+        assert_eq!(fit_gif_for_send(&source, &dir.join("out")).await, source);
+    }
+
+    #[tokio::test]
+    async fn a_gif_over_the_budget_is_reencoded_under_it_and_reused() {
+        if !crate::video::available() {
+            return;
+        }
+        let dir = test_dir("large");
+        let source = dir.join("noise.gif");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc2=size=480x360:rate=30:duration=4", "-vf", "noise=alls=40:allf=t"])
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(std::fs::metadata(&source).unwrap().len() > GIF_SEND_BUDGET);
+        let out = dir.join("out");
+        let fitted = fit_gif_for_send(&source, &out).await;
+        assert_ne!(fitted, source);
+        assert!(std::fs::metadata(&fitted).unwrap().len() <= GIF_SEND_BUDGET);
+        assert!(!fitted.with_extension("gif.part").exists());
+        assert_eq!(fit_gif_for_send(&source, &out).await, fitted);
+    }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52];
