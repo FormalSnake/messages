@@ -294,7 +294,7 @@ fn monogram_avatar(label: &str, size: Pixels) -> impl IntoElement {
 fn group_avatar(chat: &Chat, size: Pixels, palette: &Palette) -> impl IntoElement {
     let people: Vec<&Handle> = chat.participants.iter().take(4).collect();
     let size_f: f32 = size.into();
-    let small = px((if people.len() <= 2 { size_f * 0.42 } else { size_f * 0.36 }).round());
+    let small = px((size_f * 0.42).round());
     let rows: Vec<Vec<&Handle>> = match people.len() {
         0..=2 => vec![people.clone()],
         3 => vec![vec![people[0]], people[1..].to_vec()],

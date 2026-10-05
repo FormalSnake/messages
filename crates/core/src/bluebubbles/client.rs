@@ -270,10 +270,14 @@ impl Inner {
 
     /// The envelope's `data`, None when the server sent none.
     async fn request<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str, query: &[(&str, String)], body: Body) -> TransportResult<Option<T>> {
+        self.request_within(method, path, query, body, REQUEST_TIMEOUT).await
+    }
+
+    async fn request_within<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str, query: &[(&str, String)], body: Body, timeout: Duration) -> TransportResult<Option<T>> {
         let mut builder = self.http.request(method, self.url(path, query));
         builder = match body {
-            Body::None => builder.timeout(REQUEST_TIMEOUT),
-            Body::Json(json) => builder.timeout(REQUEST_TIMEOUT).json(&json),
+            Body::None => builder.timeout(timeout),
+            Body::Json(json) => builder.timeout(timeout).json(&json),
             // An upload is as slow as the file is big.
             Body::Form(form) => builder.timeout(TRANSFER_TIMEOUT).multipart(form),
         };
@@ -419,16 +423,26 @@ impl Inner {
     }
 
     /// The photo as Contacts hands it over is kept as the change marker for the square cut.
-    async fn save_contact_avatar(&self, raw: &RawContact) -> Option<String> {
+    /// A list fetched without photos keeps whatever this client saved last time.
+    async fn save_contact_avatar(&self, raw: &RawContact, with_avatars: bool) -> Option<String> {
+        let id = raw.id_string();
+        let path = self.avatars_dir().join(format!("contact-{id}.jpg"));
+        let square = self.avatars_dir().join(format!("contact-{id}.png"));
+        if !with_avatars {
+            return if Self::exists(&square).await {
+                Some(path_string(&square))
+            } else if Self::exists(&path).await {
+                Some(path_string(&path))
+            } else {
+                None
+            };
+        }
         let encoded: String = raw.avatar.as_deref()?.chars().filter(|c| !c.is_whitespace()).collect();
         if encoded.is_empty() {
             return None;
         }
         let engine = &base64::engine::general_purpose::STANDARD;
         let bytes = engine.decode(&encoded).or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(encoded.trim_end_matches('='))).ok()?;
-        let id = raw.id_string();
-        let path = self.avatars_dir().join(format!("contact-{id}.jpg"));
-        let square = self.avatars_dir().join(format!("contact-{id}.png"));
         let unchanged = tokio::fs::metadata(&path).await.is_ok_and(|info| info.len() == bytes.len() as u64);
         if unchanged && tokio::fs::try_exists(&square).await.unwrap_or(false) {
             return Some(path_string(&square));
@@ -438,19 +452,26 @@ impl Inner {
         Some(self.write_square(bytes, &square, &path).await)
     }
 
-    async fn fetch_raw_contacts(&self) -> TransportResult<Vec<RawContact>> {
-        // extraProperties=avatar is an opt-in some server builds reject.
-        match self.data(reqwest::Method::GET, "/contact", &[("extraProperties", "avatar".to_owned())], Body::None).await {
-            Ok(contacts) => Ok(contacts),
-            Err(_) => self.data(reqwest::Method::GET, "/contact", &[], Body::None).await,
+    /// The list with photos runs to megabytes and takes seconds over a tunnel, so it gets the
+    /// transfer timeout. Whether the photos came with it is the second value.
+    async fn fetch_raw_contacts(&self) -> TransportResult<(Vec<RawContact>, bool)> {
+        let with_avatars = self.request_within(reqwest::Method::GET, "/contact", &[("extraProperties", "avatar".to_owned())], Body::None, TRANSFER_TIMEOUT).await;
+        match with_avatars {
+            Ok(Some(contacts)) => Ok((contacts, true)),
+            // extraProperties=avatar is an opt-in some server builds reject.
+            Ok(None) | Err(TransportError::Server { .. }) => Ok((self.data(reqwest::Method::GET, "/contact", &[], Body::None).await?, false)),
+            Err(err) => {
+                tracing::warn!("BlueBubbles: contact photos failed ({err}), keeping the cached ones");
+                Ok((self.data(reqwest::Method::GET, "/contact", &[], Body::None).await?, false))
+            }
         }
     }
 
     async fn list_contacts(&self) -> TransportResult<Vec<Contact>> {
-        let raw = self.fetch_raw_contacts().await?;
+        let (raw, with_avatars) = self.fetch_raw_contacts().await?;
         Ok(futures_util::stream::iter(raw)
             .map(|item| async move {
-                let avatar = self.save_contact_avatar(&item).await;
+                let avatar = self.save_contact_avatar(&item, with_avatars).await;
                 to_contact(&item, avatar)
             })
             .buffered(CONTACT_AVATARS)
@@ -1240,6 +1261,20 @@ mod tests {
         assert_eq!(object(vec![("a", Some(Value::from(1))), ("partIndex", None)]), json!({ "a": 1 }));
     }
 
+    #[tokio::test]
+    async fn a_contact_list_without_photos_keeps_the_ones_already_saved() {
+        let dir = crate::dedupe::tests::TestDir::new("avatars");
+        let transport = BlueBubblesTransport::new(
+            BlueBubblesOptions { url: "http://mac.local:1234".into(), password: "p".into(), attachments_dir: dir.join("attachments") },
+            reqwest::Client::new(),
+        );
+        let raw: RawContact = serde_json::from_value(json!({ "id": "1", "displayName": "Riley", "avatar": "aGVsbG8=" })).unwrap();
+        let saved = transport.inner.save_contact_avatar(&raw, true).await.unwrap();
+        let bare: RawContact = serde_json::from_value(json!({ "id": "1", "displayName": "Riley" })).unwrap();
+        assert_eq!(transport.inner.save_contact_avatar(&bare, false).await, Some(saved));
+        assert_eq!(transport.inner.save_contact_avatar(&bare, true).await, None);
+    }
+
     /// Read-only calls against the server in `~/.config/messages/config.json`:
     /// server info, a few chats, one page of messages, a sweep query, one
     /// attachment download, then 30 s of socket events. Prints counts and event
@@ -1306,7 +1341,7 @@ mod tests {
                 TransportEvent::Message(message) => format!("message reaction={} attachments={}", message.reaction.is_some(), message.attachments.len()),
                 TransportEvent::Chat(_) => "chat".into(),
                 TransportEvent::ChatRemoved { .. } => "chat removed".into(),
-                TransportEvent::Contacts(list) => format!("contacts {}", list.len()),
+                TransportEvent::Contacts(list) => format!("contacts {} photos {}", list.len(), list.iter().filter(|contact| contact.avatar.is_some()).count()),
                 TransportEvent::Typing { typing, .. } => format!("typing {typing}"),
                 TransportEvent::Read { read, .. } => format!("read {read}"),
                 TransportEvent::FaceTime { status, .. } => format!("facetime {status:?}"),
