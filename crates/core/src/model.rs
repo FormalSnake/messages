@@ -380,6 +380,9 @@ pub fn capabilities_for(info: Option<&ServerInfo>) -> Capabilities {
     // which crashes Messages.app and drops the helper for 30 s, and its FaceTime
     // helper does not inject at all (bluebubbles-server#776).
     let before_26 = major < 26;
+    // On macOS 27 every Focus lookup fails in the helper with "Selector not found!",
+    // and the failed calls queue behind each other until the server stops answering.
+    let before_27 = major < 27;
     Capabilities {
         reactions: private_api,
         typing: private_api,
@@ -392,7 +395,7 @@ pub fn capabilities_for(info: Option<&ServerInfo>) -> Capabilities {
         mark_unread: private_api,
         facetime: private_api && before_26,
         scheduled_messages: info.is_some(),
-        focus_status: private_api && major >= 12,
+        focus_status: private_api && major >= 12 && before_27,
     }
 }
 
@@ -469,6 +472,7 @@ mod tests {
         let tahoe = capabilities_for(Some(&info("26.0.1", true, true)));
         assert!(!tahoe.edit && !tahoe.facetime);
         assert!(tahoe.unsend && tahoe.focus_status);
+        assert!(!capabilities_for(Some(&info("27.0", true, true))).focus_status);
         let big_sur = capabilities_for(Some(&info("11.7", true, true)));
         assert!(!big_sur.focus_status && big_sur.edit);
         let none = capabilities_for(None);

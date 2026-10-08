@@ -1041,11 +1041,9 @@ impl MessagesStore {
                     push_event(events, StoreEvent::Focus);
                 }
             }),
-            Err(error) => {
-                // Someone who shares no Focus, or a helper that just dropped: the next pass asks again.
-                self.inner.private.lock().focus_checked_at.remove(&key);
-                tracing::debug!("focus: {error}");
-            }
+            // A failure waits out the TTL like an answer does: retrying every pass
+            // floods a helper that is already failing, and every call queues behind it.
+            Err(error) => tracing::debug!("focus: {error}"),
         }
         true
     }

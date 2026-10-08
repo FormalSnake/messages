@@ -305,6 +305,9 @@ GPUI answers the caption hit test from the last mouse move it saw, so a
   `wasDeliveredQuietly` and `didNotifyRecipient`, which the server also leaves
   out of the message it serializes for a notification. Someone who does not
   share their Focus with this Apple ID answers `unknown`, not an error.
+  On macOS 27 the helper fails every Focus call with "Selector not found!";
+  the calls queue until the server stops answering, so `capabilities_for`
+  turns Focus off there and a failed check waits out its TTL like an answer.
 - Scheduled sends (`POST /message/schedule`) are `Transport::schedule_text`,
   `list_scheduled` and `cancel_scheduled`; the server holds and fires them, not
   the client.
