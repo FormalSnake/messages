@@ -1,39 +1,35 @@
-//! The open conversation as a virtualized, bottom-aligned `list` that
-//! follows the tail. Rows are rebuilt only when what they are made of
-//! changes (compared by `Arc` pointer every render, which costs one pass
-//! over the thread's pointers); only rows the list actually lays out get a
-//! `MessageRow` entity, and those are kept across rebuilds by key, so a
-//! chat switch paints from memory in the frame it happens.
+//! The open conversation as nd's virtual list, bottom-aligned and following the tail. The list
+//! keeps its position as an anchor (row key plus offset), so older pages prepend without a
+//! jump, a row that grows once its picture loads pushes nothing out of reach, and a jump to a
+//! message is `scroll_to` with an offset. Rows are versioned by what they show: a tapback
+//! re-renders one row.
 
-use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
 use messages_core::assistant::CanaryLlmClient;
-use messages_core::conversations::{conversation_focus, conversation_handles, conversation_has_older, conversation_key, conversation_loading, conversation_messages, conversation_typing};
-use messages_core::{Capabilities, Chat, ConnectionStatus, FocusStatus, Handle, Message, MessagesStore, Service, handle_name};
+use messages_core::conversations::{
+    conversation_focus, conversation_handles, conversation_has_older, conversation_key, conversation_loading,
+    conversation_messages, conversation_typing,
+};
+use messages_core::{Chat, ConnectionStatus, FocusStatus, Handle, Message, MessagesStore, Service, handle_name};
+use nd::prelude::*;
 
-use crate::attachments::run_for;
-use crate::bridge::{Bridge, StoreHandle, Topic};
-use crate::bubble::{AVATAR_COLUMN, MessageRow, Quote, RowProps, Translation};
-use crate::lightbox::Lightbox;
-use crate::reply_thread::ReplyThread;
-use crate::theme::{THREAD_INSET, Theme, radius, spacing, type_scale};
-use crate::thread_rows::{BuildOptions, MessageRowData, Row, build_rows, now_ms};
+use crate::actions::*;
+use crate::bridge::{self, Bridge, Topic};
+use crate::message::{self, Kind, Media, Quote, RowProps, Translation};
+use crate::rows::{BuildOptions, MessageRowData, Row, build_rows};
+use crate::ui;
 
-/// A row dated after the thread opened fades in; everything older paints at
-/// once. The slack covers the Mac's clock running a little behind this one.
-const ENTER_SLACK_MS: i64 = 5000;
 const TYPING_STEP: Duration = Duration::from_millis(400);
-const JUMP_OFFSET: Pixels = px(-96.);
 const HIGHLIGHT_FOR: Duration = Duration::from_millis(2200);
+/// A jump leaves this much room above the message.
+const JUMP_OFFSET: f32 = -96.;
+/// Pages a jump loads at most looking for its message.
 const JUMP_PAGES: usize = 12;
-/// Load the next page once the top row is this close to the viewport.
-const OLDER_WITHIN_ROWS: usize = 3;
 
 #[derive(Clone)]
 pub struct Assistant {
@@ -41,576 +37,235 @@ pub struct Assistant {
     pub language: String,
 }
 
+/// One list row.
+#[derive(Clone)]
+pub enum Slot {
+    Caption { text: String, strong: usize },
+    Message { data: MessageRowData, props: RowProps },
+    Typing,
+}
+
+/// A message to show once the thread holds it: the search result path.
 #[derive(Default)]
-struct AssistantSlot(Option<Assistant>);
+struct PendingJump(std::cell::RefCell<Option<(String, String)>>);
 
-impl Global for AssistantSlot {}
-
-/// The CanaryLLM client behind translate and transcribe, when config.json has a key.
-pub fn assistant(cx: &App) -> Option<Assistant> {
-    cx.try_global::<AssistantSlot>().and_then(|slot| slot.0.clone())
+/// Opens `chat_guid` at `message_guid` once the thread shows it. The caller selects the chat.
+pub fn request_jump(chat_guid: &str, message_guid: &str, cx: &mut App) {
+    if !cx.has_global::<PendingJump>() {
+        cx.set_global(PendingJump::default());
+    }
+    cx.global::<PendingJump>().0.replace(Some((chat_guid.to_owned(), message_guid.to_owned())));
+    if let Some(thread) = cx.try_global::<ThreadHost>().and_then(|h| h.0.upgrade()) {
+        thread.update(cx, |_, cx| cx.notify());
+    }
 }
 
 struct ThreadHost(WeakEntity<Thread>);
 
-impl Global for ThreadHost {}
-
-#[derive(Default)]
-struct PendingJump(Option<(String, String)>);
-
-impl Global for PendingJump {}
-
-/// Opens `chat_guid` at `message_guid` once the thread shows it: the search
-/// result path. The caller selects the chat.
-pub fn request_jump(chat_guid: &str, message_guid: &str, cx: &mut App) {
-    cx.set_global(PendingJump(Some((chat_guid.to_owned(), message_guid.to_owned()))));
-    if let Some(host) = cx.try_global::<ThreadHost>().map(|host| host.0.clone()) {
-        let _ = host.update(cx, |_, cx| cx.notify());
-    }
-}
-
-pub(crate) fn with_thread(cx: &mut App, f: impl FnOnce(&mut Thread, &mut Context<Thread>)) {
-    if let Some(host) = cx.try_global::<ThreadHost>().map(|host| host.0.clone()) {
-        let _ = host.update(cx, f);
-    }
-}
-
-/// One list item: a caption, a message, or the typing bubble.
-#[derive(Clone)]
-pub(crate) enum Slot {
-    Caption { key: String, text: SharedString, top: Pixels, bottom: Pixels, strong: usize },
-    Message { data: MessageRowData, props: RowProps, entering: bool },
-    Typing,
-}
-
-impl Slot {
-    fn key(&self) -> &str {
-        match self {
-            Slot::Caption { key, .. } => key,
-            Slot::Message { data, .. } => &data.key,
-            Slot::Typing => "typing",
-        }
-    }
-
-    fn same(&self, other: &Slot) -> bool {
-        match (self, other) {
-            (Slot::Caption { text: a, top: at, bottom: ab, strong: aw, .. }, Slot::Caption { text: b, top: bt, bottom: bb, strong: bw, .. }) => a == b && at == bt && ab == bb && aw == bw,
-            (Slot::Message { data: a, props: ap, .. }, Slot::Message { data: b, props: bp, .. }) => a == b && ap == bp,
-            (Slot::Typing, Slot::Typing) => true,
-            _ => false,
-        }
-    }
-}
-
-pub(crate) struct Slots {
-    slots: Vec<Slot>,
-    rows: HashMap<String, Entity<MessageRow>>,
-    typing: Option<Entity<TypingRow>>,
+pub struct Thread {
+    list: ListState<String>,
+    slots: Rc<std::cell::RefCell<HashMap<String, Slot>>>,
+    watched: HashSet<Topic>,
+    primary: Option<String>,
+    list_key: Option<String>,
+    chat: Option<Arc<Chat>>,
     typing_who: Option<Handle>,
     is_group: bool,
-    store: MessagesStore,
-    thread: WeakEntity<Thread>,
-}
-
-/// A list of slots with the row entities behind it. The main thread and the
-/// reply thread each own one.
-pub(crate) struct RowList {
-    slots: Rc<RefCell<Slots>>,
-    pub(crate) state: ListState,
-    follow: bool,
-    /// The list's width this frame, written by `width_probe` before the list
-    /// lays its rows out.
-    width: Rc<Cell<Pixels>>,
-}
-
-impl RowList {
-    pub(crate) fn new(store: MessagesStore, thread: WeakEntity<Thread>, alignment: ListAlignment) -> Self {
-        let state = ListState::new(0, alignment, px(700.));
-        if alignment == ListAlignment::Bottom {
-            state.set_follow_mode(FollowMode::Tail);
-        }
-        let follow = alignment == ListAlignment::Bottom;
-        RowList { slots: Rc::new(RefCell::new(Slots { slots: Vec::new(), rows: HashMap::new(), typing: None, typing_who: None, is_group: false, store, thread })), state, follow, width: Rc::default() }
-    }
-
-    fn state_follows(&self) -> bool {
-        self.follow
-    }
-
-    pub(crate) fn index_of(&self, message_guid: &str) -> Option<usize> {
-        self.slots.borrow().slots.iter().position(|slot| matches!(slot, Slot::Message { data, .. } if data.message.guid == message_guid))
-    }
-
-    /// A row leaving the list takes its bridge topic with it; the entity
-    /// itself is dropped by the map, but the topic key would outlive it.
-    fn release(row: &Entity<MessageRow>, cx: &mut App) {
-        let guid = row.read(cx).model.message.guid.clone();
-        Bridge::unwatch(cx, &Topic::Message(guid), &AnyWeakEntity::from(row.downgrade()));
-    }
-
-    /// Replaces the slots, keeping measured heights and scroll position for
-    /// rows that did not move. `reset` starts over at the bottom (a new chat).
-    pub(crate) fn apply(&self, next: Vec<Slot>, is_group: bool, typing_who: Option<Handle>, reset: bool, cx: &mut App) {
-        let mut guard = self.slots.borrow_mut();
-        let slots = &mut *guard;
-        slots.is_group = is_group;
-        slots.typing_who = typing_who;
-        if reset {
-            for row in slots.rows.values() {
-                Self::release(row, cx);
-            }
-            slots.rows.clear();
-            slots.typing = None;
-            self.state.reset(next.len());
-            if self.state_follows() {
-                self.state.set_follow_mode(FollowMode::Tail);
-            }
-            slots.slots = next;
-            return;
-        }
-        let old = &slots.slots;
-        let prefix = old.iter().zip(next.iter()).take_while(|(a, b)| a.key() == b.key()).count();
-        let max_suffix = old.len().min(next.len()) - prefix;
-        let suffix = old.iter().rev().zip(next.iter().rev()).take(max_suffix).take_while(|(a, b)| a.key() == b.key()).count();
-        let mut changed = Vec::new();
-        for index in (0..prefix).chain(next.len() - suffix..next.len()) {
-            let old_index = if index < prefix { index } else { index + old.len() - next.len() };
-            if !old[old_index].same(&next[index]) {
-                changed.push(index);
-            }
-        }
-        if prefix + suffix != old.len() || prefix + suffix != next.len() {
-            self.state.splice(prefix..old.len() - suffix, next.len() - prefix - suffix);
-        }
-        for index in changed {
-            self.state.remeasure_items(index..index + 1);
-        }
-        let keys: HashSet<&str> = next.iter().map(Slot::key).collect();
-        slots.rows.retain(|key, row| {
-            let kept = keys.contains(key.as_str());
-            if !kept {
-                Self::release(row, cx);
-            }
-            kept
-        });
-        if !next.iter().any(|slot| matches!(slot, Slot::Typing)) {
-            slots.typing = None;
-        }
-        for slot in &next {
-            if let Slot::Message { data, props, .. } = slot {
-                if let Some(row) = slots.rows.get(&data.key) {
-                    let (data, props) = (data.clone(), props.clone());
-                    row.update(cx, |row, cx| {
-                        if row.data != data || row.props != props {
-                            row.set(data, props, cx);
-                        }
-                    });
-                }
-            }
-        }
-        slots.slots = next;
-    }
-
-    /// Zero-height element spanning the list's width. It must come before the
-    /// list in the same parent, so it prepaints first and the list's rows see
-    /// this frame's width.
-    pub(crate) fn width_probe(&self) -> impl IntoElement + use<> {
-        let width = self.width.clone();
-        canvas(move |bounds, _, _| width.set(bounds.size.width), |_, _, _, _| {}).absolute().top_0().left_0().w_full().h(px(0.))
-    }
-
-    pub(crate) fn element(&self) -> List {
-        let slots = self.slots.clone();
-        let width = self.width.clone();
-        list(self.state.clone(), move |index, _window, cx| {
-            let mut guard = slots.borrow_mut();
-            let Slots { slots, rows, typing, typing_who, is_group, store, thread } = &mut *guard;
-            match slots.get(index) {
-                None => div().into_any_element(),
-                Some(Slot::Caption { text, top, bottom, strong, .. }) => caption(text.clone(), *strong, *top, *bottom, cx).into_any_element(),
-                Some(Slot::Typing) => {
-                    let (who, group) = (typing_who.clone(), *is_group);
-                    typing.get_or_insert_with(|| cx.new(|_| TypingRow::new(who, group))).clone().into_any_element()
-                }
-                Some(Slot::Message { data, props, entering }) => {
-                    let row = rows
-                        .entry(data.key.clone())
-                        .or_insert_with(|| {
-                            let (store, thread, data, props, entering) = (store.clone(), thread.clone(), data.clone(), props.clone(), *entering);
-                            cx.new(|cx| MessageRow::new(store, thread, data, props, entering, cx))
-                        })
-                        .clone();
-                    // A settled row is a cached view at its measured height, so a
-                    // GIF frame or a hover in one row repaints that row alone.
-                    let layout = row.read(cx).layout.clone();
-                    let settled = !layout.stale.replace(false);
-                    match layout.measured.get() {
-                        Some(size) if settled && size.width == width.get() => {
-                            layout.given.set(Some(size.height));
-                            AnyView::from(row).cached(StyleRefinement::default().w_full().h(size.height)).into_any_element()
-                        }
-                        _ => {
-                            layout.given.set(None);
-                            row.into_any_element()
-                        }
-                    }
-                }
-            }
-        })
-    }
-}
-
-/// The day half of a `format_separator` label: "Today" of "Today 9:41 AM",
-/// "Sep 2, 2025" of "Sep 2, 2025 at 4:30 PM". Messages sets it heavier than
-/// the time.
-fn separator_day(label: &str) -> &str {
-    match label.find(" at ") {
-        Some(end) => &label[..end],
-        None => label.split_once(' ').map_or(label, |(day, _)| day),
-    }
-}
-
-/// Decodes the thread's GIFs ahead of the scroll, newest first, behind whatever
-/// is on screen. A new thread drops the warms the last one still had queued.
-fn warm_gifs(messages: &[Arc<Message>], reset: bool, cx: &mut App) {
-    if reset {
-        crate::gif::drop_pending_warms(cx);
-    }
-    for message in messages.iter().rev() {
-        let pictures: Vec<&messages_core::Attachment> = message.attachments.iter().filter(|attachment| !attachment.hidden && attachment.mime.starts_with("image/")).collect();
-        let [attachment] = pictures[..] else { continue };
-        let Some(path) = attachment.local_path.as_ref().filter(|path| attachment.mime == "image/gif" && !crate::attachments::is_data_url(path)) else { continue };
-        let (width, height) = crate::attachments::media_dims(attachment, crate::attachments::MEDIA_MAX_WIDTH);
-        crate::gif::warm(std::sync::Arc::from(path.as_path()), width, height, cx);
-    }
-}
-
-/// `strong` bytes at the start of `text` are set semibold, one step brighter.
-fn caption(text: SharedString, strong: usize, top: Pixels, bottom: Pixels, cx: &App) -> Div {
-    let palette = Theme::get(cx);
-    let strong = strong.min(text.len());
-    let highlights = if strong > 0 { vec![(0..strong, HighlightStyle { color: Some(palette.secondary), font_weight: Some(FontWeight::SEMIBOLD), ..Default::default() })] } else { Vec::new() };
-    div().w_full().flex().flex_row().items_center().justify_center().pt(top).pb(bottom).px(spacing::X10).child(
-        div()
-            .text_size(type_scale::MICRO.font_size)
-            .line_height(type_scale::MICRO.line_height)
-            .text_color(palette.tertiary)
-            .text_center()
-            .child(StyledText::new(text).with_highlights(highlights)),
-    )
-}
-
-/// The bubble fades in, then one dot at a time lights, the way Messages shows
-/// someone typing. The step timer runs only while the row is being rendered.
-pub struct TypingRow {
-    who: Option<Handle>,
-    is_group: bool,
+    /// Which of the typing bubble's dots is lit; stepped while the bubble shows.
     lit: usize,
-    entered: Instant,
-    rendered: bool,
-    timer: Option<Task<()>>,
-}
-
-impl TypingRow {
-    fn new(who: Option<Handle>, is_group: bool) -> Self {
-        TypingRow { who, is_group, lit: 0, entered: Instant::now(), rendered: false, timer: None }
-    }
-
-    fn start(&mut self, cx: &mut Context<Self>) {
-        self.timer = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TYPING_STEP).await;
-                let running = this
-                    .update(cx, |row, cx| {
-                        if !std::mem::take(&mut row.rendered) {
-                            row.timer = None;
-                            return false;
-                        }
-                        row.lit = (row.lit + 1) % 3;
-                        cx.notify();
-                        true
-                    })
-                    .unwrap_or(false);
-                if !running {
-                    break;
-                }
-            }
-        }));
-    }
-}
-
-impl Render for TypingRow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = Theme::get(cx);
-        self.rendered = true;
-        if self.timer.is_none() {
-            self.start(cx);
-        }
-        let opacity = crate::motion::eased_since(self.entered, crate::motion::DURATION_BASE, cx);
-        if opacity.is_some() {
-            window.request_animation_frame();
-        }
-        let lit = self.lit;
-        div()
-            .flex()
-            .flex_row()
-            .items_end()
-            .gap(spacing::X2)
-            .w_full()
-            .px(THREAD_INSET)
-            .pt(px(10.))
-            .when_some(opacity, |el, opacity| el.opacity(opacity))
-            .when(self.is_group, |el| {
-                el.child(div().w(px(AVATAR_COLUMN)).flex_shrink_0().when_some(self.who.clone(), |el, who| el.child(crate::primitives::avatar(Some(&who), None, px(AVATAR_COLUMN), cx))))
-            })
-            .child(crate::attachments::tail_box(
-                false,
-                Some(crate::attachments::TailFill::Color(palette.received)),
-                &palette,
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(5.))
-                    .h(px(34.))
-                    .px(spacing::X3)
-                    .rounded(radius::BUBBLE)
-                    .bg(palette.received)
-                    .children((0..3).map(|index| div().w(px(7.)).h(px(7.)).rounded(px(4.)).bg(palette.secondary).opacity(if index == lit { 1. } else { 0.35 }))),
-            ))
-    }
-}
-
-/// What the rows are made of; a render that finds these unchanged does no work.
-#[derive(Default, PartialEq)]
-struct Inputs {
-    primary: Option<String>,
-    chat: usize,
-    messages: Vec<usize>,
-    typing: bool,
-    loading: bool,
-    online: bool,
-    capabilities: Capabilities,
-    focus: Option<String>,
-    contacts: usize,
-    assistant: bool,
-}
-
-pub struct Thread {
-    store: Option<MessagesStore>,
-    watched: HashSet<Topic>,
-    inputs: Inputs,
-    list_key: Option<String>,
-    primary: Option<String>,
-    chat: Option<Arc<Chat>>,
-    rows: Option<RowList>,
-    /// Rows other state (translations, highlight, reply thread) depends on changed.
-    dirty: bool,
+    typing_timer: bool,
     empty: bool,
-    /// Nothing in memory yet and the first page is on its way.
     loading_empty: bool,
-    opened_at: i64,
-    message_count: usize,
-    requested_older: bool,
-    highlight: Option<String>,
-    highlight_task: Option<Task<()>>,
+    media: Media,
     translations: HashMap<String, Translation>,
+    highlight: Option<String>,
     pending_jump: Option<String>,
-    jump_task: Option<Task<()>>,
+    /// The root of the reply thread shown instead of the conversation.
     thread_for: Option<String>,
-    reply_thread: Option<Entity<ReplyThread>>,
-    lightbox: Option<Entity<Lightbox>>,
+    lightbox: Option<crate::lightbox::Lightbox>,
+    /// The message the tapback picker is open on.
+    picker: Option<String>,
+    assistant: Option<Assistant>,
     assistant_loaded: bool,
-    /// The rows moved; once the list has laid them out, see whether the top is near.
-    check_older: bool,
-    _activation: Subscription,
+    requested_older: bool,
 }
 
 impl Thread {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let weak = cx.weak_entity();
         for topic in [Topic::Selection, Topic::Connection, Topic::Focus, Topic::Contacts, Topic::ChatList] {
-            { let entity = cx.entity().downgrade().into(); Bridge::watch(cx, topic, entity); }
+            Bridge::watch(cx, topic, &weak);
         }
-        cx.set_global(ThreadHost(cx.entity().downgrade()));
-        // A GIF's clock stops while the window is inactive; coming back repaints it.
-        let activation = cx.observe_window_activation(window, |_, _, cx| cx.notify());
-        Thread {
-            store: None,
+        cx.set_global(ThreadHost(weak));
+        Self {
+            list: ListState::new(cx).alignment(Alignment::Bottom).follow(Follow::Tail).estimated_row_height(px(44.)),
+            slots: Rc::default(),
             watched: HashSet::new(),
-            inputs: Inputs::default(),
-            list_key: None,
             primary: None,
+            list_key: None,
             chat: None,
-            rows: None,
-            dirty: true,
+            typing_who: None,
+            is_group: false,
+            lit: 0,
+            typing_timer: false,
             empty: false,
             loading_empty: false,
-            opened_at: now_ms(),
-            message_count: 0,
-            requested_older: false,
-            highlight: None,
-            highlight_task: None,
+            media: Media::default(),
             translations: HashMap::new(),
+            highlight: None,
             pending_jump: None,
-            jump_task: None,
             thread_for: None,
-            reply_thread: None,
             lightbox: None,
+            picker: None,
+            assistant: None,
             assistant_loaded: false,
-            check_older: false,
-            _activation: activation,
+            requested_older: false,
         }
+    }
+
+    /// The list, for tests and the switcher: its keys and scroll state.
+    pub fn list(&self) -> &ListState<String> {
+        &self.list
     }
 
     fn watch(&mut self, topic: Topic, cx: &mut Context<Self>) {
         if self.watched.insert(topic.clone()) {
-            { let entity = cx.entity().downgrade().into(); Bridge::watch(cx, topic, entity); }
+            {
+                let weak = cx.weak_entity();
+                Bridge::watch(cx, topic, &weak);
+            }
         }
     }
 
-    fn unwatch(&mut self, topic: Topic, cx: &mut Context<Self>) {
-        if self.watched.remove(&topic) {
-            let entity = cx.entity().downgrade().into();
-            Bridge::unwatch(cx, &topic, &entity);
-        }
-    }
-
-    fn load_assistant(&mut self, store: &MessagesStore, cx: &mut Context<Self>) {
-        self.assistant_loaded = true;
-        let load = async {
-            let config = messages_core::config::load_config().await;
-            let language = messages_core::assistant::translation_language(config.canaryllm.as_ref().and_then(|llm| llm.language.as_deref())).await;
-            (config, language)
-        };
-        run_for(store, load, cx, |this, (config, language), cx| {
-            let Some(llm) = config.canaryllm.filter(|llm| !llm.api_key.is_empty()) else { return };
-            let client = CanaryLlmClient::new(llm.api_key, llm.model, None, reqwest::Client::new());
-            cx.set_global(AssistantSlot(Some(Assistant { client: Arc::new(client), language })));
-            this.dirty = true;
-            cx.notify();
-        });
-    }
-
-    /// Reads what the rows depend on and rebuilds them when any of it moved.
-    fn refresh(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = self.store.clone() else { return };
-        let assistant = assistant(cx).is_some();
-        let (inputs, build) = {
-            let state = store.state();
-            let primary = state.selected_chat.clone();
-            let Some(guid) = primary.clone() else {
-                drop(state);
-                if self.primary.is_some() || self.dirty {
-                    if let Some(previous) = self.primary.take() {
-                        self.unwatch(Topic::Thread(previous.clone()), cx);
-                        self.unwatch(Topic::Typing(previous.clone()), cx);
-                        self.unwatch(Topic::Chat(previous), cx);
-                    }
-                    self.chat = None;
-                    self.inputs = Inputs::default();
-                    if let Some(rows) = &self.rows {
-                        rows.apply(Vec::new(), false, None, true, cx);
-                    }
+    fn unwatch_chat(&mut self, guid: &str, cx: &mut Context<Self>) {
+        for topic in [Topic::Thread(guid.to_owned()), Topic::Typing(guid.to_owned()), Topic::Chat(guid.to_owned())] {
+            if self.watched.remove(&topic) {
+                {
+                    let id = cx.entity_id();
+                    Bridge::unwatch(cx, &topic, id);
                 }
-                self.dirty = false;
+            }
+        }
+    }
+
+    fn load_assistant(&mut self, cx: &mut Context<Self>) {
+        self.assistant_loaded = true;
+        let Some(llm) = bridge::config(cx).and_then(|c| c.canaryllm.clone()).filter(|llm| !llm.api_key.is_empty())
+        else {
+            return;
+        };
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move {
+                let language = messages_core::assistant::translation_language(llm.language.as_deref()).await;
+                let client = CanaryLlmClient::new(llm.api_key, llm.model, None, reqwest::Client::new());
+                Assistant { client: Arc::new(client), language }
+            },
+            |this, assistant, cx| {
+                this.assistant = Some(assistant);
+                cx.notify();
+            },
+        );
+    }
+
+    pub fn assistant(&self) -> Option<Assistant> {
+        self.assistant.clone()
+    }
+
+    /// Reads what the rows depend on and hands the list its keys; the list re-renders only
+    /// rows whose version moved.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = bridge::store(cx) else { return };
+        let (guid, chat, messages, key, typing, loading, online, capabilities, focus) = {
+            let state = store.state();
+            let Some(guid) = state.selected_chat.clone() else {
+                drop(state);
+                if let Some(previous) = self.primary.take() {
+                    self.unwatch_chat(&previous, cx);
+                }
+                self.chat = None;
+                self.list.set_items_versioned(Vec::new(), cx);
                 return;
             };
             let chat = state.chat(&guid).cloned();
-            let mut pointers = Vec::new();
-            for member in messages_core::conversations::conversation_members(&state.grouping, &guid) {
-                pointers.push(usize::MAX);
-                if let Some(list) = state.messages.get(&member) {
-                    pointers.extend(list.iter().map(|message| Arc::as_ptr(message) as usize));
-                }
-            }
-            let focus = (conversation_focus(&state, &guid) == FocusStatus::Silenced).then(|| conversation_handles(&state, &guid).first().map(|handle| handle_name(handle).to_owned())).flatten();
-            let inputs = Inputs {
-                primary: primary.clone(),
-                chat: chat.as_ref().map(|chat| Arc::as_ptr(chat) as usize).unwrap_or(0),
-                messages: pointers,
-                typing: conversation_typing(&state, &guid),
-                loading: conversation_loading(&state, &guid),
-                online: state.status == ConnectionStatus::Online,
-                capabilities: state.capabilities,
+            let focus = (conversation_focus(&state, &guid) == FocusStatus::Silenced)
+                .then(|| conversation_handles(&state, &guid).first().map(|h| handle_name(h).to_owned()))
+                .flatten();
+            (
+                guid.clone(),
+                chat,
+                conversation_messages(&state, &guid),
+                conversation_key(&state.grouping, &guid),
+                conversation_typing(&state, &guid),
+                conversation_loading(&state, &guid),
+                state.status == ConnectionStatus::Online,
+                state.capabilities,
                 focus,
-                contacts: Arc::as_ptr(&state.contacts) as usize,
-                assistant,
-            };
-            if inputs == self.inputs && !self.dirty {
-                return;
-            }
-            let messages = conversation_messages(&state, &guid);
-            let key = conversation_key(&state.grouping, &guid);
-            let has_older = conversation_has_older(&state, &guid);
-            (inputs, (guid, chat, messages, key, has_older))
+            )
         };
-        let (guid, chat, messages, key, _has_older) = build;
-        if let Some(previous) = self.primary.clone().filter(|previous| *previous != guid) {
-            self.unwatch(Topic::Thread(previous.clone()), cx);
-            self.unwatch(Topic::Typing(previous.clone()), cx);
-            self.unwatch(Topic::Chat(previous), cx);
+        if let Some(previous) = self.primary.clone().filter(|p| *p != guid) {
+            self.unwatch_chat(&previous, cx);
         }
-        self.watch(Topic::Thread(guid.clone()), cx);
-        self.watch(Topic::Typing(guid.clone()), cx);
-        self.watch(Topic::Chat(guid.clone()), cx);
-
+        for topic in [Topic::Thread(guid.clone()), Topic::Typing(guid.clone()), Topic::Chat(guid.clone())] {
+            self.watch(topic, cx);
+        }
         let reset = self.list_key.as_deref() != Some(key.as_str());
         if reset {
-            crate::trace::stamp("thread open");
             self.list_key = Some(key);
-            self.opened_at = now_ms();
-            self.requested_older = false;
             self.thread_for = None;
-            self.reply_thread = None;
             self.highlight = None;
-            self.highlight_task = None;
             self.pending_jump = None;
-            self.jump_task = None;
             self.translations.clear();
-        }
-        if messages.len() != self.message_count {
-            self.message_count = messages.len();
+            self.lightbox = None;
             self.requested_older = false;
         }
         let is_group = chat.as_ref().is_some_and(|chat| chat.is_group);
-        let options = BuildOptions {
-            is_group,
-            typing: inputs.typing,
-            loading: inputs.loading && !messages.is_empty(),
-            online: inputs.online,
-            silenced_by: inputs.focus.as_deref(),
-            now: now_ms(),
+        self.is_group = is_group;
+        self.typing_who = chat.as_ref().and_then(|chat| chat.participants.first().cloned());
+        self.fetch_media(&store, &messages, cx);
+        let props = PropsInput { primary: guid.clone(), is_group, capabilities, assistant: self.assistant.is_some() };
+        let rows: Vec<Row> = match self.thread_for.clone() {
+            Some(root) => reply_rows(&messages, &root, is_group),
+            None => build_rows(
+                &messages,
+                &BuildOptions {
+                    is_group,
+                    typing,
+                    loading: loading && !messages.is_empty(),
+                    online,
+                    silenced_by: focus.as_deref(),
+                    now: ui::now_ms(),
+                },
+            ),
         };
-        let built = build_rows(&messages, &options);
-        warm_gifs(&messages, reset, cx);
-        let slots = self.slots_for(&built, &guid, &messages, &inputs, is_group, true);
-        let typing_who = chat.as_ref().and_then(|chat| chat.participants.first().cloned());
-        self.empty = messages.is_empty() && !inputs.loading;
-        self.loading_empty = messages.is_empty() && inputs.loading;
-        if let Some(rows) = &self.rows {
-            rows.apply(slots, is_group, typing_who, reset, cx);
+        let slots = self.slots_for(&rows, &messages, &props);
+        let mut keyed = Vec::with_capacity(slots.len());
+        let mut map = HashMap::with_capacity(slots.len());
+        for (key, slot) in slots {
+            keyed.push((key.clone(), version(&slot, &self.media)));
+            map.insert(key, slot);
         }
-        self.primary = Some(guid.clone());
+        *self.slots.borrow_mut() = map;
+        self.empty = messages.is_empty() && !loading;
+        self.loading_empty = messages.is_empty() && loading;
+        self.primary = Some(guid);
         self.chat = chat;
-        self.inputs = inputs;
-        self.dirty = false;
-        self.check_older = true;
-
-        if let Some(root) = self.thread_for.clone() {
-            self.refresh_reply_thread(&root, &messages, is_group, cx);
+        self.list.set_items_versioned(keyed, cx);
+        if reset {
+            self.list.scroll_to_end(cx);
         }
-        if let Some(target) = self.pending_jump.clone() {
-            if self.scroll_to(&target, cx) {
-                self.pending_jump = None;
-                self.jump_task = None;
-            }
+        self.typing_tick(typing && self.thread_for.is_none(), cx);
+        if let Some(target) = self.pending_jump.clone()
+            && self.scroll_to(&target, cx)
+        {
+            self.pending_jump = None;
         }
     }
 
-    fn slots_for(&self, rows: &[Row], primary: &str, messages: &[Arc<Message>], inputs: &Inputs, is_group: bool, main: bool) -> Vec<Slot> {
-        let by_guid: HashMap<&str, &Arc<Message>> = messages.iter().map(|message| (message.guid.as_str(), message)).collect();
+    fn slots_for(&self, rows: &[Row], messages: &[Arc<Message>], input: &PropsInput) -> Vec<(String, Slot)> {
+        let by_guid: HashMap<&str, &Arc<Message>> = messages.iter().map(|m| (m.guid.as_str(), m)).collect();
         let mut reply_counts: HashMap<&str, usize> = HashMap::new();
-        if main {
+        if self.thread_for.is_none() {
             for message in messages {
                 if let Some(target) = message.reply_to.as_deref() {
                     *reply_counts.entry(target).or_default() += 1;
@@ -619,198 +274,405 @@ impl Thread {
         }
         rows.iter()
             .map(|row| match row {
-                Row::Separator { key, label } => Slot::Caption { key: key.clone(), text: label.clone().into(), top: spacing::X4, bottom: spacing::X2, strong: separator_day(label).len() },
-                Row::Event { key, text } => Slot::Caption { key: key.clone(), text: text.clone().into(), top: spacing::X3, bottom: spacing::X1, strong: 0 },
-                Row::Loading => Slot::Caption { key: "loading".into(), text: "Loading earlier messages\u{2026}".into(), top: spacing::X3, bottom: spacing::X1, strong: 0 },
-                Row::Typing => Slot::Typing,
+                Row::Separator { key, label } => {
+                    let strong = message::separator_day(label).len();
+                    (key.clone(), Slot::Caption { text: label.clone(), strong })
+                }
+                Row::Event { key, text } => (key.clone(), Slot::Caption { text: text.clone(), strong: 0 }),
+                Row::Loading => {
+                    ("loading".to_owned(), Slot::Caption { text: "Loading earlier messages\u{2026}".into(), strong: 0 })
+                }
+                Row::Typing => ("typing".to_owned(), Slot::Typing),
                 Row::Message(data) => {
                     let message = &data.message;
                     let quote = message.reply_to.as_deref().filter(|_| data.show_quote).map(|target| {
                         let original = by_guid.get(target);
-                        let who: SharedString = match original {
-                            Some(original) if original.from_me => "You".into(),
-                            Some(original) => original.sender.as_ref().map(|sender| handle_name(sender).to_owned()).unwrap_or_default().into(),
-                            None => "Earlier message".into(),
+                        let who = match original {
+                            Some(original) if original.from_me => "You".to_owned(),
+                            Some(original) => {
+                                original.sender.as_ref().map(|s| handle_name(s).to_owned()).unwrap_or_default()
+                            }
+                            None => "Earlier message".to_owned(),
                         };
-                        let body: SharedString = match original {
-                            Some(original) if !original.text.is_empty() => original.text.clone().into(),
-                            Some(original) if !original.attachments.is_empty() => "Attachment".into(),
-                            Some(_) => "".into(),
-                            None => "Click to load it".into(),
+                        let body = match original {
+                            Some(original) if !original.text.is_empty() => original.text.clone(),
+                            Some(original) if !original.attachments.is_empty() => "Attachment".to_owned(),
+                            Some(_) => String::new(),
+                            None => "Click to load it".to_owned(),
                         };
                         Quote { target: target.to_owned(), who, body }
                     });
-                    Slot::Message {
-                        entering: main && message.date > self.opened_at - ENTER_SLACK_MS,
-                        props: RowProps {
-                            primary: primary.to_owned(),
-                            is_group,
-                            capabilities: inputs.capabilities,
-                            assistant: inputs.assistant,
-                            quote,
-                            reply_count: reply_counts.get(message.guid.as_str()).copied().unwrap_or(0),
-                            replies: match reply_counts.get(message.guid.as_str()).copied().unwrap_or(0) {
-                                0 => None,
-                                1 => Some("1 reply".into()),
-                                count => Some(format!("{count} replies").into()),
-                            },
-                            highlighted: main && self.highlight.as_deref() == Some(message.guid.as_str()),
-                            translation: self.translations.get(&message.guid).cloned(),
+                    let count = reply_counts.get(message.guid.as_str()).copied().unwrap_or(0);
+                    let props = RowProps {
+                        primary: input.primary.clone(),
+                        is_group: input.is_group,
+                        capabilities: input.capabilities,
+                        assistant: input.assistant,
+                        quote,
+                        replies: match count {
+                            0 => None,
+                            1 => Some("1 reply".into()),
+                            n => Some(format!("{n} replies")),
                         },
-                        data: data.clone(),
-                    }
+                        highlighted: self.highlight.as_deref() == Some(message.guid.as_str()),
+                        translation: self.translations.get(&message.guid).cloned(),
+                        picker: self.picker.as_deref() == Some(message.guid.as_str()),
+                    };
+                    (data.key.clone(), Slot::Message { data: data.clone(), props })
                 }
             })
             .collect()
     }
 
-    fn refresh_reply_thread(&mut self, root: &str, messages: &[Arc<Message>], is_group: bool, cx: &mut Context<Self>) {
-        let Some(view) = self.reply_thread.clone() else { return };
-        let primary = self.primary.clone().unwrap_or_default();
-        let mut subset: Vec<Arc<Message>> = messages.iter().filter(|message| message.guid == root).cloned().collect();
-        let replies = messages.iter().filter(|message| message.reply_to.as_deref() == Some(root)).count();
-        subset.extend(messages.iter().filter(|message| message.reply_to.as_deref() == Some(root)).cloned());
-        let options = BuildOptions { is_group, typing: false, loading: false, online: true, silenced_by: None, now: now_ms() };
-        let rows: Vec<Row> = build_rows(&subset, &options)
-            .into_iter()
-            .filter_map(|row| match row {
-                Row::Message(mut data) => {
-                    data.position = crate::thread_rows::Position::Single;
-                    data.show_sender = is_group && !data.message.from_me;
-                    data.receipt = None;
-                    data.notify = false;
-                    data.show_quote = false;
-                    Some(Row::Message(data))
+    /// Starts the downloads and posters the visible messages need: pictures up to 25 MB and
+    /// videos up to 60 MB fetch on their own, stickers always.
+    fn fetch_media(&mut self, store: &MessagesStore, messages: &[Arc<Message>], cx: &mut Context<Self>) {
+        for message in messages.iter().rev().take(200) {
+            for attachment in message.attachments.iter().filter(|a| !a.hidden) {
+                let kind = message::kind_of(message, attachment);
+                let wants = attachment.local_path.is_none()
+                    && match kind {
+                        Kind::Sticker => true,
+                        Kind::Image => attachment.bytes <= message::AUTO_DOWNLOAD_BYTES,
+                        Kind::Video => attachment.bytes <= message::AUTO_DOWNLOAD_VIDEO_BYTES,
+                        Kind::Audio | Kind::File => false,
+                    };
+                if wants
+                    && !self.media.fetching.contains(&attachment.guid)
+                    && !self.media.failed.contains(&attachment.guid)
+                {
+                    self.fetch(store, message, attachment, cx);
                 }
-                Row::Separator { .. } => Some(row),
-                _ => None,
-            })
-            .collect();
-        let slots = self.slots_for(&rows, &primary, messages, &self.inputs, is_group, false);
-        view.update(cx, |view, cx| view.set(slots, replies, is_group, cx));
-    }
-
-    fn scroll_to(&mut self, guid: &str, cx: &mut Context<Self>) -> bool {
-        let Some(rows) = &self.rows else { return false };
-        let Some(index) = rows.index_of(guid) else { return false };
-        rows.state.scroll_to(ListOffset { item_ix: index, offset_in_item: px(0.) });
-        rows.state.scroll_by(JUMP_OFFSET);
-        self.highlight = Some(guid.to_owned());
-        self.dirty = true;
-        let target = guid.to_owned();
-        self.highlight_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(HIGHLIGHT_FOR).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.highlight.as_deref() == Some(target.as_str()) {
-                    this.highlight = None;
-                    this.dirty = true;
-                    cx.notify();
+                if kind == Kind::Video
+                    && let Some(path) = attachment.local_path.clone()
+                    && !self.media.posters.contains_key(&attachment.guid)
+                {
+                    self.media.posters.insert(attachment.guid.clone(), std::path::PathBuf::new());
+                    let guid = attachment.guid.clone();
+                    let worker = poster_worker();
+                    crate::rt::spawn_for(
+                        cx.weak_entity(),
+                        async move { worker.video_poster(&path, &guid).await.map(|p| (guid, p)) },
+                        |this, poster, cx| {
+                            if let Some((guid, path)) = poster {
+                                this.media.posters.insert(guid, path);
+                                cx.notify();
+                            }
+                        },
+                    );
                 }
-            });
-        }));
-        cx.notify();
-        true
-    }
-
-    /// Scrolls to a quoted message, paging older history (up to twelve pages) until it is in memory.
-    pub fn jump_to(&mut self, guid: &str, cx: &mut Context<Self>) {
-        if self.thread_for.take().is_some() {
-            self.reply_thread = None;
-            self.dirty = true;
-        }
-        if self.scroll_to(guid, cx) {
-            return;
-        }
-        let (Some(store), Some(primary)) = (self.store.clone(), self.primary.clone()) else { return };
-        self.pending_jump = Some(guid.to_owned());
-        let target = guid.to_owned();
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-        let pager = store.clone();
-        store.spawn(async move {
-            for _ in 0..JUMP_PAGES {
-                let (found, older) = {
-                    let state = pager.state();
-                    (state.find_message(&primary, &target).is_some(), conversation_has_older(&state, &primary))
-                };
-                if found || !older {
-                    break;
-                }
-                pager.load_earlier(&primary).await;
             }
-            let _ = tx.send(());
-        });
-        let target = guid.to_owned();
-        self.jump_task = Some(cx.spawn(async move |this, cx| {
-            let _ = rx.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.pending_jump.as_deref() == Some(target.as_str()) {
-                    this.dirty = true;
-                    cx.notify();
+        }
+    }
+
+    fn fetch(
+        &mut self,
+        store: &MessagesStore,
+        message: &Message,
+        attachment: &messages_core::Attachment,
+        cx: &mut Context<Self>,
+    ) {
+        self.media.fetching.insert(attachment.guid.clone());
+        let store = store.clone();
+        let (chat, guid, attachment_guid) = (message.chat_guid.clone(), message.guid.clone(), attachment.guid.clone());
+        let (name, mime) = (attachment.name.clone(), attachment.mime.clone());
+        let key = attachment_guid.clone();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move { store.attachment_src(&chat, &guid, &attachment_guid, &name, Some(&mime)).await.is_ok() },
+            move |this, ok, cx| {
+                this.media.fetching.remove(&key);
+                if !ok {
+                    this.media.failed.insert(key);
                 }
-            });
-        }));
+                cx.notify();
+            },
+        );
     }
 
-    pub fn open_reply_thread(&mut self, guid: &str, cx: &mut Context<Self>) {
-        let Some(store) = self.store.clone() else { return };
-        self.thread_for = Some(guid.to_owned());
-        let thread = cx.entity().downgrade();
-        self.reply_thread = Some(cx.new(|_| ReplyThread::new(store, thread)));
-        self.dirty = true;
-        cx.notify();
-    }
-
-    pub fn close_reply_thread(&mut self, cx: &mut Context<Self>) {
-        self.thread_for = None;
-        self.reply_thread = None;
-        self.dirty = true;
-        cx.notify();
-    }
-
-    pub fn toggle_translation(&mut self, guid: &str, text: &str, cx: &mut Context<Self>) {
-        self.dirty = true;
-        cx.notify();
-        if self.translations.remove(guid).is_some() {
+    /// Runs `then` with the attachment's file, downloading it first when it is not on disk.
+    fn with_local(
+        &mut self,
+        reference: &AttachmentRef,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, std::path::PathBuf, String, &mut Context<Self>) + 'static,
+    ) {
+        let Some(store) = bridge::store(cx) else { return };
+        let Some(attachment) = store
+            .state()
+            .find_message(&reference.at.chat, &reference.at.message)
+            .and_then(|m| m.attachments.iter().find(|a| a.guid == reference.attachment).cloned())
+        else {
+            return;
+        };
+        if let Some(path) = attachment.local_path.clone().filter(|p| !p.to_string_lossy().starts_with("data:")) {
+            then(self, path, attachment.mime.clone(), cx);
             return;
         }
-        let (Some(store), Some(assistant)) = (self.store.clone(), assistant(cx)) else { return };
-        self.translations.insert(guid.to_owned(), Translation::Loading);
-        let key = guid.to_owned();
-        let text = text.to_owned();
-        run_for(&store, async move { assistant.client.translate(&text, &assistant.language).await }, cx, move |this, result, cx| {
-            // A translation hidden while it was loading stays hidden.
-            if let Some(slot) = this.translations.get_mut(&key) {
-                *slot = match result {
-                    Ok(text) => Translation::Text(text.into()),
-                    Err(error) => Translation::Error(error.0.into()),
-                };
-                this.dirty = true;
+        let (chat, message) = (reference.at.chat.clone(), reference.at.message.clone());
+        let mime = attachment.mime.clone();
+        let fetch_mime = mime.clone();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move {
+                store.attachment_src(&chat, &message, &attachment.guid, &attachment.name, Some(&fetch_mime)).await.ok()
+            },
+            move |this, path, cx| {
+                if let Some(path) = path {
+                    then(this, path, mime, cx);
+                }
+            },
+        );
+    }
+
+    pub fn open_attachment(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+        let audio = bridge::store(cx).is_some_and(|store| {
+            store.state().find_message(&reference.at.chat, &reference.at.message).is_some_and(|m| {
+                m.attachments.iter().any(|a| a.guid == reference.attachment && message::kind_of(m, a) == Kind::Audio)
+            })
+        });
+        if audio {
+            self.toggle_audio(reference, cx);
+            return;
+        }
+        self.with_local(reference, cx, |_, path, _, _| {
+            let _ = nd::system::open_path(&path);
+        });
+    }
+
+    fn toggle_audio(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+        if self.media.playing.take().is_some() {
+            messages_core::open::stop_audio();
+            cx.notify();
+            return;
+        }
+        let guid = reference.attachment.clone();
+        self.with_local(reference, cx, move |this, path, _, cx| {
+            if messages_core::open::play_audio(&path) {
+                this.media.playing = Some(guid);
+                this.watch_player(cx);
                 cx.notify();
             }
         });
     }
 
-    pub(crate) fn open_lightbox(&mut self, chat_guid: &str, attachment_guid: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(store) = self.store.clone() else { return };
-        let (chat, attachment) = (chat_guid.to_owned(), attachment_guid.to_owned());
-        self.lightbox = Some(cx.new(|cx| Lightbox::open(store, chat, attachment, window, cx)));
+    /// The player is a child process nobody hears back from, so it is checked every 400 ms.
+    fn watch_player(&mut self, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        crate::rt::after(Duration::from_millis(400), move |cx| {
+            weak.update(cx, |this, cx| {
+                if this.media.playing.is_some() {
+                    if messages_core::open::is_audio_playing() {
+                        this.watch_player(cx);
+                    } else {
+                        this.media.playing = None;
+                        cx.notify();
+                    }
+                }
+            });
+        });
+    }
+
+    pub fn copy_attachment(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+        self.with_local(reference, cx, |_, path, mime, _| {
+            let mime = if mime.is_empty() { mime_guess(&path) } else { mime };
+            crate::rt::detach(async move { messages_core::clipboard::copy_file(&path, &mime).await });
+        });
+    }
+
+    /// Fetches an attachment the thread left for a click (over the size it downloads alone).
+    pub fn download(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+        self.media.failed.remove(&reference.attachment);
+        self.media.fetching.insert(reference.attachment.clone());
+        let key = reference.attachment.clone();
+        cx.notify();
+        self.with_local(reference, cx, move |this, _, _, cx| {
+            this.media.fetching.remove(&key);
+            cx.notify();
+        });
+    }
+
+    /// A voice note to text through CanaryLLM, shown under the note.
+    pub fn transcribe(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+        let Some(assistant) = self.assistant.clone() else { return };
+        if self.media.transcripts.get(&reference.attachment) == Some(&Translation::Loading) {
+            return;
+        }
+        let key = reference.attachment.clone();
+        self.media.transcripts.insert(key.clone(), Translation::Loading);
+        cx.notify();
+        self.with_local(reference, cx, move |_, path, _, cx| {
+            crate::rt::spawn_for(
+                cx.weak_entity(),
+                async move { assistant.client.transcribe(&path).await },
+                move |this, result, cx| {
+                    let value = match result {
+                        Ok(text) => Translation::Text(text),
+                        Err(error) => Translation::Error(error.0),
+                    };
+                    this.media.transcripts.insert(key, value);
+                    cx.notify();
+                },
+            );
+        });
+    }
+
+    pub fn show_attachment(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+        let Some(store) = bridge::store(cx) else { return };
+        self.lightbox = crate::lightbox::Lightbox::open(&store, reference);
         cx.notify();
     }
 
-    pub(crate) fn close_lightbox(&mut self, cx: &mut Context<Self>) {
+    pub fn step_lightbox(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(lightbox) = self.lightbox.as_mut() {
+            lightbox.step(delta);
+            cx.notify();
+        }
+    }
+
+    pub fn copy_lightbox(&mut self, cx: &mut Context<Self>) {
+        if let Some(reference) = self.lightbox.as_mut().and_then(|l| {
+            l.mark_copied();
+            l.current()
+        }) {
+            self.copy_attachment(&reference, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn lightbox_mut(&mut self) -> Option<&mut crate::lightbox::Lightbox> {
+        self.lightbox.as_mut()
+    }
+
+    pub fn close_lightbox(&mut self, cx: &mut Context<Self>) {
         self.lightbox = None;
         cx.notify();
     }
 
-    fn load_older_if_near_top(&mut self, cx: &mut Context<Self>) {
+    /// Steps the typing dots while the bubble shows, and stops when it goes.
+    fn typing_tick(&mut self, typing: bool, cx: &mut Context<Self>) {
+        if !typing || self.typing_timer {
+            return;
+        }
+        self.typing_timer = true;
+        let weak = cx.weak_entity();
+        crate::rt::after(TYPING_STEP, move |cx| {
+            weak.update(cx, |this, cx| {
+                this.typing_timer = false;
+                if this.slots.borrow().contains_key("typing") {
+                    this.lit = (this.lit + 1) % 3;
+                    this.list.invalidate(&"typing".to_owned(), cx);
+                    this.typing_tick(true, cx);
+                }
+            });
+        });
+    }
+
+    fn scroll_to(&mut self, guid: &str, cx: &mut Context<Self>) -> bool {
+        let key = self.slots.borrow().iter().find_map(|(key, slot)| match slot {
+            Slot::Message { data, .. } if data.message.guid == guid => Some(key.clone()),
+            _ => None,
+        });
+        let Some(key) = key else { return false };
+        self.list.scroll_to(key, Align::Start, px(JUMP_OFFSET), cx);
+        self.highlight = Some(guid.to_owned());
+        let target = guid.to_owned();
+        let weak = cx.weak_entity();
+        crate::rt::after(HIGHLIGHT_FOR, move |cx| {
+            weak.update(cx, |this, cx| {
+                if this.highlight.as_deref() == Some(target.as_str()) {
+                    this.highlight = None;
+                    cx.notify();
+                }
+            });
+        });
+        cx.notify();
+        true
+    }
+
+    /// Scrolls to a quoted message, paging older history (up to twelve pages) until it is in
+    /// memory.
+    pub fn jump_to(&mut self, guid: &str, cx: &mut Context<Self>) {
+        if self.thread_for.take().is_some() {
+            cx.notify();
+        }
+        if self.scroll_to(guid, cx) {
+            return;
+        }
+        let (Some(store), Some(primary)) = (bridge::store(cx), self.primary.clone()) else { return };
+        self.pending_jump = Some(guid.to_owned());
+        let target = guid.to_owned();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move {
+                for _ in 0..JUMP_PAGES {
+                    let (found, older) = {
+                        let state = store.state();
+                        (state.find_message(&primary, &target).is_some(), conversation_has_older(&state, &primary))
+                    };
+                    if found || !older {
+                        break;
+                    }
+                    store.load_earlier(&primary).await;
+                }
+            },
+            |_, (), cx| cx.notify(),
+        );
+    }
+
+    pub fn set_picker(&mut self, guid: Option<String>, cx: &mut Context<Self>) {
+        if self.picker != guid {
+            self.picker = guid;
+            cx.notify();
+        }
+    }
+
+    pub fn open_reply_thread(&mut self, guid: &str, cx: &mut Context<Self>) {
+        self.thread_for = Some(guid.to_owned());
+        cx.notify();
+    }
+
+    pub fn close_reply_thread(&mut self, cx: &mut Context<Self>) {
+        self.thread_for = None;
+        cx.notify();
+    }
+
+    pub fn toggle_translation(&mut self, guid: &str, cx: &mut Context<Self>) {
+        cx.notify();
+        if self.translations.remove(guid).is_some() {
+            return;
+        }
+        let Some(assistant) = self.assistant.clone() else { return };
+        let Some(text) = bridge::store(cx).and_then(|store| {
+            let state = store.state();
+            self.primary.as_deref().and_then(|p| {
+                conversation_messages(&state, p).into_iter().find(|m| m.guid == guid).map(|m| m.text.clone())
+            })
+        }) else {
+            return;
+        };
+        self.translations.insert(guid.to_owned(), Translation::Loading);
+        let key = guid.to_owned();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move { assistant.client.translate(&text, &assistant.language).await },
+            move |this, result, cx| {
+                if let Some(slot) = this.translations.get_mut(&key) {
+                    *slot = match result {
+                        Ok(text) => Translation::Text(text),
+                        Err(error) => Translation::Error(error.0),
+                    };
+                    cx.notify();
+                }
+            },
+        );
+    }
+
+    fn load_older(&mut self, cx: &mut Context<Self>) {
         if self.requested_older || self.empty || self.thread_for.is_some() {
             return;
         }
-        let (Some(store), Some(primary)) = (self.store.clone(), self.primary.clone()) else { return };
-        let Some(rows) = &self.rows else { return };
-        if rows.state.item_count() == 0 || rows.state.logical_scroll_top().item_ix > OLDER_WITHIN_ROWS {
-            return;
-        }
+        let (Some(store), Some(primary)) = (bridge::store(cx), self.primary.clone()) else { return };
         {
             let state = store.state();
             if !conversation_has_older(&state, &primary) || conversation_loading(&state, &primary) {
@@ -818,96 +680,187 @@ impl Thread {
             }
         }
         self.requested_older = true;
-        let pager = store.clone();
-        store.spawn(async move { pager.load_earlier(&primary).await });
-        let _ = cx;
+        crate::rt::spawn_for(cx.weak_entity(), async move { store.load_earlier(&primary).await }, |this, (), cx| {
+            this.requested_older = false;
+            cx.notify();
+        });
+    }
+
+    fn row(&mut self, key: String, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let slot = self.slots.borrow().get(&key).cloned();
+        match slot {
+            None => div().into_any_element(),
+            Some(Slot::Caption { text, strong }) => message::caption_row(&key, &text, strong, &theme),
+            Some(Slot::Typing) => message::typing_row(self.lit, self.typing_who.as_ref(), self.is_group, &theme),
+            Some(Slot::Message { data, props }) => message::render(&data, &props, &self.media, &theme),
+        }
     }
 
     fn render_empty(&self, cx: &mut Context<Self>) -> AnyElement {
-        let palette = Theme::get(cx);
-        let chat = self.chat.clone();
-        let label = if chat.as_ref().is_some_and(|chat| chat.service != Service::IMessage) { "Text message" } else { "iMessage" };
-        div()
-            .flex_grow(1.)
-            .min_h(px(0.))
-            .flex()
-            .flex_col()
+        let label = if self.chat.as_ref().is_some_and(|chat| chat.service != Service::IMessage) {
+            "Text Message"
+        } else {
+            "iMessage"
+        };
+        let theme = cx.theme().clone();
+        v_flex()
+            .id("thread-empty")
+            .size_full()
             .items_center()
             .justify_center()
-            .gap(spacing::X3)
-            .px(spacing::X6)
-            .child(crate::primitives::avatar(None, chat.as_deref(), px(64.), cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(spacing::X1)
-                    .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).child(label))
-                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child("Send the first message below.")),
-            )
+            .gap_3()
+            .children(self.chat.as_ref().map(|chat| ui::chat_avatar(chat, 64.)))
+            .child(label_text(label, &theme))
+            .child(text("Send the first message below.").text_color(theme.text.secondary))
             .into_any_element()
     }
 }
 
-impl Render for Thread {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::trace::render("Thread");
-        if self.store.is_none() {
-            if let Some(store) = cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone()) {
-                self.rows = Some(RowList::new(store.clone(), cx.entity().downgrade(), ListAlignment::Bottom));
-                self.store = Some(store);
-                self.dirty = true;
-            }
-        }
-        if let Some(store) = self.store.clone() {
-            if !self.assistant_loaded {
-                self.load_assistant(&store, cx);
-            }
-        }
-        self.refresh(cx);
-        if let Some((chat, message)) = cx.try_global::<PendingJump>().and_then(|jump| jump.0.clone()) {
-            if self.primary.as_deref() == Some(chat.as_str()) {
-                cx.set_global(PendingJump(None));
-                self.jump_to(&message, cx);
-            }
-        }
-        self.load_older_if_near_top(cx);
-        if std::mem::take(&mut self.check_older) {
-            cx.on_next_frame(window, |this, _, cx| this.load_older_if_near_top(cx));
-        }
-
-        let lightbox = self.lightbox.clone().map(|lightbox| deferred(anchored().position_mode(AnchoredPositionMode::Window).position(point(px(0.), px(0.))).child(lightbox)).with_priority(5));
-        let body = if self.primary.is_none() {
-            div().flex_grow(1.).into_any_element()
-        } else if let Some(view) = self.reply_thread.clone() {
-            view.into_any_element()
-        } else if self.empty {
-            self.render_empty(cx)
-        } else if self.loading_empty {
-            div().flex_grow(1.).min_h(px(0.)).flex().flex_col().items_center().justify_center().child(caption("Loading earlier messages\u{2026}".into(), 0, px(0.), px(0.), cx)).into_any_element()
-        } else if let Some(rows) = &self.rows {
-            rows.element().flex_grow(1.).w_full().pb(spacing::X2).into_any_element()
-        } else {
-            div().flex_grow(1.).into_any_element()
-        };
-        let probe = self.rows.as_ref().map(RowList::width_probe);
-        // Full height as well as flex-grown: as a cached view the root is laid
-        // out on its own inside the box the parent gave it, where only a
-        // percentage height fills that box.
-        div().id("thread").flex_grow(1.).flex_basis(px(0.)).min_h(px(0.)).w_full().h_full().flex().flex_col().children(probe).child(body).children(lightbox)
-    }
+fn label_text(value: &'static str, theme: &Theme) -> Text {
+    text(value).font_weight(FontWeight::SEMIBOLD).text_size(theme.type_scale.headline).text_color(theme.text.primary)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::separator_day;
-    use std::prelude::v1::test;
+fn mime_guess(path: &std::path::Path) -> String {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        _ => "application/octet-stream",
+    }
+    .to_owned()
+}
 
-    #[test]
-    fn the_day_half_of_a_separator_is_what_gets_the_weight() {
-        assert_eq!(separator_day("Today 9:41 AM"), "Today");
-        assert_eq!(separator_day("Monday 08:15"), "Monday");
-        assert_eq!(separator_day("Sep 2, 2025 at 4:30 PM"), "Sep 2, 2025");
+fn poster_worker() -> Arc<messages_core::media::MediaWorker> {
+    static WORKER: std::sync::OnceLock<Arc<messages_core::media::MediaWorker>> = std::sync::OnceLock::new();
+    WORKER.get_or_init(messages_core::media::MediaWorker::new).clone()
+}
+
+struct PropsInput {
+    primary: String,
+    is_group: bool,
+    capabilities: messages_core::Capabilities,
+    assistant: bool,
+}
+
+/// The rows of a reply thread: the root message, then every reply, each standing alone.
+fn reply_rows(messages: &[Arc<Message>], root: &str, is_group: bool) -> Vec<Row> {
+    let mut subset: Vec<Arc<Message>> = messages.iter().filter(|m| m.guid == root).cloned().collect();
+    subset.extend(messages.iter().filter(|m| m.reply_to.as_deref() == Some(root)).cloned());
+    let options =
+        BuildOptions { is_group, typing: false, loading: false, online: true, silenced_by: None, now: ui::now_ms() };
+    build_rows(&subset, &options)
+        .into_iter()
+        .filter_map(|row| match row {
+            Row::Message(mut data) => {
+                data.position = RunPosition::Single;
+                data.show_sender = is_group && !data.message.from_me;
+                data.receipt = None;
+                data.notify = false;
+                data.show_quote = false;
+                Some(Row::Message(data))
+            }
+            Row::Separator { .. } => Some(row),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What a row's output depends on, hashed: the list re-renders a row only when it moves.
+fn version(slot: &Slot, media: &Media) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match slot {
+        Slot::Caption { text, strong } => (0u8, text, strong).hash(&mut h),
+        Slot::Typing => 1u8.hash(&mut h),
+        Slot::Message { data, props } => {
+            2u8.hash(&mut h);
+            (Arc::as_ptr(&data.message) as usize).hash(&mut h);
+            (format!("{:?}", data.position), data.show_sender, data.notify, data.show_quote).hash(&mut h);
+            data.receipt.as_ref().map(|r| (&r.text, r.failed)).hash(&mut h);
+            (&props.quote, &props.replies, props.highlighted, &props.translation, props.assistant, props.picker)
+                .hash(&mut h);
+            format!("{:?}", props.capabilities).hash(&mut h);
+            for attachment in &data.message.attachments {
+                let guid = &attachment.guid;
+                (
+                    media.fetching.contains(guid),
+                    media.failed.contains(guid),
+                    media.posters.get(guid),
+                    media.playing.as_ref() == Some(guid),
+                    media.transcripts.get(guid),
+                )
+                    .hash(&mut h);
+            }
+        }
+    }
+    h.finish()
+}
+
+impl Render for Thread {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.assistant_loaded && bridge::config(cx).is_some() {
+            self.load_assistant(cx);
+        }
+        self.refresh(cx);
+        let jump = cx.try_global::<PendingJump>().and_then(|j| j.0.borrow().clone());
+        if let Some((chat, message)) = jump
+            && self.primary.as_deref() == Some(chat.as_str())
+        {
+            cx.global::<PendingJump>().0.replace(None);
+            self.jump_to(&message, cx);
+        }
+
+        let header = self.thread_for.as_ref().map(|root| {
+            let replies = self
+                .slots
+                .borrow()
+                .values()
+                .filter(|s| matches!(s, Slot::Message { data, .. } if data.message.guid != *root))
+                .count();
+            h_flex()
+                .id("reply-thread-header")
+                .gap_2()
+                .h(px(40.))
+                .px_3()
+                .flex_none()
+                .child(
+                    button("thread-back", "Back")
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.close_reply_thread(cx))),
+                )
+                .child(label("Thread").text_style(TextStyle::Headline))
+                .child(
+                    label(if replies == 1 { "1 reply".to_owned() } else { format!("{replies} replies") }).secondary(),
+                )
+        });
+        let body = if self.primary.is_none() {
+            div().into_any_element()
+        } else if self.empty && self.thread_for.is_none() {
+            self.render_empty(cx)
+        } else if self.loading_empty {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(label("Loading earlier messages\u{2026}").secondary())
+                .into_any_element()
+        } else {
+            list("thread", &self.list, cx.processor(Self::row))
+                .estimated_row_height(px(44.))
+                .on_near_start({
+                    let weak = cx.weak_entity();
+                    move |_, cx| {
+                        weak.update(cx, |this, cx| this.load_older(cx));
+                    }
+                })
+                .size_full()
+                .into_any_element()
+        };
+        let lightbox = self.lightbox.as_ref().map(|lightbox| lightbox.element(cx));
+        v_flex()
+            .id("thread-view")
+            .size_full()
+            .children(header)
+            .child(div().flex_1().min_h_0().child(body))
+            .children(lightbox)
     }
 }

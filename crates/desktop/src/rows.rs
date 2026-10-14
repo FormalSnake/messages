@@ -4,11 +4,9 @@
 
 use std::sync::Arc;
 
-use gpui_kit::{Corners, Pixels};
 use messages_core::format::{format_separator, format_time, needs_separator};
 use messages_core::{DeliveryState, GroupEvent, Message, Service, Tapback, delivery_state, handle_name, tapback_glyph};
-
-use crate::theme::radius;
+use nd::components::RunPosition as Position;
 
 /// Same author within this long joins the previous bubble's run.
 pub const RUN_GAP_MS: i64 = 60_000;
@@ -17,24 +15,6 @@ pub const UNSEND_WINDOW_MS: i64 = 2 * 60_000;
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Position {
-    Single,
-    First,
-    Middle,
-    Last,
-}
-
-impl Position {
-    pub fn starts_run(self) -> bool {
-        matches!(self, Position::First | Position::Single)
-    }
-
-    pub fn ends_run(self) -> bool {
-        matches!(self, Position::Last | Position::Single)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,8 +71,12 @@ pub fn event_text(message: &Message) -> Option<String> {
     }
     Some(match message.group_event.as_ref()? {
         GroupEvent::Rename { title } => format!("{who} named the conversation \u{201C}{title}\u{201D}."),
-        GroupEvent::Join { who: added } => format!("{who} added {}.", added.as_ref().map(handle_name).unwrap_or("someone")),
-        GroupEvent::Leave { who: left } => format!("{} left the conversation.", left.as_ref().map(handle_name).unwrap_or(who)),
+        GroupEvent::Join { who: added } => {
+            format!("{who} added {}.", added.as_ref().map(handle_name).unwrap_or("someone"))
+        }
+        GroupEvent::Leave { who: left } => {
+            format!("{} left the conversation.", left.as_ref().map(handle_name).unwrap_or(who))
+        }
         GroupEvent::Photo => format!("{who} changed the group photo."),
     })
 }
@@ -152,10 +136,18 @@ pub fn build_rows(messages: &[Arc<Message>], options: &BuildOptions) -> Vec<Row>
         let show_quote = quoted[index];
         let joins_previous = index > 0 && {
             let previous = &messages[index - 1];
-            same_author(previous, message) && !is_event(previous) && message.date - previous.date < RUN_GAP_MS && !needs_separator(Some(previous.date), message.date) && !show_quote
+            same_author(previous, message)
+                && !is_event(previous)
+                && message.date - previous.date < RUN_GAP_MS
+                && !needs_separator(Some(previous.date), message.date)
+                && !show_quote
         };
         let joins_next = messages.get(index + 1).is_some_and(|next| {
-            same_author(message, next) && !is_event(next) && next.date - message.date < RUN_GAP_MS && !needs_separator(Some(message.date), next.date) && !quoted[index + 1]
+            same_author(message, next)
+                && !is_event(next)
+                && next.date - message.date < RUN_GAP_MS
+                && !needs_separator(Some(message.date), next.date)
+                && !quoted[index + 1]
         });
         let position = match (joins_previous, joins_next) {
             (true, true) => Position::Middle,
@@ -213,19 +205,6 @@ pub fn build_rows(messages: &[Arc<Message>], options: &BuildOptions) -> Vec<Row>
     rows
 }
 
-/// Run-aware corners: tight where the bubble joins its neighbour, full at the run's ends, mirrored for mine.
-pub fn bubble_radius(from_me: bool, position: Position) -> Corners<Pixels> {
-    let big = radius::BUBBLE;
-    let small = radius::BUBBLE_TIGHT;
-    let top = if matches!(position, Position::Middle | Position::Last) { small } else { big };
-    let bottom = if matches!(position, Position::Middle | Position::First) { small } else { big };
-    if from_me {
-        Corners { top_left: big, bottom_left: big, top_right: top, bottom_right: bottom }
-    } else {
-        Corners { top_right: big, bottom_right: big, top_left: top, bottom_left: bottom }
-    }
-}
-
 pub fn effect_name(id: &str) -> String {
     let known = match id {
         "com.apple.MobileSMS.expressivesend.impact" => "Slam",
@@ -260,7 +239,11 @@ pub fn tapback_groups(tapbacks: &[Tapback]) -> Vec<TapbackGroup> {
     let mut groups: Vec<TapbackGroup> = Vec::new();
     for tapback in tapbacks {
         let glyph = tapback_glyph(tapback.kind, tapback.emoji.as_deref()).to_owned();
-        let who = if tapback.from_me { "You".to_owned() } else { tapback.sender.as_ref().map(|s| handle_name(s).to_owned()).unwrap_or_else(|| "Unknown sender".to_owned()) };
+        let who = if tapback.from_me {
+            "You".to_owned()
+        } else {
+            tapback.sender.as_ref().map(|s| handle_name(s).to_owned()).unwrap_or_else(|| "Unknown sender".to_owned())
+        };
         match groups.iter_mut().find(|group| group.glyph == glyph) {
             Some(group) => {
                 group.count += 1;
@@ -283,7 +266,14 @@ mod tests {
 
     fn message(text: &str, date: i64, edit: impl FnOnce(&mut Message)) -> Arc<Message> {
         let seq = SEQ.fetch_add(1, Ordering::SeqCst);
-        let mut message = Message { guid: format!("m{seq}"), chat_guid: "c".into(), text: text.into(), date, service: Service::IMessage, ..Message::default() };
+        let mut message = Message {
+            guid: format!("m{seq}"),
+            chat_guid: "c".into(),
+            text: text.into(),
+            date,
+            service: Service::IMessage,
+            ..Message::default()
+        };
         edit(&mut message);
         Arc::new(message)
     }
@@ -312,7 +302,10 @@ mod tests {
         }
         let rows = message_rows(&all, None);
         assert_eq!(rows.iter().map(|r| r.show_quote).collect::<Vec<_>>(), vec![false, false, true, false, false]);
-        assert_eq!(rows[2..].iter().map(|r| r.position).collect::<Vec<_>>(), vec![Position::First, Position::Middle, Position::Last]);
+        assert_eq!(
+            rows[2..].iter().map(|r| r.position).collect::<Vec<_>>(),
+            vec![Position::First, Position::Middle, Position::Last]
+        );
     }
 
     #[test]
@@ -333,7 +326,10 @@ mod tests {
         let c = message("c", 95_000, |_| {});
         let d = message("d", 96_000, |m| m.from_me = true);
         let rows = message_rows(&[a, b, c, d], None);
-        assert_eq!(rows.iter().map(|r| r.position).collect::<Vec<_>>(), vec![Position::First, Position::Last, Position::Single, Position::Single]);
+        assert_eq!(
+            rows.iter().map(|r| r.position).collect::<Vec<_>>(),
+            vec![Position::First, Position::Last, Position::Single, Position::Single]
+        );
     }
 
     #[test]
@@ -445,7 +441,12 @@ mod tests {
 
     #[test]
     fn groups_show_the_sender_on_a_runs_first_bubble_only() {
-        let alex = messages_core::Handle { address: "+1".into(), service: Service::IMessage, name: Some("Alex".into()), avatar: None };
+        let alex = messages_core::Handle {
+            address: "+1".into(),
+            service: Service::IMessage,
+            name: Some("Alex".into()),
+            avatar: None,
+        };
         let a = message("a", 0, |m| m.sender = Some(alex.clone()));
         let b = message("b", 1000, |m| m.sender = Some(alex.clone()));
         let rows: Vec<bool> = build_rows(&[a, b], &BuildOptions { is_group: true, ..options(None) })
@@ -473,25 +474,6 @@ mod tests {
         assert_eq!(groups[0].count, 2);
         assert!(groups[0].mine);
         assert_eq!(groups[0].who, vec!["Unknown sender".to_owned(), "You".to_owned()]);
-    }
-
-    #[test]
-    fn bubble_corners_tighten_where_a_run_joins_and_mirror_for_mine() {
-        let (big, small) = (radius::BUBBLE, radius::BUBBLE_TIGHT);
-        let received = |position| {
-            let c = bubble_radius(false, position);
-            (c.top_left, c.bottom_left, c.top_right, c.bottom_right)
-        };
-        assert_eq!(received(Position::Single), (big, big, big, big));
-        assert_eq!(received(Position::First), (big, small, big, big));
-        assert_eq!(received(Position::Middle), (small, small, big, big));
-        assert_eq!(received(Position::Last), (small, big, big, big));
-        let mine = bubble_radius(true, Position::Last);
-        assert_eq!((mine.top_right, mine.bottom_right, mine.top_left, mine.bottom_left), (small, big, big, big));
-        let mine = bubble_radius(true, Position::First);
-        assert_eq!((mine.top_right, mine.bottom_right), (big, small));
-        assert!(Position::Last.ends_run() && Position::Single.ends_run());
-        assert!(!Position::First.ends_run() && !Position::Middle.ends_run());
     }
 
     #[test]

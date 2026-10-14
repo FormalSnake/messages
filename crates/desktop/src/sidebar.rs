@@ -1,169 +1,181 @@
-//! Search, pinned strip, the conversation list and the connection footer.
-//!
-//! Each chat row is its own `SidebarRow` entity, created once and cached by
-//! guid in `rows`; a render pass here only ever calls `set_state` on the
-//! handful of rows whose placement, selection or keyboard cursor actually
-//! changed; unread, typing and Focus repaint the row itself through its own
-//! `Chat`/`Typing`/`Focus` watches, never through here. `Sidebar` itself only
-//! watches `ChatList`, `Selection` and `Connection`, so a message arriving in
-//! some other chat never touches this view.
+//! Search, the pinned strip, the conversation list and the connection footer. The list is nd's
+//! virtual list (an `NSTableView` on macOS): rows are keyed by conversation and versioned by what
+//! they show, so a message in one chat re-renders that chat's row and nothing else.
 
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::time::Duration;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
-use messages_core::conversations::conversation_chats;
+use messages_core::conversations::{conversation_chats, conversation_focus, conversation_typing, conversation_unread};
+use messages_core::format::format_list_date;
 use messages_core::search::{SearchContext, parse_search_query, resolve_search_query};
 use messages_core::transport::{ConnectionStatus, TransportKind};
-use messages_core::{Chat, Message, chat_title};
+use messages_core::{Chat, FocusStatus, GroupEvent, Message, chat_title, handle_name};
+use nd::prelude::*;
 
-use crate::app::{AppRoot, root};
-use crate::menus::{MenuItem, MenuRequest, shortcut};
-use crate::bridge::{Bridge, StoreHandle, Topic};
-use crate::icons::IconName;
-use crate::primitives::IconButton;
-use crate::search_results::{search_result_row, section_header};
-use crate::sidebar_row::{ROW_INSET, SidebarRow};
-use crate::theme::{SIDEBAR_WIDTH, SIDEBAR_WIDTH_COMPACT, TITLEBAR_HEIGHT, Theme, radius, spacing, traffic_light_clearance, type_scale};
+use crate::actions::*;
+use crate::bridge::{self, Bridge, Topic};
+use crate::ui;
 
-fn current_store(cx: &App) -> Option<messages_core::MessagesStore> {
-    cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone())
-}
-
-/// One row the sidebar's body shows, in paint order.
-enum Row {
-    Chat(Arc<Chat>),
-    ResultsHeader,
-    Result(Message, Arc<Chat>),
-    Note { title: SharedString, body: Option<SharedString> },
-}
-
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
+const AVATAR_ROW: f32 = 44.;
+const PINNED_AVATAR: f32 = 52.;
+const PINNED_CELL: f32 = 92.;
+const PREVIEW_CHARS: usize = 90;
 const SEARCH_FAILED: &str = "Search failed. Try again.";
+const OPERATOR_TIPS: [&str; 4] = [
+    "from:name or from:me",
+    "has:photo, has:video, has:file or has:link",
+    "before:2024-01-01, after:2024-01-01",
+    "in:chat name",
+];
 
-const OPERATOR_TIPS: [&str; 4] = ["from:name or from:me", "has:photo, has:video, has:file or has:link", "before:2024-01-01, after:2024-01-01", "in:chat name"];
+/// One row of the list.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Item {
+    Chat(String),
+    ResultsHeader,
+    /// A search hit, by message guid.
+    Result(String),
+    Note,
+}
 
 pub struct Sidebar {
-    app: WeakEntity<AppRoot>,
-    search_state: Entity<InputState>,
+    list: ListState<Item>,
+    query: SharedString,
     results: Vec<Message>,
-    /// Set when the last search request failed; shown where the empty state would be.
     search_error: Option<String>,
     search_epoch: u64,
-    cursor: Option<String>,
+    /// What the note row says when the list shows one.
+    note: Option<(SharedString, Option<SharedString>)>,
     selected: Option<String>,
-    pinned_set: HashSet<String>,
-    /// Pinned then unpinned guids, the keyboard cursor's travel order.
-    order: Vec<String>,
-    rows: HashMap<String, Entity<SidebarRow>>,
-    list_scroll: UniformListScrollHandle,
-    /// Precomputed by the last render; `cx.processor` reads it back to build
-    /// only the rows in the visible range.
-    items: Vec<Row>,
-    on_select: Rc<dyn Fn(&str, &mut Window, &mut App)>,
-    on_arrow: Rc<dyn Fn(&str, i32, &mut Window, &mut App)>,
-    /// Set by the list area's capture pass for a right-click: the menu that
-    /// was up before any row saw the click.
-    menu_before_click: Option<Option<EntityId>>,
-    _subscriptions: Vec<Subscription>,
+}
+
+fn first_name(name: &str) -> &str {
+    name.split_whitespace().next().unwrap_or(name)
+}
+
+/// The sidebar's line for a chat's last message.
+pub fn preview_text(message: Option<&Message>, chat: &Chat) -> String {
+    let Some(message) = message else {
+        return if chat.is_group { "New group".to_owned() } else { "New conversation".to_owned() };
+    };
+    let who = if message.from_me {
+        "You".to_owned()
+    } else if let Some(sender) = &message.sender {
+        first_name(handle_name(sender)).to_owned()
+    } else {
+        String::new()
+    };
+    if message.date_retracted.is_some() {
+        return format!("{who} unsent a message");
+    }
+    if let Some(event) = &message.group_event {
+        return match event {
+            GroupEvent::Rename { title } => format!("{who} named the conversation \u{201c}{title}\u{201d}"),
+            GroupEvent::Join { who: joined } => {
+                format!("{who} added {}", joined.as_ref().map(|h| handle_name(h)).unwrap_or("someone"))
+            }
+            GroupEvent::Leave { who: left } => {
+                format!("{} left the conversation", left.as_ref().map(|h| handle_name(h)).unwrap_or(who.as_str()))
+            }
+            GroupEvent::Photo => format!("{who} changed the group photo"),
+        };
+    }
+    let mut body = message.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if body.is_empty()
+        && let Some(first) = message.attachments.first()
+    {
+        body = if message.is_audio {
+            "Audio message".to_owned()
+        } else if first.mime.starts_with("image/") {
+            "Photo".to_owned()
+        } else if first.mime.starts_with("video/") {
+            "Video".to_owned()
+        } else {
+            first.name.clone()
+        };
+    }
+    if chat.is_group && !message.from_me && !who.is_empty() {
+        return format!("{who}: {body}");
+    }
+    body
+}
+
+/// A conversation's context menu, shared by its row, its pinned cell and the header.
+pub fn chat_menu(menu: ContextMenu, chat: &Chat, open: bool) -> ContextMenu {
+    let guid = chat.guid.clone();
+    let menu = if open { menu.item("Open Conversation", OpenChat(guid.clone())).separator() } else { menu };
+    let menu = menu
+        .item(if chat.pinned { "Unpin" } else { "Pin" }, TogglePin(guid.clone()))
+        .item(if chat.muted { "Show Alerts" } else { "Hide Alerts" }, ToggleMute(guid.clone()))
+        .item(
+            if chat.read_receipts == Some(false) { "Send Read Receipts" } else { "Read Without Receipts" },
+            ToggleReceipts(guid.clone()),
+        );
+    let menu = if chat.unread {
+        menu.item("Mark as Read", MarkChatRead(guid.clone()))
+    } else {
+        menu.item("Mark as Unread", MarkChatUnread(guid.clone()))
+    };
+    menu.item("Show Details", ShowDetails(guid.clone()))
+        .item("Export Conversation\u{2026}", ExportChat(guid.clone()))
+        .separator()
+        .item_destructive("Delete Conversation", DeleteChat(guid))
+}
+
+/// The version a chat row renders at: anything it shows that can change.
+fn row_version(chat: &Arc<Chat>, typing: bool, unread: bool, silenced: bool, contacts: usize, selected: bool) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (Arc::as_ptr(chat) as usize, typing, unread, silenced, contacts, selected).hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Sidebar {
-    pub fn new(window: &mut Window, app: WeakEntity<AppRoot>, cx: &mut Context<Self>) -> Self {
-        let search_state = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
-        let weak = cx.entity().downgrade();
-
-        let on_select: Rc<dyn Fn(&str, &mut Window, &mut App)> = {
-            let weak = weak.clone();
-            Rc::new(move |guid: &str, window: &mut Window, cx: &mut App| {
-                let guid = guid.to_owned();
-                let _ = weak.update(cx, |this, cx| this.select(&guid, window, cx));
-            })
-        };
-        let on_arrow: Rc<dyn Fn(&str, i32, &mut Window, &mut App)> = {
-            let weak = weak.clone();
-            Rc::new(move |guid: &str, delta: i32, window: &mut Window, cx: &mut App| {
-                let guid = guid.to_owned();
-                let _ = weak.update(cx, |this, cx| this.on_arrow(&guid, delta, window, cx));
-            })
-        };
-
-        let sub = cx.subscribe_in(&search_state, window, |this: &mut Self, _state, event: &InputEvent, window, cx| match event {
-            InputEvent::Change => this.on_query_changed(window, cx),
-            InputEvent::PressEnter { .. } => this.submit_search(window, cx),
-            _ => {}
-        });
-
-        Bridge::watch(cx, Topic::ChatList, weak.clone().into());
-        Bridge::watch(cx, Topic::Selection, weak.clone().into());
-        Bridge::watch(cx, Topic::Connection, weak.into());
-
+    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let weak = cx.weak_entity();
+        for topic in [Topic::ChatList, Topic::Selection, Topic::Connection, Topic::Contacts, Topic::Focus] {
+            Bridge::watch(cx, topic, &weak);
+        }
         Self {
-            app,
-            search_state,
+            list: ListState::new(cx).estimated_row_height(px(64.)),
+            query: SharedString::default(),
             results: Vec::new(),
             search_error: None,
             search_epoch: 0,
-            cursor: None,
+            note: None,
             selected: None,
-            pinned_set: HashSet::new(),
-            order: Vec::new(),
-            rows: HashMap::new(),
-            list_scroll: UniformListScrollHandle::new(),
-            items: Vec::new(),
-            on_select,
-            on_arrow,
-            menu_before_click: None,
-            _subscriptions: vec![sub],
         }
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.search_state.focus_handle(cx), cx);
+        ui::focus_id(window, cx, "sidebar-search");
     }
 
-    fn query(&self, cx: &App) -> String {
-        self.search_state.read(cx).value().trim().to_string()
-    }
-
-    fn on_query_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.notify();
-        self.schedule_search(window, cx);
-    }
-
-    fn submit_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.cursor.clone().or_else(|| self.order.first().cloned());
-        if let Some(guid) = target {
-            self.select(&guid, window, cx);
+    fn set_query(&mut self, query: SharedString, cx: &mut Context<Self>) {
+        if self.query == query {
+            return;
         }
-    }
-
-    fn schedule_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.query = query;
         self.search_epoch += 1;
         let epoch = self.search_epoch;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
-            let _ = this.update(cx, |this, cx| {
+        let weak = cx.weak_entity();
+        crate::rt::after(SEARCH_DEBOUNCE, move |cx| {
+            weak.update(cx, |this, cx| {
                 if this.search_epoch == epoch {
                     this.run_search(epoch, cx);
                 }
             });
-        })
-        .detach();
+        });
+        cx.notify();
     }
 
     fn run_search(&mut self, epoch: u64, cx: &mut Context<Self>) {
-        let Some(store) = current_store(cx) else {
-            return;
-        };
-        let query = self.query(cx);
+        let Some(store) = bridge::store(cx) else { return };
+        let query = self.query.trim().to_owned();
         let parsed = parse_search_query(&query);
-        let free_text = parsed.text.trim().to_lowercase();
-        let has_filter =
-            parsed.from_me || !parsed.senders.is_empty() || parsed.attachments.is_some() || parsed.links || parsed.before.is_some() || parsed.after.is_some() || !parsed.chat_names.is_empty();
-        if free_text.len() < 2 && !has_filter {
+        if parsed.text.trim().len() < 2 && !has_filter(&parsed) {
             if !self.results.is_empty() || self.search_error.is_some() {
                 self.results.clear();
                 self.search_error = None;
@@ -171,144 +183,314 @@ impl Sidebar {
             }
             return;
         }
-        if self.search_error.take().is_some() {
-            cx.notify();
-        }
-        let (query_text, mut filters) = {
+        let (text, mut filters) = {
             let state = store.state();
             resolve_search_query(&parsed, &SearchContext { contacts: &state.contacts, chats: &state.chats })
         };
         filters.limit = Some(20);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let transport_store = store.clone();
-        store.spawn(async move {
-            let result = transport_store.transport().search_messages(&query_text, &filters).await;
-            let _ = tx.send(result);
-        });
-        cx.spawn(async move |this, cx| {
-            let outcome = rx.await;
-            let _ = this.update(cx, |this, cx| {
+        let search = store.clone();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move { search.transport().search_messages(&text, &filters).await },
+            move |this, outcome, cx| {
                 if this.search_epoch != epoch {
                     return;
                 }
                 match outcome {
-                    Ok(Ok(messages)) => {
+                    Ok(messages) => {
                         this.results = messages;
                         this.search_error = None;
                     }
-                    _ => {
+                    Err(_) => {
                         this.results.clear();
                         this.search_error = Some(SEARCH_FAILED.to_owned());
                     }
                 }
                 cx.notify();
-            });
-        })
-        .detach();
+            },
+        );
     }
 
-    /// Gets or creates the row entity for `guid`, and pushes its current
-    /// placement/selection/cursor into it. Cheap when the row already exists:
-    /// `set_state` only notifies when something actually changed.
-    fn row_for(&mut self, guid: &str, pinned_cell: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<SidebarRow> {
-        let selected = self.selected.as_deref() == Some(guid);
-        let cursored = self.cursor.as_deref() == Some(guid);
-        let app = self.app.clone();
-        let on_select = self.on_select.clone();
-        let on_arrow = self.on_arrow.clone();
-        let entity = self.rows.entry(guid.to_owned()).or_insert_with(|| {
-            cx.new(|cx| SidebarRow::new(guid.to_owned(), app, on_select, on_arrow, window, cx))
-        }).clone();
-        entity.update(cx, |row, cx| row.set_state(pinned_cell, selected, cursored, cx));
-        entity
+    fn open(guid: &str, window: &mut Window, cx: &mut App) {
+        crate::ui::dispatch(window, cx, OpenChat(guid.to_owned()));
     }
 
-    fn select(&mut self, guid: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.cursor = Some(guid.to_owned());
-        if let Some(row) = self.rows.get(guid).cloned() {
-            window.focus(&row.read(cx).focus_handle(), cx);
-        }
-        let Some(store) = current_store(cx) else { return };
-        let guid = guid.to_owned();
-        let for_task = store.clone();
-        store.spawn(async move { for_task.open_chat(&guid).await });
-    }
-
-    /// Moves the keyboard cursor to `next_guid`: un-cursors the row that had
-    /// it, cursors and focuses the new one, and scrolls it into view when it
-    /// lives in the virtualized list rather than the pinned strip.
-    fn move_cursor_to(&mut self, next_guid: String, window: &mut Window, cx: &mut Context<Self>) {
-        if self.cursor.as_deref() == Some(next_guid.as_str()) {
-            return;
-        }
-        let previous = self.cursor.replace(next_guid.clone());
-        if let Some(previous) = previous {
-            if let Some(row) = self.rows.get(&previous).cloned() {
-                let pinned = self.pinned_set.contains(&previous);
-                let selected = self.selected.as_deref() == Some(previous.as_str());
-                row.update(cx, |row, cx| row.set_state(pinned, selected, false, cx));
+    fn row(&mut self, item: Item, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        match item {
+            Item::Chat(guid) => {
+                let selected = self.selected.as_deref() == Some(guid.as_str());
+                chat_row(&guid, selected, cx)
             }
-        }
-        if let Some(row) = self.rows.get(&next_guid).cloned() {
-            let pinned = self.pinned_set.contains(&next_guid);
-            let selected = self.selected.as_deref() == Some(next_guid.as_str());
-            row.update(cx, |row, cx| row.set_state(pinned, selected, true, cx));
-            window.focus(&row.read(cx).focus_handle(), cx);
-        }
-        if !self.pinned_set.contains(&next_guid) {
-            if let Some(rest_index) = self.items.iter().filter(|item| matches!(item, Row::Chat(_))).position(|item| matches!(item, Row::Chat(chat) if chat.guid == next_guid)) {
-                self.list_scroll.scroll_to_item(rest_index, ScrollStrategy::Nearest);
+            Item::ResultsHeader => {
+                label("Messages").text_style(TextStyle::Caption1).secondary().ml_3().mt_3().into_any_element()
+            }
+            Item::Result(message) => self.result_row(&message, cx),
+            Item::Note => {
+                let (title, body) = self.note.clone().unwrap_or_default();
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .pt_8()
+                    .px_4()
+                    .child(label(title).text_style(TextStyle::Headline))
+                    .children(body.map(|body| label(body).secondary().wraps()))
+                    .into_any_element()
             }
         }
     }
 
-    fn on_arrow(&mut self, guid: &str, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.order.iter().position(|item| item == guid) else { return };
-        let len = self.order.len() as i32;
-        let next_index = (index as i32 + delta).clamp(0, len - 1) as usize;
-        let Some(next_guid) = self.order.get(next_index).cloned() else { return };
-        self.move_cursor_to(next_guid, window, cx);
+    fn result_row(&self, message_guid: &str, cx: &mut Context<Self>) -> AnyElement {
+        let Some(message) = self.results.iter().find(|m| m.guid == message_guid).cloned() else {
+            return div().into_any_element();
+        };
+        let Some(store) = bridge::store(cx) else { return div().into_any_element() };
+        let chat = {
+            let state = store.state();
+            let guid = messages_core::conversations::conversation_guid(&state.grouping, &message.chat_guid).to_owned();
+            state.chat(&guid).cloned()
+        };
+        let Some(chat) = chat else { return div().into_any_element() };
+        let theme = cx.theme().clone();
+        let (chat_guid, target) = (chat.guid.clone(), message.guid.clone());
+        v_flex()
+            .id(format!("result-{message_guid}"))
+            .gap_0p5()
+            .px_3()
+            .py_2()
+            .on_tap(move |_, window, cx| {
+                Self::open(&chat_guid, window, cx);
+                crate::thread::request_jump(&chat_guid, &target, cx);
+            })
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(text(chat_title(&chat)).font_weight(FontWeight::SEMIBOLD).flex_1().min_w_0())
+                    .child(
+                        text(format_list_date(message.date, ui::now_ms()))
+                            .text_size(theme.type_scale.caption)
+                            .text_color(theme.text.secondary),
+                    ),
+            )
+            .child(
+                text(ui::clamp_preview(&preview_text(Some(&message), &chat), PREVIEW_CHARS))
+                    .text_size(theme.type_scale.caption)
+                    .text_color(theme.text.secondary),
+            )
+            .into_any_element()
     }
 
-    fn focus_first(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(first) = self.order.first().cloned() {
-            self.move_cursor_to(first, window, cx);
-        }
+    fn pinned_strip(&self, pinned: &[Arc<Chat>], cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let store = bridge::store(cx);
+        let cells = pinned.iter().map(|chat| {
+            let unread = store.as_ref().is_some_and(|s| conversation_unread(&s.state(), &chat.guid));
+            let selected = self.selected.as_deref() == Some(chat.guid.as_str());
+            let title = chat_title(chat);
+            let name = if chat.is_group { title } else { first_name(&title).to_owned() };
+            let guid = chat.guid.clone();
+            let menu_chat = chat.clone();
+            v_flex()
+                .id(format!("pinned-{}", chat.guid))
+                .w(px(PINNED_CELL))
+                .items_center()
+                .gap_1()
+                .py_2()
+                .on_tap(move |_, window, cx| Self::open(&guid, window, cx))
+                .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, true))
+                .child(
+                    div()
+                        .size(px(PINNED_AVATAR + 8.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_2()
+                        .border_color(if selected { theme.accent } else { theme.surface.sidebar })
+                        .child(ui::chat_avatar(chat, PINNED_AVATAR))
+                        .when(unread, |cell| {
+                            cell.child(
+                                ui::dot(theme.accent, 14.)
+                                    .absolute()
+                                    .top(px(2.))
+                                    .right(px(2.))
+                                    .border_2()
+                                    .border_color(theme.surface.sidebar),
+                            )
+                        }),
+                )
+                .child(text(name).text_size(theme.type_scale.caption).text_color(if selected {
+                    theme.text.primary
+                } else {
+                    theme.text.secondary
+                }))
+        });
+        div().id("pinned").flex().flex_row().flex_wrap().px_2().pb_2().children(cells).into_any_element()
+    }
+
+    fn footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        let (status, error, host, pending) = match bridge::store(cx) {
+            Some(store) => {
+                let state = store.state();
+                let host = match &state.server {
+                    Some(_) if store.transport().kind() == TransportKind::Demo => "Demo data".to_owned(),
+                    Some(server) => {
+                        format!("macOS {}", server.macos_version.clone().unwrap_or_default()).trim().to_owned()
+                    }
+                    None => String::new(),
+                };
+                (state.status, state.connection_error.clone(), host, store.pending_sends())
+            }
+            None => (ConnectionStatus::Connecting, None, String::new(), 0),
+        };
+        let queued = if pending > 0 {
+            format!(
+                " \u{b7} {}",
+                messages_core::format::pluralize(pending, "message waiting", Some("messages waiting"))
+            )
+        } else {
+            String::new()
+        };
+        let (color, text_label) = match status {
+            ConnectionStatus::Online => match error {
+                Some(error) => (theme.warning, format!("{error}{queued}")),
+                None => (theme.success, format!("{host}{queued}")),
+            },
+            ConnectionStatus::Connecting => (theme.warning, format!("Connecting\u{2026}{queued}")),
+            ConnectionStatus::Offline => (theme.danger, format!("Offline, retrying\u{2026}{queued}")),
+        };
+        h_flex()
+            .id("sidebar-footer")
+            .gap_2()
+            .h(px(38.))
+            .pl_3()
+            .pr_2()
+            .flex_none()
+            .child(ui::dot(color, 8.))
+            .child(
+                text(text_label)
+                    .id("connection-status")
+                    .text_size(theme.type_scale.caption)
+                    .text_color(theme.text.secondary)
+                    .flex_1()
+                    .min_w_0(),
+            )
+            .child(
+                icon_button("settings", Icon::Settings)
+                    .tooltip(format!("Settings ({})", ui::shortcut(",", false)))
+                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, OpenSettings)),
+            )
+            .into_any_element()
     }
 }
 
+fn has_filter(parsed: &messages_core::search::ParsedSearchQuery) -> bool {
+    parsed.from_me
+        || !parsed.senders.is_empty()
+        || parsed.attachments.is_some()
+        || parsed.links
+        || parsed.before.is_some()
+        || parsed.after.is_some()
+        || !parsed.chat_names.is_empty()
+}
+
+/// One conversation in the list: unread dot, avatar, title with the muted bell and Focus moon,
+/// date, and two lines of preview (or "Typing…" in the accent).
+fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
+    let Some(store) = bridge::store(cx) else { return div().into_any_element() };
+    let (chat, unread, typing, silenced) = {
+        let state = store.state();
+        let Some(chat) = state.chat(guid).cloned() else { return div().into_any_element() };
+        (
+            chat,
+            conversation_unread(&state, guid),
+            conversation_typing(&state, guid),
+            conversation_focus(&state, guid) == FocusStatus::Silenced,
+        )
+    };
+    let theme = cx.theme().clone();
+    let preview = if typing {
+        "Typing\u{2026}".to_owned()
+    } else {
+        ui::clamp_preview(&preview_text(chat.last_message.as_ref(), &chat), PREVIEW_CHARS)
+    };
+    let date = if chat.last_activity > 0 { format_list_date(chat.last_activity, ui::now_ms()) } else { String::new() };
+    let menu_chat = chat.clone();
+    // The table's selection highlight sits under a selected row; secondary text loses its
+    // contrast there, so the row's own lines take the primary colour.
+    let secondary = if selected { theme.text.primary } else { theme.text.secondary };
+    h_flex()
+        .id(format!("chat-{}", chat.identifier))
+        .gap_2()
+        .h(px(68.))
+        .pr_3()
+        .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
+        .child(
+            div()
+                .w(px(16.))
+                .flex()
+                .justify_center()
+                .flex_none()
+                .when(unread, |col| col.child(ui::dot(theme.accent, 8.).id(format!("unread-{}", chat.identifier)))),
+        )
+        .child(ui::chat_avatar(&chat, AVATAR_ROW))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(text(chat_title(&chat)).font_weight(FontWeight::SEMIBOLD).flex_1().min_w_0())
+                        .when(silenced, |row| {
+                            row.child(text("\u{263e}").text_size(theme.type_scale.caption).text_color(secondary))
+                        })
+                        .when(chat.muted, |row| {
+                            row.child(text("\u{1f515}").text_size(theme.type_scale.caption).text_color(secondary))
+                        })
+                        .child(text(date).tabular_nums().text_size(theme.type_scale.caption).text_color(secondary)),
+                )
+                .child(text(preview).text_size(theme.type_scale.footnote).text_color(if typing && !selected {
+                    theme.accent
+                } else {
+                    secondary
+                })),
+        )
+        .into_any_element()
+}
+
 impl Render for Sidebar {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::trace::render("Sidebar");
-        let palette = Theme::get(cx);
-        let store = current_store(cx);
-        let query = self.query(cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let store = bridge::store(cx);
+        let query = self.query.trim().to_owned();
         let has_query = !query.is_empty();
         let parsed = parse_search_query(&query);
         let free_text = parsed.text.trim().to_lowercase();
-        let has_filter =
-            parsed.from_me || !parsed.senders.is_empty() || parsed.attachments.is_some() || parsed.links || parsed.before.is_some() || parsed.after.is_some() || !parsed.chat_names.is_empty();
 
-        let (people, host, status, connection_error, pending, selected_chat, chats_empty) = match &store {
+        let (people, status, empty, selected, contacts) = match &store {
             Some(store) => {
                 let state = store.state();
-                let people = conversation_chats(&state);
-                let host = if let Some(server) = &state.server {
-                    if store.transport().kind() == TransportKind::Demo {
-                        "Demo data".to_owned()
-                    } else {
-                        format!("macOS {}", server.macos_version.clone().unwrap_or_default()).trim().to_owned()
-                    }
-                } else {
-                    String::new()
-                };
-                let empty = state.chats.is_empty();
-                (people, host, state.status, state.connection_error.clone(), store.pending_sends(), state.selected_chat.clone(), empty)
+                (
+                    conversation_chats(&state),
+                    state.status,
+                    state.chats.is_empty(),
+                    state.selected_chat.clone(),
+                    Arc::as_ptr(&state.contacts) as usize,
+                )
             }
-            None => (Vec::new(), String::new(), ConnectionStatus::Connecting, None, 0, None, true),
+            None => (Vec::new(), ConnectionStatus::Connecting, true, None, 0),
         };
-        self.selected = selected_chat;
-
+        for chat in &people {
+            {
+                let weak = cx.weak_entity();
+                Bridge::watch(cx, Topic::Chat(chat.guid.clone()), &weak);
+            }
+            {
+                let weak = cx.weak_entity();
+                Bridge::watch(cx, Topic::Typing(chat.guid.clone()), &weak);
+            }
+        }
         let visible: Vec<Arc<Chat>> = if free_text.is_empty() {
             people
         } else {
@@ -328,267 +510,130 @@ impl Render for Sidebar {
                 })
                 .collect()
         };
-        let pinned: Vec<Arc<Chat>> = if has_query { Vec::new() } else { visible.iter().filter(|chat| chat.pinned).cloned().collect() };
-        let rest: Vec<Arc<Chat>> = if has_query { visible.clone() } else { visible.into_iter().filter(|chat| !chat.pinned).collect() };
-        self.pinned_set = pinned.iter().map(|chat| chat.guid.clone()).collect();
-        self.order = pinned.iter().chain(rest.iter()).map(|chat| chat.guid.clone()).collect();
-        // Rows nobody placed this pass are gone from the sidebar (deleted,
-        // filtered out); dropping them stops the topic watches for good.
-        let placed: HashSet<&str> = self.order.iter().map(String::as_str).collect();
-        self.rows.retain(|guid, _| placed.contains(guid.as_str()));
+        let pinned: Vec<Arc<Chat>> =
+            if has_query { Vec::new() } else { visible.iter().filter(|chat| chat.pinned).cloned().collect() };
+        let rest: Vec<Arc<Chat>> =
+            if has_query { visible } else { visible.into_iter().filter(|chat| !chat.pinned).collect() };
 
-        let show_tips = has_query && !has_filter && rest.is_empty() && pinned.is_empty() && self.results.is_empty() && query.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
-
-        let mut items: Vec<Row> = rest.iter().cloned().map(Row::Chat).collect();
+        let mut rows: Vec<(Item, u64)> = Vec::with_capacity(rest.len() + 4);
+        if let Some(store) = &store {
+            let state = store.state();
+            for chat in &rest {
+                let version = row_version(
+                    chat,
+                    conversation_typing(&state, &chat.guid),
+                    conversation_unread(&state, &chat.guid),
+                    conversation_focus(&state, &chat.guid) == FocusStatus::Silenced,
+                    contacts,
+                    selected.as_deref() == Some(chat.guid.as_str()),
+                );
+                rows.push((Item::Chat(chat.guid.clone()), version));
+            }
+        }
         if has_query && !self.results.is_empty() {
-            let chat_by_guid: HashMap<String, Arc<Chat>> = store
-                .as_ref()
-                .map(|store| {
-                    let state = store.state();
-                    state.chats.iter().map(|chat| (chat.guid.clone(), chat.clone())).collect()
-                })
-                .unwrap_or_default();
-            items.push(Row::ResultsHeader);
-            for message in &self.results {
-                let guid = store.as_ref().map(|store| messages_core::conversations::conversation_guid(&store.state().grouping, &message.chat_guid).to_owned()).unwrap_or_else(|| message.chat_guid.clone());
-                if let Some(chat) = chat_by_guid.get(&guid) {
-                    items.push(Row::Result(message.clone(), chat.clone()));
+            rows.push((Item::ResultsHeader, 0));
+            let mut seen = HashMap::new();
+            for (i, message) in self.results.iter().enumerate() {
+                if seen.insert(message.guid.clone(), i).is_none() {
+                    rows.push((Item::Result(message.guid.clone()), self.search_epoch));
                 }
             }
         }
-        if has_query && rest.is_empty() && pinned.is_empty() && self.results.is_empty() {
-            items.push(match &self.search_error {
-                Some(error) => Row::Note { title: error.clone().into(), body: None },
-                None => Row::Note { title: format!("No results for \u{201c}{query}\u{201d}").into(), body: Some("Try a name, number or a word from a message.".into()) },
-            });
-        }
-        if !has_query && chats_empty && matches!(status, ConnectionStatus::Online) {
-            items.push(Row::Note { title: "No conversations yet".into(), body: Some("Start one with the compose button.".into()) });
-        }
-        self.items = items;
-
-        let close_search = {
-            let search_state = self.search_state.clone();
-            move |window: &mut Window, cx: &mut App| {
-                search_state.update(cx, |state, cx| state.set_value("", window, cx));
-            }
-        };
-
-        let header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(spacing::X2)
-            .h(TITLEBAR_HEIGHT)
-            .pl(spacing::X3 + traffic_light_clearance())
-            .pr(spacing::X2)
-            .flex_shrink_0()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(spacing::X1)
-                    .flex_grow(1.)
-                    .min_w(px(0.))
-                    .h(px(28.))
-                    .px(spacing::X2)
-                    .rounded(radius::CONTROL)
-                    .occlude()
-                    .bg(palette.canvas)
-                    .border_1()
-                    .border_color(palette.separator)
-                    .on_action(cx.listener({
-                        let close_search = close_search.clone();
-                        move |this, _: &crate::app::Dismiss, window, cx| {
-                            if this.query(cx).is_empty() {
-                                cx.propagate();
-                            } else {
-                                close_search(window, cx);
-                            }
-                        }
-                    }))
-                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                        if event.keystroke.key == "down" {
-                            this.focus_first(window, cx);
-                        }
-                    }))
-                    .child(crate::icons::Icon::new(IconName::Search).size(px(13.)).color(palette.tertiary))
-                    .child(Input::new(&self.search_state).appearance(false))
-                    .when(has_query, |el| el.child(IconButton::new("clear-search", IconName::Close, "Clear search").size(px(12.)).hit(px(20.)).on_click(move |_, window, cx| close_search(window, cx)))),
-            )
-            .child(IconButton::new("new-message", IconName::Compose, "New message").size(px(17.)).on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(crate::app::NewChat), cx);
-            }));
-
-        let tips = show_tips.then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .pl(ROW_INSET)
-                .pr(ROW_INSET)
-                .pt(spacing::X1)
-                .pb(spacing::X2)
-                .flex_shrink_0()
-                .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.tertiary).child("Search tips"))
-                .children(OPERATOR_TIPS.iter().map(|tip| div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child(*tip)))
-        });
-
-        let pinned_strip = (!pinned.is_empty()).then(|| {
-            let cells = pinned
-                .iter()
-                .map(|chat| {
-                    let guid = chat.guid.clone();
-                    div().debug_selector(move || format!("pinned-{guid}")).child(self.row_for(&chat.guid, true, window, cx))
-                })
-                .collect::<Vec<_>>();
-            div().flex().flex_col().px(spacing::X2).flex_shrink_0().child(div().flex().flex_row().flex_wrap().pt(spacing::X1).pb(spacing::X2).children(cells)).when(!rest.is_empty() && !has_query, |el| {
-                el.child(div().h(px(1.)).bg(palette.sidebar_border).mb(spacing::X2).mx(ROW_INSET).flex_shrink_0())
+        self.note = if has_query && rest.is_empty() && self.results.is_empty() {
+            Some(match &self.search_error {
+                Some(error) => (error.clone().into(), None),
+                None => (
+                    format!("No Results for \u{201c}{query}\u{201d}").into(),
+                    Some("Try a name, number or a word from a message.".into()),
+                ),
             })
-        });
-
-        let body: AnyElement = if has_query {
-            let mut column = div().id("sidebar-search-body").flex().flex_col().flex_grow(1.).min_h(px(0.)).overflow_y_scroll().pb(spacing::X2);
-            for index in 0..self.items.len() {
-                column = column.child(render_row(self, index, window, cx));
-            }
-            column.into_any_element()
+        } else if !has_query && empty && status == ConnectionStatus::Online {
+            Some(("No Conversations Yet".into(), Some("Start one with the compose button.".into())))
         } else {
-            let count = self.items.len();
-            let list = uniform_list("sidebar-list", count, cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                range.map(|index| render_row(this, index, window, cx)).collect::<Vec<_>>()
-            }))
-            .track_scroll(&self.list_scroll)
-            .flex_grow(1.)
-            .min_h(px(0.))
-            .w_full()
-            .pb(spacing::X2);
-            // Right-click on the list's empty space offers "New message". A row
-            // opens its own menu on the same mouse-up, so the capture pass
-            // notes which menu was up and the bubble pass only acts when no
-            // row replaced it.
-            div()
-                .id("sidebar-list-area")
-                .debug_selector(|| "sidebar-list-area".into())
-                .flex()
-                .flex_col()
-                .flex_grow(1.)
-                .min_h(px(0.))
-                .w_full()
-                .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
-                    if event.button == MouseButton::Right {
-                        this.menu_before_click = Some(root(cx).and_then(|app| app.read(cx).menu_id()));
-                    }
-                }))
-                .on_mouse_up(MouseButton::Right, cx.listener(|this, event: &MouseUpEvent, window, cx| {
-                    let Some(before) = this.menu_before_click.take() else { return };
-                    let Some(app) = root(cx) else { return };
-                    if app.read(cx).menu_id() != before {
-                        return;
-                    }
-                    let item = MenuItem::item("New message", |window, cx| window.dispatch_action(Box::new(crate::app::NewChat), cx))
-                        .icon(IconName::Compose)
-                        .shortcut(shortcut("N", false, false));
-                    AppRoot::open_menu(&app, MenuRequest::at(event.position, vec![item]), window, cx);
-                }))
-                .child(list)
-                .into_any_element()
+            None
         };
-
-        let (status_color, status_label) = {
-            let queued = if pending > 0 { format!(" \u{b7} {}", messages_core::format::pluralize(pending, "message waiting", Some("messages waiting"))) } else { String::new() };
-            match status {
-                // Online with an error is a socket that is up while the REST side keeps failing to refresh.
-                ConnectionStatus::Online => match &connection_error {
-                    Some(error) => (palette.warning, format!("{error}{queued}")),
-                    None => (palette.online, format!("{host}{queued}")),
-                },
-                ConnectionStatus::Connecting => (palette.warning, format!("Connecting\u{2026}{queued}")),
-                ConnectionStatus::Offline => (palette.offline, format!("Offline, retrying\u{2026}{queued}")),
+        if let Some((title, _)) = &self.note {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            title.hash(&mut hasher);
+            rows.push((Item::Note, hasher.finish()));
+        }
+        self.list.set_items_versioned(rows, cx);
+        if self.selected != selected {
+            self.selected = selected.clone();
+            match selected {
+                Some(guid) => self.list.set_selected(vec![Item::Chat(guid)], cx),
+                None => self.list.set_selected(Vec::new(), cx),
             }
-        };
+        }
 
-        let footer = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(spacing::X1)
-            .h(px(38.))
-            .pl(spacing::X3)
-            .pr(spacing::X2)
-            .flex_shrink_0()
-            .border_t_1()
-            .border_color(palette.sidebar_border)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(spacing::X2)
-                    .min_w(px(0.))
-                    .flex_grow(1.)
-                    .child(div().w(px(8.)).h(px(8.)).rounded(px(4.)).flex_shrink_0().bg(status_color))
-                    .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).text_ellipsis().min_w(px(0.)).child(status_label)),
-            )
-            .child(IconButton::new("settings", IconName::Settings, format!("Server settings ({})", crate::sidebar_row::shortcut(",", false))).on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(crate::app::OpenSettings), cx);
-            }));
-
-        div()
+        let theme = cx.theme().clone();
+        let show_tips = has_query
+            && !has_filter(&parsed)
+            && rest.is_empty()
+            && pinned.is_empty()
+            && self.results.is_empty()
+            && query.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
+        let tips = show_tips.then(|| {
+            v_flex()
+                .gap_0p5()
+                .px_3()
+                .pb_2()
+                .child(label("Search Tips").text_style(TextStyle::Caption1).secondary())
+                .children(
+                    OPERATOR_TIPS
+                        .iter()
+                        .map(|tip| text(*tip).text_size(theme.type_scale.caption).text_color(theme.text.secondary)),
+                )
+        });
+        v_flex()
             .id("sidebar")
-            .flex()
-            .flex_col()
-            .w(if window.viewport_size().width < px(900.) { SIDEBAR_WIDTH_COMPACT } else { SIDEBAR_WIDTH })
-            .h_full()
-            .flex_shrink_0()
-            .bg(palette.sidebar)
-            .child(header)
-            .when_some(tips, |el, tips| el.child(tips))
-            .when_some(pinned_strip, |el, strip| el.child(strip))
-            .child(body)
-            .child(footer)
+            .size_full()
+            .context_menu(|menu, _, _| menu.item("New Message", NewChat))
+            .child(
+                div().px_2().pb_2().flex_none().child(
+                    text_field("sidebar-search")
+                        .search()
+                        .text(self.query.clone())
+                        .placeholder("Search")
+                        .label("Search")
+                        .on_change(cx.listener(|this, e: &TextChanged, _, cx| this.set_query(e.text.clone(), cx)))
+                        .on_submit(cx.listener(|this, _: &TextSubmitted, window, cx| {
+                            let first = this.list.items().into_iter().find_map(|item| match item {
+                                Item::Chat(guid) => Some(guid),
+                                _ => None,
+                            });
+                            if let Some(guid) = first {
+                                Self::open(&guid, window, cx);
+                            }
+                        })),
+                ),
+            )
+            .children(tips)
+            .when(!pinned.is_empty(), |col| col.child(self.pinned_strip(&pinned, cx)))
+            .child(
+                list("chats", &self.list, cx.processor(Self::row))
+                    .estimated_row_height(px(68.))
+                    .selection(Selection::single())
+                    .on_select(cx.listener(|_, e: &SelectEvent<Item>, window, cx| match &e.key {
+                        Item::Chat(guid) => Self::open(guid, window, cx),
+                        Item::Result(_) | Item::ResultsHeader | Item::Note => {}
+                    }))
+                    .flex_1()
+                    .min_h_0(),
+            )
+            .child(self.footer(cx))
     }
 }
 
-fn render_row(sidebar: &mut Sidebar, index: usize, window: &mut Window, cx: &mut Context<Sidebar>) -> AnyElement {
-    let Some(item) = sidebar.items.get(index) else { return div().into_any_element() };
-    match item {
-        Row::Chat(chat) => {
-            let guid = chat.guid.clone();
-            let selector = format!("chat-{guid}");
-            div().px(spacing::X2).debug_selector(move || selector).child(sidebar.row_for(&guid, false, window, cx)).into_any_element()
-        }
-        Row::ResultsHeader => {
-            let palette = Theme::get(cx);
-            div().px(spacing::X2).child(section_header(palette)).into_any_element()
-        }
-        Row::Result(message, chat) => {
-            let palette = Theme::get(cx);
-            let chat_guid = chat.guid.clone();
-            let message_guid = message.guid.clone();
-            let on_select = sidebar.on_select.clone();
-            let id = ElementId::Name(format!("result-{}", message.guid).into());
-            let row = search_result_row(id, message, chat, palette, move |window, cx| {
-                on_select(&chat_guid, window, cx);
-                crate::thread::request_jump(&chat_guid, &message_guid, cx);
-            });
-            div().px(spacing::X2).child(row).into_any_element()
-        }
-        Row::Note { title, body } => {
-            let palette = Theme::get(cx);
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(spacing::X1)
-                .pt(spacing::X10)
-                .px(spacing::X4)
-                .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).text_align(TextAlign::Center).child(title.clone()))
-                .when_some(body.clone(), |el, body| {
-                    el.child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child(body))
-                })
-                .into_any_element()
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_multi_line_message_previews_as_one_line() {
+        let chat = Chat { guid: "c".into(), ..Chat::default() };
+        let message = Message { text: "one\ntwo\n\nthree".into(), ..Message::default() };
+        assert_eq!(preview_text(Some(&message), &chat), "one two three");
+        assert_eq!(preview_text(None, &chat), "New conversation");
     }
 }

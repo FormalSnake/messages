@@ -2,8 +2,12 @@
   description = "Messages: an iMessage client for Linux, backed by BlueBubbles";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.nativedesktop = {
+    url = "github:FormalSnake/NativeDesktop";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, nativedesktop }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
       linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
@@ -17,7 +21,7 @@
 
       overlays.default = final: _: { messages = final.callPackage ./nix/package.nix { }; };
 
-      homeModules.default = import ./nix/hm-module.nix self;
+      homeModules.default = import ./nix/hm-module.nix { inherit self nativedesktop; };
       homeManagerModules.default = self.homeModules.default;
 
       devShells = forAll (pkgs:

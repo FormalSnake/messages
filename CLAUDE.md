@@ -16,9 +16,11 @@ Cargo workspace for the client, Bun for the Mac agent.
   `rust_socketio` needs OpenSSL), fixtures (`demo.rs`), the store
   (`store.rs`), config, formatting, notifications, clipboard, URL opening.
   Everything that does I/O runs on tokio.
-- `crates/desktop` (binary `messages`): the GPUI window on gpui-kit 0.6.6
-  (gpui-pre 0.3.6). `main.rs` is the entry, one file per screen beside it.
-  `bridge.rs` is the only piece that turns store events into GPUI notifies.
+- `crates/desktop` (binary `messages`): the window on NativeDesktop (`nd`, AppKit on
+  macOS, GPUI on Linux), a path dependency on `../nativedesktop` until it is published.
+  `root.rs` is the window and every command, one file per screen beside it; `bridge.rs` is
+  the only piece that turns store events into view notifies; `rt.rs` runs core futures on
+  tokio and hands results back through `nd::system::spawn`.
 - `apps/mac-agent` (`@messages/mac-agent`): TypeScript, runs on the Mac.
 
 The seam is `MessagesStore`: the UI calls its methods and reads state under a
@@ -178,35 +180,31 @@ reset to 1 or SQLite refuses a read-only open (`localstorage.ts`).
 ```
 cargo run --release -p messages                        # against ~/.config/messages/config.json
 MESSAGES_DEMO=1 cargo run --release -p messages        # fixtures, no Mac needed
-cargo test --workspace                                 # core tests, then GPUI app tests on the demo transport
-scripts/screenshot.sh                                  # screenshots/messages.png from the demo data
+cargo test --workspace                                 # core tests, the desktop unit tests and the audit
+ND_REAL=1 cargo test -p messages --test thread         # tier 3: the real window on the demo data
 bun run agent                                          # the Mac agent, on the Mac
 nix build .#messages                                   # the Linux package (nix/package.nix), build it on a Linux box
 ```
 
-Env overrides: `MESSAGES_SERVER_URL` + `MESSAGES_SERVER_PASSWORD`,
-`MESSAGES_DEMO=1`, `MESSAGES_FONT`, `MESSAGES_TRACE=1` (first paint,
-key-to-paint, thread-open-to-paint, per-second frame and render counts,
-granted window decorations). Cargo features: `screenshot` (offscreen Metal
-capture, macOS only) and `frame-overlay` (F12 frame timings; it turns on
-GPUI's profiler, so it stays out of normal builds). Config lives in
-`$XDG_CONFIG_HOME/messages/config.json`, the attachment cache in
+Env overrides: every setting as `MESSAGES_<KEY>` (`MESSAGES_SERVER_URL`,
+`MESSAGES_DEMO=1`), plus the secrets `MESSAGES_SERVER_PASSWORD`, `MESSAGES_AGENT_TOKEN`,
+`MESSAGES_KLIPY_KEY`, `MESSAGES_CANARYLLM_KEY`. Frame timings and incident bundles are nd's
+(the dev HUD, `nd diagnose`). Settings live in `config.toml` in the app's config directory,
+secrets and per-chat prefs in `$XDG_CONFIG_HOME/messages/config.json`, the attachment cache in
 `$XDG_CACHE_HOME/messages/attachments`.
 
 `nix/package.nix` is the flake's package and `nix/hm-module.nix` its Home
 Manager module (`programs.messages`). The package bakes `MESSAGES_ICON_PATH`
 in at compile time so notifications find the installed icon, and never owns
 `config.json`, which the app writes itself. A second launch hands over to the first
-(`single_instance.rs`: a lock and a socket in `$XDG_RUNTIME_DIR/messages`)
-and exits; demo and screenshot runs skip it. README screenshots come from
-`scripts/screenshot.sh` with `MESSAGES_SCREENSHOT_CHAT=<demo guid>`.
+(`nd-ipc`'s instance lock, `rt::claim_instance`) and exits; demo runs skip it.
 
 On NixOS, build and run inside the dev shell (`nix develop -c cargo run ...`):
 it provides pkg-config, the headers, alsa-lib for cpal, and the dlopened
 Wayland, Vulkan and fontconfig libraries on `LD_LIBRARY_PATH`. Keep `flake.nix` git-tracked or
 the flake is invisible. `scripts/install-linux.sh` installs the desktop entry
 and icon so GNOME and Hyprland match the window's app id
-(`es.canarycoders.messages`).
+(`dev.formalsnake.messages`).
 
 Linux boxes: `ssh e1504g` (NixOS, GNOME on `wayland-0`, Intel iGPU) and
 `ssh g815` (NixOS, Hyprland on `wayland-1`; dual-boots into Windows as
@@ -221,47 +219,24 @@ process has to be started in the console session (a `schtasks /IT` task), and
 GPUI answers the caption hit test from the last mouse move it saw, so a
 `WM_NCHITTEST` probe has to move the cursor there first.
 
-## GPUI rules that bit us
+## NativeDesktop notes
 
-- A cached view (`AnyView::cached`) re-renders only when its own entity is
-  notified. Anything it reads from another entity in render needs a notify on
-  change, and a cached root that only has `flex_grow` collapses to zero
-  height (give it `flex_basis(0)` and `h_full`).
-- gpui-pre 0.3.6 drops a cached view's window control areas when it reuses
-  the view's frame, so the drag strip (`chrome.rs`) lives in the uncached
-  root view, painted beneath the panes. The Windows caption hit test sees
-  every hitbox under the cursor, so anything clickable in a title row must
-  `occlude()` the strip, and the strip must not reach under the caption
-  buttons.
-- Caption buttons are gpui-kit's `TitleBar`, pinned top-right in the root.
-  It draws them on Windows and when Linux is client-decorated (GNOME); under
-  server decorations it draws nothing.
-- Colour emoji on Linux: cosmic-text falls back to Noto Sans Symbols 2 and
-  DejaVu before any colour font and only paints colour for a face named
-  `NotoColorEmoji`. `emoji_font.rs` registers the system colour emoji font a
-  second time under a name GPUI accepts, mapped rather than copied, and falls
-  back to plain rendering on any failure.
-- `img()` given a `String` looks it up as an embedded asset. Files and data
-  URLs go through `attachments::image_source`, and anything shown smaller
-  than its pixels through `sized_image_source` (`stills.rs`), which decodes
-  at on-screen size off the UI thread into an LRU. GPUI's SVG renderer has
-  no system fonts, so SVG text names the app's UI font.
-- GIFs are decoded once per shared file and box size (device pixels, a 64 px
-  step), never above the file's own size, and stepped by one clock per entry;
-  only the row showing the GIF is notified, and only while the window is
-  active. Three decodes run at a time, paints ahead of the warms the thread
-  queues for its GIFs, a decode over 48 MB keeps every other frame with the
-  delays folded, and a failed decode is retried after a few seconds.
-- A lone UTF-16 surrogate in server text is repaired before parsing
-  (`repair_lone_surrogates`); graphemes, not bytes, are indexed
-  (`first_grapheme`).
-- A file already on disk paints at once; a header re-read (`measured`)
-  happens beside it, never before it.
-- Bubble text is `selectable.rs`, a `StyledText` that registers with the
-  window text selection gpui-base runs under gpui-component's `Root` (the
-  layer lives there, so a test window has to be wrapped in `Root` too).
-  Cmd+C copies through `Root`, Escape clears. Reading order comes from the
-  message date, so a drag down the thread copies in thread order.
+- The thread is `nd::list` bottom-aligned with `Follow::Tail`; rows are keyed by message and
+  versioned by what they show (`thread.rs::version`), so the list re-renders only rows that
+  changed. Never hand it the same keys from inside a render without the versions: before
+  nd's own fix that was a render loop.
+- Message, attachment and conversation commands are actions (`actions.rs`) handled in
+  `root.rs`: menus and taps dispatch from wherever focus is, usually the composer.
+- Text is plain: nd has no rich text, so bold, italic, mentions and the sized effects of a
+  message's runs show as plain text, and links become cards. `docs/nd-parity.md` lists every
+  such loss against the GPUI build.
+- Settings are `MessagesSettings` (`settings.rs`); after changing a field run
+  `MESSAGES_WRITE_SCHEMA=1 cargo test -p messages settings` to rewrite
+  `nix/settings.schema.json` and the generated `nix/settings-options.nix`.
+- On macOS build outside a Nix shell's SDK (`env -u SDKROOT -u DEVELOPER_DIR`) and through
+  `/usr/bin/clang` (`.cargo/config.toml`); the Swift runtime nd links needs Apple's linker.
+- `tests/thread.rs` drives the real app over nd's automation socket (`ND_REAL=1`);
+  `tests/appearance.rs` is nd's appearance audit on the demo data.
 
 ## Server quirks worth knowing
 

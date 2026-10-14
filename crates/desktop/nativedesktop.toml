@@ -1,0 +1,12 @@
+#:schema ../../../nativedesktop/target/nd/nativedesktop.schema.json
+[app]
+id = "dev.formalsnake.messages"
+display_name = "Messages"
+icon = "../../packaging/linux/dev.formalsnake.messages.png"
+categories = ["Network", "InstantMessaging"]
+
+[macos]
+minimum_system_version = "14.0"
+
+[linux]
+formats = ["appimage"]

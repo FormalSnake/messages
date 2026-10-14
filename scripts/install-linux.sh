@@ -17,7 +17,9 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
 APPS_DIR="$DATA_DIR/applications"
 ICON_DIR="$DATA_DIR/icons/hicolor/512x512/apps"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/messages"
-APP_ID=es.canarycoders.messages
+APP_ID=dev.formalsnake.messages
+# The id before the port to NativeDesktop; its desktop entry and icon would list the app twice.
+OLD_ID=es.canarycoders.messages
 
 mkdir -p "$BIN_DIR" "$APPS_DIR" "$ICON_DIR" "$STATE_DIR"
 cd "$REPO_DIR"
@@ -49,6 +51,11 @@ sed "s|^Exec=messages|Exec=$BIN_DIR/messages|" "$REPO_DIR/packaging/linux/$APP_I
 # Earlier versions installed messages.desktop, which would now list the app twice.
 if grep -qs "^Exec=$BIN_DIR/messages$" "$APPS_DIR/messages.desktop"; then
   rm "$APPS_DIR/messages.desktop"
+fi
+
+# The GPUI build installed itself under the old id.
+if grep -qs "^Exec=$BIN_DIR/messages$" "$APPS_DIR/$OLD_ID.desktop"; then
+  rm -f "$APPS_DIR/$OLD_ID.desktop" "$ICON_DIR/$OLD_ID.png"
 fi
 
 update-desktop-database "$APPS_DIR" 2>/dev/null || true

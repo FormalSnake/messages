@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MessagesSettings",
+  "type": "object",
+  "properties": {
+    "server_url": {
+      "description": "The BlueBubbles server on your Mac, for example `http://192.168.1.20:1234`. Its password\ncomes from `config.json` or `MESSAGES_SERVER_PASSWORD`.",
+      "type": "string",
+      "default": "",
+      "x-nd-order": 0
+    },
+    "notifications": {
+      "description": "Show a notification for messages that arrive while Messages is in the background.",
+      "type": "boolean",
+      "default": true,
+      "x-nd-order": 1
+    },
+    "tray": {
+      "description": "Keep an item in the menu bar or tray with the unread count.",
+      "type": "boolean",
+      "default": true,
+      "x-nd-order": 2
+    },
+    "demo": {
+      "description": "Run on the built-in fixtures instead of a server.",
+      "type": "boolean",
+      "default": false,
+      "x-nd-order": 3,
+      "x-nd-reload": "restart"
+    },
+    "agent_url": {
+      "description": "The Mac agent for Find My and shared pins, for example `http://192.168.1.20:1236`. Its\ntoken comes from `config.json` or `MESSAGES_AGENT_TOKEN`.",
+      "type": "string",
+      "default": "",
+      "x-nd-order": 4
+    },
+    "assistant_model": {
+      "description": "CanaryLLM model for summaries, translations and transcripts, as `provider/model`. Empty\nuses the default.",
+      "type": "string",
+      "default": "",
+      "x-nd-order": 5
+    },
+    "translate_to": {
+      "description": "Language translations go into. Empty follows the system language.",
+      "type": "string",
+      "default": "",
+      "x-nd-order": 6
+    }
+  },
+  "additionalProperties": false
+}

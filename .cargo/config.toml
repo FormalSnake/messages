@@ -1,0 +1,4 @@
+# The Swift runtime nd links on macOS has to go through Apple's linker, which honours the
+# autolink entries in Swift objects; a Nix clang wrapper on PATH does not.
+[target.aarch64-apple-darwin]
+linker = "/usr/bin/clang"

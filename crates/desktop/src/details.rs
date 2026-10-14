@@ -1,350 +1,59 @@
-//! The details panel (`InfoPanel`). `app.rs` mounts it in the sliding info
-//! column, sized to `INFO_WIDTH` whatever holds it.
+//! The details inspector: who is in the conversation, where Find My puts them, the photos and
+//! files sent in it, and the conversation's switches and actions. Opening it drives the store's
+//! Find My stream; it scrolls on its own, never the thread's.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
-use messages_core::conversations::{conversation_guid, conversation_handles, conversation_has_older, conversation_loading, conversation_messages};
-use messages_core::findmy::{FriendLocation, contact_addresses, match_friend};
-use messages_core::format::{format_address, format_bytes};
+use messages_core::conversations::{
+    conversation_guid, conversation_handles, conversation_has_older, conversation_loading, conversation_messages,
+};
+use messages_core::findmy::{FriendLocation, MapSnapshotRequest, contact_addresses, match_friend};
+use messages_core::format::{format_address, format_bytes, relative_time};
 use messages_core::store::FindMyState;
-use messages_core::{Attachment, Chat, Handle, Message, Service, chat_title, handle_name};
+use messages_core::{Attachment, Chat, Handle, Message, chat_title, handle_name};
+use nd::prelude::*;
 
-use crate::app::{AppRoot, root};
-use crate::attachments::{AUTO_DOWNLOAD_BYTES, media_worker};
-use crate::bridge::{Bridge, Topic, store};
-use crate::confirm::ConfirmRequest;
-use crate::icons::{Icon, IconName};
-use crate::location::LocationCard;
-use crate::menus::{MenuItem, MenuRequest, shortcut};
-use crate::primitives::{Button, IconButton, avatar, divider, new_input_state, section_label};
-use crate::theme::{INFO_WIDTH, Palette, TITLEBAR_HEIGHT, Theme, radius, spacing, type_scale};
+use crate::actions::*;
+use crate::bridge::{self, Bridge, Topic};
+use crate::header::service_label;
+use crate::ui;
 
-const GALLERY_COLUMNS: f32 = 3.;
-const GALLERY_GAP: Pixels = spacing::X1;
-/// INFO_WIDTH minus the panel's own X4 inset on each side minus the two gaps
-/// between columns, split three ways.
-const GALLERY_THUMB: f32 = (280. - 16. * 2. - 4. * (GALLERY_COLUMNS - 1.)) / GALLERY_COLUMNS;
-/// Twice the box, so the cut still has pixels to spare on a HiDPI screen.
-const GALLERY_TILE: u32 = (GALLERY_THUMB * 2.) as u32;
-/// Photos fetched at once. The panel wants every picture in the conversation
-/// the moment it opens; unbounded, a chat with a hundred of them started a
-/// hundred requests.
+const GALLERY_THUMB: f32 = 76.;
 const GALLERY_SLOTS: usize = 3;
-
-pub fn service_label(service: Service) -> &'static str {
-    match service {
-        Service::IMessage => "iMessage",
-        Service::Sms => "SMS",
-        Service::Rcs => "RCS",
-    }
-}
+const MAP_SIZE: (u32, u32) = (248, 150);
+/// Metres across the map's width.
+const MAP_SPAN: u32 = 1500;
 
 #[derive(Default)]
 struct Thumb {
     fetching: bool,
     failed: bool,
-    /// The local file, once downloaded (or already on disk).
-    src: Option<PathBuf>,
-    /// The square cut actually painted; the source path when no cut could be made.
-    tile: Option<PathBuf>,
-    cutting: bool,
 }
 
-pub struct InfoPanel {
-    current_chat: Option<String>,
-    locations: HashMap<String, Entity<LocationCard>>,
+pub struct Details {
+    chat: Option<String>,
+    open: bool,
     thumbs: HashMap<String, Thumb>,
     slots: Arc<tokio::sync::Semaphore>,
-    add_field: Entity<InputState>,
-    name_field: Entity<InputState>,
-    watched: HashSet<String>,
-    scroll: ScrollHandle,
-    _subscriptions: Vec<Subscription>,
+    add: SharedString,
+    rename: SharedString,
+    /// Map snapshots by address: the request they answer and the file, when the agent made one.
+    maps: HashMap<String, (MapSnapshotRequest, Option<PathBuf>)>,
 }
 
-impl InfoPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let weak = cx.entity().downgrade();
-        for topic in [Topic::Selection, Topic::Locations, Topic::Contacts, Topic::Exporting, Topic::Connection, Topic::ChatList] {
-            Bridge::watch(cx, topic, weak.clone().into());
-        }
-        let add_field = new_input_state(window, cx, "Phone number or email", false);
-        let name_field = new_input_state(window, cx, "Group name", false);
-        let subscriptions = vec![
-            cx.subscribe(&add_field, |this: &mut Self, _, event: &InputEvent, cx| match event {
-                InputEvent::PressEnter { .. } => this.add_person(cx),
-                InputEvent::Change => cx.notify(),
-                _ => {}
-            }),
-            cx.subscribe(&name_field, |this: &mut Self, _, event: &InputEvent, cx| match event {
-                InputEvent::PressEnter { .. } => this.rename(cx),
-                InputEvent::Change => cx.notify(),
-                _ => {}
-            }),
-        ];
-        Self {
-            current_chat: None,
-            locations: HashMap::new(),
-            thumbs: HashMap::new(),
-            slots: Arc::new(tokio::sync::Semaphore::new(GALLERY_SLOTS)),
-            add_field,
-            name_field,
-            watched: HashSet::new(),
-            scroll: ScrollHandle::new(),
-            _subscriptions: subscriptions,
-        }
-    }
-
-    /// The details panel is the only Find My consumer, so while it is
-    /// mounted it drives the store's stream and poll.
-    pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if let Some(store) = store(cx) {
-            store.set_details_open(open);
-        }
-    }
-
-    fn sync_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(store) = store(cx) else { return };
-        let (primary, display_name) = {
-            let state = store.state();
-            let primary = state.selected_chat.as_deref().map(|guid| conversation_guid(&state.grouping, guid).to_owned());
-            let name = primary.as_deref().and_then(|guid| state.chat(guid)).and_then(|chat| chat.display_name.clone()).unwrap_or_default();
-            (primary, name)
-        };
-        if primary == self.current_chat {
-            return;
-        }
-        self.current_chat = primary.clone();
-        self.thumbs.clear();
-        self.locations.clear();
-        self.add_field.update(cx, |field, cx| field.set_value("", window, cx));
-        self.name_field.update(cx, |field, cx| field.set_value(display_name, window, cx));
-        if let Some(guid) = primary {
-            if self.watched.insert(guid.clone()) {
-                let weak = cx.entity().downgrade();
-                Bridge::watch(cx, Topic::Chat(guid.clone()), weak.clone().into());
-                Bridge::watch(cx, Topic::Thread(guid), weak.into());
-            }
-        }
-    }
-
-    fn add_person(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = store(cx) else { return };
-        let Some(chat) = self.current_chat.clone() else { return };
-        let address = self.add_field.read(cx).value().trim().to_owned();
-        if address.is_empty() {
-            return;
-        }
-        let field = self.add_field.clone();
-        cx.defer(move |cx| {
-            if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, cx| field.update(cx, |field, cx| field.set_value("", window, cx)));
-            }
-        });
-        let task = store.clone();
-        store.spawn(async move { task.add_participant(&chat, &address).await });
-    }
-
-    fn rename(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = store(cx) else { return };
-        let Some(chat) = self.current_chat.clone() else { return };
-        let name = self.name_field.read(cx).value().trim().to_owned();
-        let task = store.clone();
-        store.spawn(async move { task.rename_group(&chat, &name).await });
-    }
-
-    /// Downloads a gallery photo (three at a time) and cuts its square tile.
-    fn want_thumb(&mut self, message: &Message, attachment: &Attachment, cx: &mut Context<Self>) {
-        let Some(store) = store(cx) else { return };
-        let thumb = self.thumbs.entry(attachment.guid.clone()).or_default();
-        if thumb.src.is_none() {
-            thumb.src = attachment.local_path.clone();
-        }
-        if let Some(src) = thumb.src.clone() {
-            if thumb.tile.is_none() && !thumb.cutting {
-                thumb.cutting = true;
-                let guid = attachment.guid.clone();
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let worker = media_worker().clone();
-                let source = src.clone();
-                store.spawn(async move {
-                    let _ = tx.send(worker.tile(&source, 1., GALLERY_TILE).await);
-                });
-                cx.spawn(async move |this, cx| {
-                    let tile = rx.await.ok().flatten();
-                    let _ = this.update(cx, |this, cx| {
-                        if let Some(thumb) = this.thumbs.get_mut(&guid) {
-                            thumb.tile = Some(tile.unwrap_or(src));
-                            cx.notify();
-                        }
-                    });
-                })
-                .detach();
-            }
-            return;
-        }
-        // Anything past the cap waits for a click, the same bargain the thread makes.
-        if thumb.fetching || thumb.failed || attachment.bytes > AUTO_DOWNLOAD_BYTES {
-            return;
-        }
-        thumb.fetching = true;
-        self.fetch(message, attachment, cx);
-    }
-
-    fn fetch(&mut self, message: &Message, attachment: &Attachment, cx: &mut Context<Self>) {
-        let Some(store) = store(cx) else { return };
-        let slots = self.slots.clone();
-        let (chat, message_guid, guid, name, mime) = (message.chat_guid.clone(), message.guid.clone(), attachment.guid.clone(), attachment.name.clone(), attachment.mime.clone());
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let task = store.clone();
-        let attachment_guid = guid.clone();
-        store.spawn(async move {
-            let _slot = slots.acquire_owned().await;
-            let _ = tx.send(task.attachment_src(&chat, &message_guid, &attachment_guid, &name, Some(&mime)).await.ok());
-        });
-        cx.spawn(async move |this, cx| {
-            let src = rx.await.ok().flatten();
-            let _ = this.update(cx, |this, cx| {
-                let thumb = this.thumbs.entry(guid).or_default();
-                thumb.fetching = false;
-                match src {
-                    Some(src) => thumb.src = Some(src),
-                    None => thumb.failed = true,
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn open_file(message: &Message, attachment: &Attachment, window: &mut Window, cx: &mut App) {
-        if attachment.mime.starts_with("video/") {
-            crate::lightbox::open(&message.chat_guid, &attachment.guid, window, cx);
-            return;
-        }
-        if let Some(path) = &attachment.local_path {
-            messages_core::open::open_external(&path.to_string_lossy());
-            return;
-        }
-        let Some(store) = store(cx) else { return };
-        let (chat, message_guid, guid, name, mime) = (message.chat_guid.clone(), message.guid.clone(), attachment.guid.clone(), attachment.name.clone(), attachment.mime.clone());
-        let task = store.clone();
-        store.spawn(async move {
-            if let Ok(path) = task.attachment_src(&chat, &message_guid, &guid, &name, Some(&mime)).await {
-                messages_core::open::open_external(&path.to_string_lossy());
-            }
-        });
-    }
-}
-
-fn run(f: impl Fn(&messages_core::MessagesStore) + 'static) -> impl Fn(&mut Window, &mut App) + 'static {
-    move |_window, cx| {
-        if let Some(store) = store(cx) {
-            f(&store);
-        }
-    }
-}
-
-fn spawn_store<F, Fut>(f: F) -> impl Fn(&mut Window, &mut App) + 'static
-where
-    F: Fn(messages_core::MessagesStore) -> Fut + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    move |_window, cx| {
-        if let Some(store) = store(cx) {
-            store.spawn(f(store.clone()));
-        }
-    }
-}
-
-/// One action in the panel: Enter or Space runs it too.
-fn action_row(palette: &Palette, id: &str, icon: IconName, label: impl Into<SharedString>, value: Option<SharedString>, danger: bool, on_click: impl Fn(&mut Window, &mut App) + 'static) -> impl IntoElement {
-    let on_click = std::rc::Rc::new(on_click);
-    let on_key = on_click.clone();
-    let wash = if danger { palette.danger_soft } else { palette.hover_wash };
-    let press = if danger { palette.danger_soft } else { palette.press_wash };
-    let ring = palette.focus_ring;
-    div()
-        .id(SharedString::from(format!("details-{id}")))
-        .tab_index(0)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(spacing::X2)
-        .h(px(32.))
-        .px(spacing::X2)
-        .rounded(radius::CONTROL)
-        .flex_shrink_0()
-        .border_2()
-        .border_color(palette.transparent)
-        .focus_visible(move |style| style.border_color(ring))
-        .hover(move |style| style.bg(wash))
-        .active(move |style| style.bg(press))
-        .on_click(move |_, window, cx| on_click(window, cx))
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                on_key(window, cx);
-            }
-        })
-        .child(div().w(px(15.)).flex().items_center().justify_center().flex_shrink_0().child(Icon::new(icon).size(px(15.)).color(if danger { palette.danger } else { palette.secondary })))
-        .child(
-            div()
-                .flex_grow(1.)
-                .min_w(px(0.))
-                .text_size(type_scale::BODY.font_size)
-                .line_height(type_scale::BODY.line_height)
-                .text_color(if danger { palette.danger } else { palette.text })
-                .text_ellipsis()
-                .child(label.into()),
-        )
-        .when_some(value, |el, value| el.child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.secondary).flex_shrink_0().child(value)))
-}
-
-fn section_divider(palette: &Palette) -> impl IntoElement {
-    div().py(spacing::X4).px(spacing::X4).flex_shrink_0().child(divider(palette.separator))
-}
-
-/// A group lists its participants; a one-to-one conversation is one person
-/// with every address it is reached on.
 fn people(chat: &Chat, handles: &[Handle]) -> Vec<(Handle, Vec<String>)> {
     if chat.is_group {
-        return chat.participants.iter().map(|handle| (handle.clone(), vec![handle.address.clone()])).collect();
+        return chat.participants.iter().map(|h| (h.clone(), vec![h.address.clone()])).collect();
     }
-    handles.first().map(|first| vec![(first.clone(), handles.iter().map(|handle| handle.address.clone()).collect())]).unwrap_or_default()
+    handles
+        .first()
+        .map(|first| vec![(first.clone(), handles.iter().map(|h| h.address.clone()).collect())])
+        .unwrap_or_default()
 }
 
-fn participant_menu(handle: &Handle, chat: &Chat, manage: bool) -> Vec<MenuItem> {
-    let address = handle.address.clone();
-    let mut items = vec![MenuItem::item("Copy address", move |_, cx| {
-        if let Some(store) = store(cx) {
-            let address = address.clone();
-            store.spawn(async move { messages_core::clipboard::copy_text(&address).await });
-        }
-    })
-    .icon(IconName::Copy)];
-    if manage {
-        let (chat_guid, address) = (chat.guid.clone(), handle.address.clone());
-        items.push(MenuItem::Separator);
-        items.push(
-            MenuItem::item(format!("Remove {}", handle_name(handle)), spawn_store(move |store| {
-                let (chat_guid, address) = (chat_guid.clone(), address.clone());
-                async move { store.remove_participant(&chat_guid, &address).await }
-            }))
-            .icon(IconName::RemovePerson)
-            .danger()
-            .disabled(chat.participants.len() <= 2),
-        );
-    }
-    items
-}
-
-/// Newest first: every visible, non-sticker attachment across what is
-/// loaded, images for the grid and everything else for the file list.
+/// Pictures first, newest first, then everything else that is not a sticker.
 fn gallery_items(messages: &[Arc<Message>]) -> (Vec<(Arc<Message>, Attachment)>, Vec<(Arc<Message>, Attachment)>) {
     let mut images = Vec::new();
     let mut files = Vec::new();
@@ -363,391 +72,484 @@ fn gallery_items(messages: &[Arc<Message>]) -> (Vec<(Arc<Message>, Attachment)>,
     (images, files)
 }
 
-impl Render for InfoPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_selection(window, cx);
-        let palette = Theme::get(cx);
-        let empty = || div().w(INFO_WIDTH).h_full().bg(palette.sidebar).border_l_1().border_color(palette.sidebar_border).into_any_element();
-        let Some(live) = store(cx) else { return empty() };
-        let state = live.state();
-        let Some(chat) = self.current_chat.as_deref().and_then(|guid| state.chat(guid)).cloned() else {
-            drop(state);
-            return empty();
-        };
-        let guid = chat.guid.clone();
-        let title = chat_title(&chat);
-        let handles = conversation_handles(&state, &guid);
-        let friends: Vec<FriendLocation> = state.locations.values().cloned().collect();
-        let contacts = state.contacts.clone();
-        let capabilities = state.capabilities;
-        let find_my_unavailable = state.find_my == FindMyState::Unavailable;
-        let exporting = state.exporting_chat.as_deref() == Some(guid.as_str());
-        let messages = conversation_messages(&state, &guid);
-        let has_older = conversation_has_older(&state, &guid);
-        let loading = conversation_loading(&state, &guid);
-        drop(state);
-        let manage = capabilities.group_management && chat.is_group;
-        let app = root(cx).map(|app| app.downgrade());
+fn reference(message: &Message, attachment: &Attachment) -> AttachmentRef {
+    AttachmentRef {
+        at: MessageRef { chat: message.chat_guid.clone(), message: message.guid.clone() },
+        attachment: attachment.guid.clone(),
+    }
+}
 
-        let mut people_column = div().flex().flex_col().px(spacing::X2).flex_shrink_0();
-        let mut shown_cards = HashSet::new();
-        for (handle, addresses) in people(&chat, &handles) {
-            let mut wanted = addresses.clone();
-            wanted.extend(contact_addresses(&contacts, &handle.address));
-            let location = match_friend(&friends, &wanted).cloned();
-            people_column = people_column.child(participant_row(&palette, &handle, &chat, manage, &addresses, cx));
-            if let Some(friend) = location {
-                let card = match self.locations.get(&handle.address) {
-                    Some(card) => {
-                        card.update(cx, |card, cx| card.set_location(friend.clone(), cx));
-                        card.clone()
-                    }
-                    None => {
-                        let card = cx.new(|cx| LocationCard::new(handle.clone(), friend, window, cx));
-                        self.locations.insert(handle.address.clone(), card.clone());
-                        card
-                    }
-                };
-                shown_cards.insert(handle.address.clone());
-                people_column = people_column.child(div().pt(spacing::X3).child(section_label("Location", palette.tertiary, spacing::X2))).child(card);
+impl Details {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let weak = cx.weak_entity();
+        for topic in
+            [Topic::Selection, Topic::Locations, Topic::Contacts, Topic::Exporting, Topic::Connection, Topic::ChatList]
+        {
+            Bridge::watch(cx, topic, &weak);
+        }
+        Self {
+            chat: None,
+            open: false,
+            thumbs: HashMap::new(),
+            slots: Arc::new(tokio::sync::Semaphore::new(GALLERY_SLOTS)),
+            add: SharedString::default(),
+            rename: SharedString::default(),
+            maps: HashMap::new(),
+        }
+    }
+
+    /// The panel is the only Find My consumer, so while it shows it drives the stream and poll.
+    pub fn set_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.open = open;
+        if let Some(store) = bridge::store(cx) {
+            store.set_details_open(open);
+        }
+        cx.notify();
+    }
+
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        let Some(store) = bridge::store(cx) else { return };
+        let (primary, name) = {
+            let state = store.state();
+            let primary = state.selected_chat.as_deref().map(|g| conversation_guid(&state.grouping, g).to_owned());
+            let name =
+                primary.as_deref().and_then(|g| state.chat(g)).and_then(|c| c.display_name.clone()).unwrap_or_default();
+            (primary, name)
+        };
+        if primary == self.chat {
+            return;
+        }
+        self.chat = primary.clone();
+        self.thumbs.clear();
+        self.maps.clear();
+        self.add = SharedString::default();
+        self.rename = name.into();
+        if let Some(guid) = primary {
+            {
+                let weak = cx.weak_entity();
+                Bridge::watch(cx, Topic::Chat(guid.clone()), &weak);
+            }
+            {
+                let weak = cx.weak_entity();
+                Bridge::watch(cx, Topic::Thread(guid), &weak);
             }
         }
-        self.locations.retain(|address, _| shown_cards.contains(address));
-        if find_my_unavailable {
-            people_column = people_column.child(
-                div().pl(spacing::X2).pt(spacing::X1).text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).child("Set up the Mac agent to see locations."),
-            );
+    }
+
+    /// Downloads gallery photos three at a time; anything over 25 MB waits for a click.
+    fn want_thumb(
+        &mut self,
+        store: &messages_core::MessagesStore,
+        message: &Message,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) {
+        if attachment.local_path.is_some() {
+            return;
         }
-
-        let (images, files) = gallery_items(&messages);
-        for (message, attachment) in &images {
-            self.want_thumb(message, attachment, cx);
+        let thumb = self.thumbs.entry(attachment.guid.clone()).or_default();
+        if thumb.fetching || thumb.failed || attachment.bytes > crate::message::AUTO_DOWNLOAD_BYTES {
+            return;
         }
-        let gallery = (!images.is_empty() || !files.is_empty() || has_older).then(|| {
-            let thumbs = images.iter().map(|(message, attachment)| {
-                let tile = self.thumbs.get(&attachment.guid).and_then(|thumb| thumb.tile.clone());
-                let (for_click, for_key) = ((message.chat_guid.clone(), attachment.guid.clone()), (message.chat_guid.clone(), attachment.guid.clone()));
-                div()
-                    .id(SharedString::from(format!("gallery-photo-{}", attachment.guid)))
-                    .debug_selector(|| format!("gallery-photo-{}", attachment.guid))
-                    .tab_index(0)
-                    .w(px(GALLERY_THUMB))
-                    .h(px(GALLERY_THUMB))
-                    .rounded(radius::CONTROL)
-                    .overflow_hidden()
-                    .bg(palette.raised)
-                    .border_1()
-                    .border_color(crate::primitives::image_outline(&palette))
-                    .focus_visible(move |style| style.border_color(palette.focus_ring))
-                    .hover(|style| style.opacity(0.9))
-                    .on_click(move |_, window, cx| crate::lightbox::open(&for_click.0, &for_click.1, window, cx))
-                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            crate::lightbox::open(&for_key.0, &for_key.1, window, cx);
-                        }
-                    })
-                    .when_some(tile, |el, tile| el.child(img(crate::attachments::sized_image_source(&tile, px(GALLERY_THUMB), px(GALLERY_THUMB), ObjectFit::Contain)).w(px(GALLERY_THUMB)).h(px(GALLERY_THUMB)).object_fit(ObjectFit::Contain)))
-            });
-            let file_rows = files.iter().map(|(message, attachment)| {
-                let label: SharedString = if message.is_audio { "Audio message".into() } else { attachment.name.clone().into() };
-                let (for_click, for_key) = ((message.clone(), attachment.clone()), (message.clone(), attachment.clone()));
-                div()
-                    .id(SharedString::from(format!("gallery-file-{}", attachment.guid)))
-                    .tab_index(0)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(spacing::X2)
-                    .h(px(36.))
-                    .px(spacing::X2)
-                    .rounded(radius::CONTROL)
-                    .flex_shrink_0()
-                    .border_2()
-                    .border_color(palette.transparent)
-                    .focus_visible(move |style| style.border_color(palette.focus_ring))
-                    .hover(move |style| style.bg(palette.hover_wash))
-                    .active(move |style| style.bg(palette.press_wash))
-                    .on_click(move |_, window, cx| Self::open_file(&for_click.0, &for_click.1, window, cx))
-                    .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            Self::open_file(&for_key.0, &for_key.1, window, cx);
-                        }
-                    })
-                    .child(Icon::new(if message.is_audio { IconName::Audio } else { IconName::File }).size(px(15.)).color(palette.secondary))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_grow(1.)
-                            .min_w(px(0.))
-                            .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.text).text_ellipsis().child(label))
-                            .child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).child(format_bytes(attachment.bytes))),
-                    )
-            });
-            let guid = guid.clone();
-            div()
-                .flex()
-                .flex_col()
-                .flex_shrink_0()
-                .child(section_divider(&palette))
-                .child(section_label("Photos and files", palette.tertiary, spacing::X4))
-                .when(!images.is_empty(), |el| el.child(div().flex().flex_row().flex_wrap().gap(GALLERY_GAP).px(spacing::X4).flex_shrink_0().children(thumbs)))
-                .when(!files.is_empty(), |el| el.child(div().flex().flex_col().px(spacing::X2).when(!images.is_empty(), |el| el.pt(spacing::X2)).flex_shrink_0().children(file_rows)))
-                .when(has_older, |el| {
-                    el.child(div().px(spacing::X4).py(spacing::X2).flex_shrink_0().child(Button::new("gallery-load-older", if loading { "Loading…" } else { "Load older" }).disabled(loading).on_click(
-                        move |_, _, cx| {
-                            if let Some(store) = store(cx) {
-                                let (task, guid) = (store.clone(), guid.clone());
-                                store.spawn(async move { task.load_earlier(&guid).await });
-                            }
-                        },
-                    )))
-                })
-        });
+        thumb.fetching = true;
+        let (store, slots) = (store.clone(), self.slots.clone());
+        let (chat, guid, attachment_guid, name, mime) = (
+            message.chat_guid.clone(),
+            message.guid.clone(),
+            attachment.guid.clone(),
+            attachment.name.clone(),
+            attachment.mime.clone(),
+        );
+        let key = attachment_guid.clone();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move {
+                let _slot = slots.acquire_owned().await;
+                store.attachment_src(&chat, &guid, &attachment_guid, &name, Some(&mime)).await.is_ok()
+            },
+            move |this, ok, cx| {
+                let thumb = this.thumbs.entry(key).or_default();
+                thumb.fetching = false;
+                thumb.failed = !ok;
+                cx.notify();
+            },
+        );
+    }
 
-        let add_empty = self.add_field.read(cx).value().trim().is_empty();
-        let name_unchanged = self.name_field.read(cx).value().trim() == chat.display_name.as_deref().unwrap_or("");
-        let manage_fields = manage.then(|| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(spacing::X2)
-                .pt(spacing::X3)
-                .px(spacing::X4)
-                .flex_shrink_0()
-                .child(
-                    div().flex().flex_row().gap(spacing::X2).child(div().flex_grow(1.).min_w(px(0.)).child(Input::new(&self.add_field).bordered(true))).child(
-                        Button::new("details-add", "Add").disabled(add_empty).on_click(cx.listener(|this, _, _, cx| this.add_person(cx))),
-                    ),
-                )
-                .child(
-                    div().flex().flex_row().gap(spacing::X2).child(div().flex_grow(1.).min_w(px(0.)).child(Input::new(&self.name_field).bordered(true))).child(
-                        Button::new("details-rename", "Rename").disabled(name_unchanged).on_click(cx.listener(|this, _, _, cx| this.rename(cx))),
-                    ),
-                )
-        });
+    /// Asks the Mac agent for a map snapshot of `location`, again only when the rounded
+    /// request changes (a move, the theme flipping).
+    fn want_map(&mut self, address: &str, location: &FriendLocation, dark: bool, cx: &mut Context<Self>) {
+        let request = MapSnapshotRequest {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            width: MAP_SIZE.0,
+            height: MAP_SIZE.1,
+            scale: 2,
+            dark,
+            span: MAP_SPAN,
+        };
+        if self.maps.get(address).is_some_and(|(asked, _)| asked.file_name() == request.file_name()) {
+            return;
+        }
+        self.maps.insert(address.to_owned(), (request.clone(), None));
+        let Some(agent) = bridge::store(cx).and_then(|s| s.agent().cloned()) else { return };
+        let key = address.to_owned();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move { agent.find_my_snapshot(&request, &messages_core::config::cache_dir().join("maps")).await.ok() },
+            move |this, path, cx| {
+                if let Some((_, slot)) = this.maps.get_mut(&key) {
+                    *slot = path;
+                    cx.notify();
+                }
+            },
+        );
+    }
 
-        let pinned = chat.pinned;
-        let muted = chat.muted;
-        let receipts_off = chat.read_receipts == Some(false);
-        let unread = chat.unread;
-        let subtitle = if chat.is_group { format!("{} people · {}", chat.participants.len(), service_label(chat.service)) } else { service_label(chat.service).to_owned() };
-
-        div()
-            .id("details-panel")
-            .debug_selector(|| "info-panel".into())
-            .w(INFO_WIDTH)
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(palette.sidebar)
-            .border_l_1()
-            .border_color(palette.sidebar_border)
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .h(TITLEBAR_HEIGHT)
-                    .pl(spacing::X4)
-                    .pr(spacing::X2 + crate::chrome::caption_reserve(window))
-                    .flex_shrink_0()
-                    .child(div().flex_grow(1.).text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).child("Details"))
-                    .child(IconButton::new("close-details", IconName::Close, format!("Close details ({})", shortcut("I", false, false))).color(palette.secondary).on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(crate::app::ToggleInfo), cx);
-                    })),
-            )
-            .child(
-                div()
-                    .id("details-scroll")
-                    .flex()
-                    .flex_col()
-                    .flex_grow(1.)
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(spacing::X2)
-                            .pt(spacing::X1)
-                            .pb(spacing::X5)
-                            .px(spacing::X4)
-                            .flex_shrink_0()
-                            .child(avatar(chat.participants.first(), Some(&chat), px(72.), cx))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .gap(px(2.))
-                                    .child(div().text_size(px(17.)).line_height(px(22.)).font_weight(FontWeight::BOLD).text_color(palette.text).text_align(TextAlign::Center).child(title.clone()))
-                                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child(subtitle)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .px(spacing::X2)
-                            .flex_shrink_0()
-                            .child(action_row(&palette, "pin", if pinned { IconName::PinOff } else { IconName::Pin }, if pinned { "Unpin" } else { "Pin" }, None, false, {
-                                let guid = guid.clone();
-                                run(move |store| store.toggle_pin(&guid))
-                            }))
-                            .child(action_row(&palette, "mute", if muted { IconName::Unmute } else { IconName::Mute }, if muted { "Show alerts" } else { "Hide alerts" }, None, false, {
-                                let guid = guid.clone();
-                                run(move |store| store.toggle_mute(&guid))
-                            }))
-                            .child(action_row(
-                                &palette,
-                                "receipts",
-                                if receipts_off { IconName::Eye } else { IconName::EyeOff },
-                                if receipts_off { "Send read receipts" } else { "Read without receipts" },
-                                None,
-                                false,
-                                {
-                                    let guid = guid.clone();
-                                    run(move |store| store.toggle_read_receipts(&guid))
-                                },
-                            ))
-                            .child(action_row(
-                                &palette,
-                                "unread",
-                                if unread { IconName::MarkRead } else { IconName::MarkUnread },
-                                if unread { "Mark as read" } else { "Mark as unread" },
-                                (!unread).then(|| shortcut("U", true, false).into()),
-                                false,
-                                {
-                                    let guid = guid.clone();
-                                    spawn_store(move |store| {
-                                        let guid = guid.clone();
-                                        async move {
-                                            if unread { store.mark_read(&guid).await } else { store.mark_unread(&guid).await }
-                                        }
-                                    })
-                                },
-                            )),
-                    )
-                    .child(section_divider(&palette))
-                    .child(section_label(if chat.is_group { "People" } else { "Contact" }, palette.tertiary, spacing::X4))
-                    .child(people_column)
-                    .children(gallery)
-                    .children(manage_fields)
-                    .child(section_divider(&palette))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .px(spacing::X2)
-                            .pb(spacing::X4)
-                            .flex_shrink_0()
-                            .child(action_row(&palette, "export", IconName::Download, if exporting { "Exporting…" } else { "Export conversation…" }, None, false, {
-                                let guid = guid.clone();
-                                spawn_store(move |store| {
-                                    let guid = guid.clone();
-                                    async move { store.export_conversation(&guid).await }
-                                })
-                            }))
-                            .when(chat.is_group && capabilities.group_management, |el| {
-                                let (guid, title) = (guid.clone(), title.clone());
-                                el.child(action_row(&palette, "leave", IconName::Leave, "Leave conversation", None, true, move |_, cx| {
-                                    let guid = guid.clone();
-                                    let request = ConfirmRequest::new(format!("Leave \u{201c}{title}\u{201d}?"), "Leave", spawn_store(move |store| {
-                                        let guid = guid.clone();
-                                        async move { store.leave_group(&guid).await }
-                                    }))
-                                    .body("You stop getting its messages. Someone in the group can add you back.")
-                                    .danger();
-                                    if let Some(app) = root(cx) {
-                                        AppRoot::open_confirm(&app, request, cx);
-                                    }
-                                }))
-                            })
-                            .child({
-                                let chat = chat.clone();
-                                let app = app.clone();
-                                action_row(&palette, "delete", IconName::Trash, "Delete conversation", None, true, move |_, cx| {
-                                    let (Some(store), Some(app)) = (store(cx), app.clone()) else { return };
-                                    crate::sidebar_row::confirm_delete(&chat, &store, app, cx);
-                                })
-                            }),
-                    ),
-            )
+    fn location_card(&self, handle: &Handle, location: &FriendLocation, theme: &Theme) -> AnyElement {
+        let name = location.name.clone().or_else(|| handle.name.clone()).unwrap_or_else(|| handle.address.clone());
+        let place =
+            location.label.clone().unwrap_or_else(|| format!("{:.5}, {:.5}", location.latitude, location.longitude));
+        let mut detail = relative_time(location.timestamp, ui::now_ms());
+        if let Some(accuracy) = location.accuracy.filter(|a| *a > 0.) {
+            detail.push_str(&format!(" \u{b7} within {} m", accuracy.round() as i64));
+        }
+        let map = self.maps.get(&handle.address).and_then(|(_, path)| path.clone());
+        let url = messages_core::findmy::maps_url(location.latitude, location.longitude, Some(&name));
+        v_flex()
+            .id(format!("location-{}", handle.address))
+            .gap_1()
+            .px_2()
+            .child(label("Location").text_style(TextStyle::Caption1).secondary())
+            .child(match map.and_then(|p| ui::image_source(&p.to_string_lossy())) {
+                Some(source) => image(source)
+                    .alt(format!("Map around {name}"))
+                    .w(px(MAP_SIZE.0 as f32))
+                    .h(px(MAP_SIZE.1 as f32))
+                    .rounded_lg()
+                    .into_any_element(),
+                None => div()
+                    .w(px(MAP_SIZE.0 as f32))
+                    .h(px(MAP_SIZE.1 as f32))
+                    .rounded_lg()
+                    .bg(theme.surface.raised)
+                    .into_any_element(),
+            })
+            .child(text(place).font_weight(FontWeight::SEMIBOLD))
+            .child(text(detail).text_size(theme.type_scale.caption).text_color(theme.text.secondary))
+            .child(link(format!("maps-{}", handle.address), "Open in Maps").url(url))
             .into_any_element()
     }
 }
 
-fn participant_row(palette: &Palette, handle: &Handle, chat: &Chat, manage: bool, addresses: &[String], cx: &mut Context<InfoPanel>) -> impl IntoElement {
-    let menu_handle = handle.clone();
-    let menu_chat = chat.clone();
-    let copy = handle.address.clone();
-    let named = handle.name.is_some();
-    let removable = manage && chat.participants.len() > 2;
-    let (remove_chat, remove_address) = (chat.guid.clone(), handle.address.clone());
-    let _ = cx;
-    div()
-        .id(SharedString::from(format!("participant-{}", handle.address)))
-        .tab_index(0)
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(spacing::X2)
-        .min_h(px(40.))
-        .py(spacing::X1)
-        .pl(spacing::X2)
-        .pr(spacing::X1)
-        .rounded(radius::CONTROL)
-        .flex_shrink_0()
-        .border_2()
-        .border_color(palette.transparent)
-        .focus_visible({
-            let ring = palette.focus_ring;
-            move |style| style.border_color(ring)
-        })
-        .hover({
-            let wash = palette.hover_wash;
-            move |style| style.bg(wash)
-        })
-        .on_mouse_up(MouseButton::Right, move |event: &MouseUpEvent, window, cx| {
-            if let Some(app) = root(cx) {
-                AppRoot::open_menu(&app, MenuRequest::at(event.position, participant_menu(&menu_handle, &menu_chat, manage)), window, cx);
+impl Render for Details {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync(cx);
+        let Some(store) = bridge::store(cx) else { return div().into_any_element() };
+        let Some(guid) = self.chat.clone() else { return div().into_any_element() };
+        let (chat, handles, messages, has_older, loading, contacts, friends, find_my, capabilities, exporting) = {
+            let state = store.state();
+            let Some(chat) = state.chat(&guid).cloned() else { return div().into_any_element() };
+            (
+                chat,
+                conversation_handles(&state, &guid),
+                conversation_messages(&state, &guid),
+                conversation_has_older(&state, &guid),
+                conversation_loading(&state, &guid),
+                state.contacts.clone(),
+                state.locations.values().cloned().collect::<Vec<FriendLocation>>(),
+                state.find_my,
+                state.capabilities,
+                state.exporting_chat.as_deref() == Some(guid.as_str()),
+            )
+        };
+        let theme = cx.theme().clone();
+        let manage = chat.is_group && capabilities.group_management;
+        let title = chat_title(&chat);
+        let subtitle = if chat.is_group {
+            format!("{} people \u{b7} {}", chat.participants.len(), service_label(chat.service))
+        } else {
+            service_label(chat.service).to_owned()
+        };
+
+        let mut people_rows: Vec<AnyElement> = Vec::new();
+        let mut wanted_maps = Vec::new();
+        for (handle, addresses) in people(&chat, &handles) {
+            let mut wanted = addresses.clone();
+            wanted.extend(contact_addresses(&contacts, &handle.address));
+            let location = match_friend(&friends, &wanted).cloned();
+            let removable = manage && chat.participants.len() > 2;
+            let (copy, remove) = (
+                CopyAddress(handle.address.clone()),
+                RemoveParticipant { chat: chat.guid.clone(), address: handle.address.clone() },
+            );
+            let menu_name = handle_name(&handle).to_owned();
+            people_rows.push(
+                h_flex()
+                    .id(format!("participant-{}", handle.address))
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .context_menu({
+                        let (copy, remove) = (copy.clone(), remove.clone());
+                        move |menu, _, _| {
+                            let menu = menu.item("Copy Address", copy.clone());
+                            if removable {
+                                menu.separator().item_destructive(format!("Remove {menu_name}"), remove.clone())
+                            } else {
+                                menu
+                            }
+                        }
+                    })
+                    .child(ui::avatar_of(&handle, 28.))
+                    .child(v_flex().flex_1().min_w_0().child(text(handle_name(&handle).to_owned())).when(
+                        handle.name.is_some(),
+                        |col| {
+                            col.children(addresses.iter().map(|a| {
+                                text(format_address(a))
+                                    .text_size(theme.type_scale.caption)
+                                    .text_color(theme.text.secondary)
+                            }))
+                        },
+                    ))
+                    .when(removable, |row| {
+                        row.child(
+                            icon_button(format!("remove-{}", handle.address), Icon::Minus)
+                                .tooltip("Remove")
+                                .on_click(move |_, window, cx| crate::ui::dispatch(window, cx, remove.clone())),
+                        )
+                    })
+                    .into_any_element(),
+            );
+            if let Some(friend) = location {
+                wanted_maps.push((handle.address.clone(), friend.clone()));
+                people_rows.push(self.location_card(&handle, &friend, &theme));
             }
-        })
-        .on_key_down(move |event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                if let Some(store) = store(cx) {
-                    let address = copy.clone();
-                    store.spawn(async move { messages_core::clipboard::copy_text(&address).await });
-                }
-            }
-        })
-        .child(avatar(Some(handle), None, px(28.), cx))
-        .child(
+        }
+        let live: HashSet<String> = wanted_maps.iter().map(|(a, _)| a.clone()).collect();
+        self.maps.retain(|address, _| live.contains(address));
+        for (address, friend) in wanted_maps {
+            self.want_map(&address, &friend, theme.is_dark(), cx);
+        }
+
+        let (images, files) = gallery_items(&messages);
+        for (message, attachment) in &images {
+            self.want_thumb(&store, message, attachment, cx);
+        }
+        let thumbs = images.iter().map(|(message, attachment)| {
+            let show = ShowAttachment(reference(message, attachment));
             div()
-                .flex()
-                .flex_col()
-                .flex_grow(1.)
-                .min_w(px(0.))
-                .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.text).text_ellipsis().child(handle_name(handle).to_owned()))
-                .when(named, |el| {
-                    el.children(addresses.iter().map(|address| {
-                        div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(palette.secondary).text_ellipsis().child(format_address(address))
-                    }))
-                }),
-        )
-        .when(removable, |el| {
-            el.child(IconButton::new(SharedString::from(format!("remove-{}", handle.address)), IconName::Close, format!("Remove {}", handle_name(handle))).size(px(12.)).hit(px(24.)).color(palette.secondary).on_click(
-                move |_, _, cx| {
-                    if let Some(store) = store(cx) {
-                        let (task, chat, address) = (store.clone(), remove_chat.clone(), remove_address.clone());
-                        store.spawn(async move { task.remove_participant(&chat, &address).await });
-                    }
-                },
-            ))
-        })
+                .id(format!("gallery-photo-{}", attachment.guid))
+                .size(px(GALLERY_THUMB))
+                .rounded_md()
+                .bg(theme.surface.raised)
+                .on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, show.clone()))
+                .when_some(
+                    attachment.local_path.as_ref().and_then(|p| ui::image_source(&p.to_string_lossy())),
+                    |tile, source| {
+                        tile.child(image(source).alt(attachment.name.clone()).size(px(GALLERY_THUMB)).rounded_md())
+                    },
+                )
+        });
+        let file_rows = files.iter().map(|(message, attachment)| {
+            let open = OpenAttachment(reference(message, attachment));
+            let name = if message.is_audio { "Audio message".to_owned() } else { attachment.name.clone() };
+            v_flex()
+                .id(format!("gallery-file-{}", attachment.guid))
+                .px_2()
+                .py_1()
+                .on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, open.clone()))
+                .child(text(name))
+                .child(
+                    text(format_bytes(attachment.bytes))
+                        .text_size(theme.type_scale.caption)
+                        .text_color(theme.text.secondary),
+                )
+        });
+        let gallery = (!images.is_empty() || !files.is_empty() || has_older).then(|| {
+            let older = guid.clone();
+            v_flex()
+                .id("gallery")
+                .gap_2()
+                .px_3()
+                .child(label("Photos and Files").text_style(TextStyle::Caption1).secondary())
+                .child(div().flex().flex_row().flex_wrap().gap_1().children(thumbs))
+                .children(file_rows)
+                .when(has_older, |col| {
+                    col.child(
+                        button("gallery-load-older", if loading { "Loading\u{2026}" } else { "Load Older" })
+                            .disabled(loading)
+                            .on_click(move |_, _, cx| {
+                                if let Some(store) = bridge::store(cx) {
+                                    let older = older.clone();
+                                    crate::rt::detach(async move { store.load_earlier(&older).await });
+                                }
+                            }),
+                    )
+                })
+        });
+
+        let receipts_off = chat.read_receipts == Some(false);
+        let (pin, mute, receipts) =
+            (TogglePin(chat.guid.clone()), ToggleMute(chat.guid.clone()), ToggleReceipts(chat.guid.clone()));
+        let unread_action: Box<dyn Action> = if chat.unread {
+            Box::new(MarkChatRead(chat.guid.clone()))
+        } else {
+            Box::new(MarkChatUnread(chat.guid.clone()))
+        };
+        let unread_action = std::rc::Rc::new(unread_action);
+        let (export, delete) = (ExportChat(chat.guid.clone()), DeleteChat(chat.guid.clone()));
+        let leave_guid = chat.guid.clone();
+        let leave_title = title.clone();
+
+        let manage_fields = manage.then(|| {
+            let (add_guid, rename_guid) = (chat.guid.clone(), chat.guid.clone());
+            let name_unchanged = self.rename.trim() == chat.display_name.as_deref().unwrap_or("");
+            v_flex()
+                .gap_2()
+                .px_3()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            text_field("details-add")
+                                .text(self.add.clone())
+                                .placeholder("Phone number or email")
+                                .label("Add a person")
+                                .flex_1()
+                                .on_change(cx.listener(|this, e: &TextChanged, _, cx| {
+                                    this.add = e.text.clone();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(button("details-add-button", "Add").disabled(self.add.trim().is_empty()).on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                let address = this.add.trim().to_owned();
+                                this.add = SharedString::default();
+                                if let Some(store) = bridge::store(cx) {
+                                    let chat = add_guid.clone();
+                                    crate::rt::detach(async move { store.add_participant(&chat, &address).await });
+                                }
+                                cx.notify();
+                            }),
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            text_field("details-rename")
+                                .text(self.rename.clone())
+                                .placeholder("Group name")
+                                .label("Group name")
+                                .flex_1()
+                                .on_change(cx.listener(|this, e: &TextChanged, _, cx| {
+                                    this.rename = e.text.clone();
+                                    cx.notify();
+                                })),
+                        )
+                        .child(button("details-rename-button", "Rename").disabled(name_unchanged).on_click(
+                            cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                let name = this.rename.trim().to_owned();
+                                if let Some(store) = bridge::store(cx) {
+                                    let chat = rename_guid.clone();
+                                    crate::rt::detach(async move { store.rename_group(&chat, &name).await });
+                                }
+                            }),
+                        )),
+                )
+        });
+
+        v_flex()
+            .id("details-panel")
+            .size_full()
+            .overflow_y_scroll()
+            .gap_3()
+            .pb_4()
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .pt_3()
+                    .child(ui::chat_avatar(&chat, 72.))
+                    .child(text(title).font_weight(FontWeight::BOLD).text_size(theme.type_scale.headline))
+                    .child(text(subtitle).text_size(theme.type_scale.caption).text_color(theme.text.secondary)),
+            )
+            .child(
+                v_flex()
+                    .px_3()
+                    .gap_1()
+                    .child(
+                        switch_row("details-pin", "Pinned")
+                            .checked(chat.pinned)
+                            .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, pin.clone())),
+                    )
+                    .child(
+                        switch_row("details-mute", "Hide Alerts")
+                            .checked(chat.muted)
+                            .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, mute.clone())),
+                    )
+                    .child(
+                        switch_row("details-receipts", "Send Read Receipts")
+                            .checked(!receipts_off)
+                            .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, receipts.clone())),
+                    )
+                    .child(
+                        button("details-unread", if chat.unread { "Mark as Read" } else { "Mark as Unread" }).on_click(
+                            move |_, window, cx| crate::ui::dispatch_boxed(window, cx, unread_action.boxed_clone()),
+                        ),
+                    ),
+            )
+            .child(separator())
+            .child(
+                label(if chat.is_group { "People" } else { "Contact" })
+                    .text_style(TextStyle::Caption1)
+                    .secondary()
+                    .ml_3(),
+            )
+            .child(v_flex().gap_1().px_1().children(people_rows))
+            .when(find_my == FindMyState::Unavailable, |col| {
+                col.child(label("Find My needs the Mac agent (see README).").secondary().wraps().mx_3())
+            })
+            .children(manage_fields)
+            .children(gallery.map(|g| v_flex().child(separator()).child(g)))
+            .child(separator())
+            .child(
+                v_flex()
+                    .px_3()
+                    .gap_2()
+                    .child(
+                        button(
+                            "details-export",
+                            if exporting { "Exporting\u{2026}" } else { "Export Conversation\u{2026}" },
+                        )
+                        .disabled(exporting)
+                        .on_click(move |_, window, cx| crate::ui::dispatch(window, cx, export.clone())),
+                    )
+                    .when(manage, |col| {
+                        col.child(button("details-leave", "Leave Conversation").destructive().on_click(
+                            move |_, window, cx| {
+                                let guid = leave_guid.clone();
+                                window.confirm(
+                                    cx,
+                                    format!("Leave \u{201c}{leave_title}\u{201d}?"),
+                                    None,
+                                    "Leave",
+                                    move |confirmed, cx| {
+                                        if confirmed && let Some(store) = bridge::store(cx) {
+                                            crate::rt::detach(async move { store.leave_group(&guid).await });
+                                        }
+                                    },
+                                );
+                            },
+                        ))
+                    })
+                    .child(
+                        button("details-delete", "Delete Conversation")
+                            .destructive()
+                            .on_click(move |_, window, cx| crate::ui::dispatch(window, cx, delete.clone())),
+                    ),
+            )
+            .into_any_element()
+    }
 }

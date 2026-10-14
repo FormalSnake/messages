@@ -8,8 +8,6 @@ license = "MIT"
 
 [workspace.dependencies]
 messages-core = { path = "crates/core" }
-gpui-kit = "0.6.6"
-gpui-base = "0.6.6"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -17,3 +15,20 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart"] }
 tracing = "0.1"
+
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+
+# NativeDesktop is a path dependency of crates/desktop until it is published: the checkout of
+# its `port-messages-fixes` branch beside this repo, which this port needs over its main. Switch
+# these and crates/desktop/Cargo.toml to `git = "https://github.com/FormalSnake/NativeDesktop"`
+# (one rev for all) once that branch is merged. nd carries its own patched GPUI, which only
+# reaches this workspace through the patch table below.
+[patch.crates-io]
+gpui-pre = { path = "../nativedesktop-wt-port-messages/crates/nd-gpui/vendor/gpui-pre" }
+gpui-fast = { path = "../nativedesktop-wt-port-messages/crates/nd-gpui/vendor/gpui-fast" }
+gpui-pre-linux = { path = "../nativedesktop-wt-port-messages/crates/nd-gpui/vendor/gpui-pre-linux" }
+gpui-fast-linux = { path = "../nativedesktop-wt-port-messages/crates/nd-gpui/vendor/gpui-fast-linux" }
+gpui-pre-wgpu = { path = "../nativedesktop-wt-port-messages/crates/nd-gpui/vendor/gpui-pre-wgpu" }
+gpui-fast-wgpu = { path = "../nativedesktop-wt-port-messages/crates/nd-gpui/vendor/gpui-fast-wgpu" }

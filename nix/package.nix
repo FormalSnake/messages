@@ -22,7 +22,7 @@
 
 let
   cargoToml = lib.importTOML ../crates/desktop/Cargo.toml;
-  appId = "es.canarycoders.messages";
+  appId = "dev.formalsnake.messages";
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "messages";

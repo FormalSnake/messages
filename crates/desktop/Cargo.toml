@@ -3,27 +3,31 @@ name = "messages"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-
-[build-dependencies]
-winresource = "0.1"
-
-[features]
-frame-overlay = ["gpui-kit/profiler"]
-screenshot = ["gpui-kit/test-support"]
+rust-version = "1.95"
 
 [dependencies]
 messages-core.workspace = true
-gpui-kit.workspace = true
-gpui-base.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+tracing.workspace = true
+schemars = "1.2.3"
+toml_edit = "0.25"
+base64 = "0.22"
+nd = { path = "../../../nativedesktop-wt-port-messages/crates/nd", features = ["settings-ui"] }
+nd-settings = { path = "../../../nativedesktop-wt-port-messages/crates/nd-settings" }
+nd-ipc = { path = "../../../nativedesktop-wt-port-messages/crates/nd-ipc" }
 
 [dev-dependencies]
-gpui-kit = { workspace = true, features = ["test-support"] }
+nd = { path = "../../../nativedesktop-wt-port-messages/crates/nd", features = ["test", "audit"] }
+nd-test = { path = "../../../nativedesktop-wt-port-messages/crates/nd-test" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+[build-dependencies]
+nd = { path = "../../../nativedesktop-wt-port-messages/crates/nd", default-features = false, features = ["build"] }
+
+# The appearance audit owns the main thread (AppKit), so libtest's harness is off.
+[[test]]
+name = "appearance"
+harness = false

@@ -1,21 +1,14 @@
-//! Pick one or more recipients, write the first message, send it. `app.rs`
-//! mounts `NewChat` in the main pane in place of header/thread/composer
-//! while composing, and drops it when `on_close` runs (Escape or a
-//! successful send).
+//! A new conversation: recipients in a To: row, suggestions from contacts and existing
+//! one-to-one chats, the first message, send. Shown in place of the conversation; Escape or a
+//! successful send closes it.
 
-use std::rc::Rc;
-
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::*;
 use messages_core::format::format_address;
+use nd::prelude::*;
 
-use crate::bridge::StoreHandle;
-use crate::icons::IconName;
-use crate::primitives::{Chip, IconButton, avatar};
-use crate::theme::{TITLEBAR_HEIGHT, Theme, radius, spacing, type_scale};
+use crate::bridge;
+use crate::root::Root;
 
-fn is_address(value: &str) -> bool {
+pub fn is_address(value: &str) -> bool {
     let value = value.trim();
     if value.is_empty() {
         return false;
@@ -23,13 +16,18 @@ fn is_address(value: &str) -> bool {
     if value.contains('@') {
         let mut parts = value.splitn(2, '@');
         let (local, domain) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-        return !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.') && !domain.contains(' ');
+        return !local.is_empty()
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
+            && !domain.contains(' ');
     }
     let digits = value.chars().filter(|c| c.is_ascii_digit()).count();
     digits >= 6 && value.chars().all(|c| c.is_ascii_digit() || matches!(c, '+' | ' ' | '(' | ')' | '-'))
 }
 
-fn normalize(value: &str) -> String {
+/// Emails lowercased and trimmed, phone numbers as digits with their leading +.
+pub fn normalize(value: &str) -> String {
     if value.contains('@') {
         value.trim().to_lowercase()
     } else {
@@ -37,95 +35,70 @@ fn normalize(value: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 struct Recipient {
     address: String,
     name: Option<String>,
 }
 
-struct Suggestion {
-    address: String,
-    name: Option<String>,
-}
-
 pub struct NewChat {
-    on_close: Rc<dyn Fn(&mut Window, &mut App)>,
-    to_field: Entity<InputState>,
-    draft: Entity<TextareaState>,
+    /// The To: field takes focus on the first frame.
+    focus: bool,
+    root: WeakEntity<Root>,
+    query: SharedString,
+    draft: Draft,
     recipients: Vec<Recipient>,
-    /// The suggestion Enter commits; arrows move it, hover follows the pointer.
-    highlighted: usize,
     busy: bool,
     error: bool,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl NewChat {
-    pub fn new(window: &mut Window, on_close: impl Fn(&mut Window, &mut App) + 'static, cx: &mut Context<Self>) -> Self {
-        let on_close = Rc::new(on_close);
-        let to_field = cx.new(|cx| InputState::new(window, cx).placeholder("Name, phone number or email"));
-        let draft = cx.new(|cx| TextareaState::new(window, cx).placeholder("Add someone first").auto_grow(1, 6));
-        window.focus(&to_field.focus_handle(cx), cx);
-
-        let to_sub = cx.subscribe_in(&to_field, window, |this: &mut Self, _state, event: &InputEvent, window, cx| match event {
-            InputEvent::Change => {
-                this.highlighted = 0;
-                cx.notify();
-            }
-            InputEvent::PressEnter { .. } => this.commit_query(window, cx),
-            _ => {}
-        });
-        let draft_sub = cx.subscribe_in(&draft, window, |this: &mut Self, _state, event: &InputEvent, window, cx| {
-            if matches!(event, InputEvent::PressEnter { secondary: false, shift: false }) {
-                this.send(window, cx);
-            }
-        });
-
-        Self { on_close, to_field, draft, recipients: Vec::new(), highlighted: 0, busy: false, error: false, _subscriptions: vec![to_sub, draft_sub] }
+    pub fn new(root: WeakEntity<Root>, _cx: &mut Context<Self>) -> Self {
+        Self {
+            focus: true,
+            root,
+            query: SharedString::default(),
+            draft: Draft::default(),
+            recipients: Vec::new(),
+            busy: false,
+            error: false,
+        }
     }
 
-    #[cfg(test)]
-    pub(crate) fn focus_draft(&self, window: &mut Window, cx: &mut App) {
-        window.focus(&self.draft.focus_handle(cx), cx);
-    }
-
-    fn add(&mut self, address: String, name: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.recipients.iter().any(|item| item.address == address) {
+    fn add(&mut self, address: String, name: Option<String>, cx: &mut Context<Self>) {
+        if !self.recipients.iter().any(|r| r.address == address) {
             self.recipients.push(Recipient { address, name });
         }
-        self.to_field.update(cx, |state, cx| state.set_value("", window, cx));
+        self.query = SharedString::default();
         cx.notify();
     }
 
-    fn suggestions(&self, cx: &App) -> Vec<Suggestion> {
-        let needle = self.to_field.read(cx).value().trim().to_lowercase();
+    fn suggestions(&self, cx: &App) -> Vec<Recipient> {
+        let needle = self.query.trim().to_lowercase();
         if needle.is_empty() {
             return Vec::new();
         }
-        let Some(store) = cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone()) else { return Vec::new() };
+        let Some(store) = bridge::store(cx) else { return Vec::new() };
         let state = store.state();
-        let chosen: std::collections::HashSet<&str> = self.recipients.iter().map(|item| item.address.as_str()).collect();
-        let mut out: Vec<Suggestion> = Vec::new();
+        let chosen: std::collections::HashSet<&str> = self.recipients.iter().map(|r| r.address.as_str()).collect();
+        let mut out: Vec<Recipient> = Vec::new();
         for contact in state.contacts.iter() {
             for address in &contact.addresses {
-                if chosen.contains(address.as_str()) {
-                    continue;
-                }
-                if contact.name.to_lowercase().contains(&needle) || address.to_lowercase().contains(&needle) {
-                    out.push(Suggestion { address: address.clone(), name: Some(contact.name.clone()) });
+                if !chosen.contains(address.as_str())
+                    && (contact.name.to_lowercase().contains(&needle) || address.to_lowercase().contains(&needle))
+                {
+                    out.push(Recipient { address: address.clone(), name: Some(contact.name.clone()) });
                 }
             }
         }
-        for chat in state.chats.iter() {
-            if chat.is_group {
-                continue;
-            }
+        for chat in state.chats.iter().filter(|c| !c.is_group) {
             for handle in &chat.participants {
-                if chosen.contains(handle.address.as_str()) || out.iter().any(|item| item.address == handle.address) {
+                if chosen.contains(handle.address.as_str()) || out.iter().any(|r| r.address == handle.address) {
                     continue;
                 }
                 let name = handle.name.clone().unwrap_or_default();
                 if name.to_lowercase().contains(&needle) || handle.address.to_lowercase().contains(&needle) {
-                    out.push(Suggestion { address: handle.address.clone(), name: handle.name.clone() });
+                    out.push(Recipient { address: handle.address.clone(), name: handle.name.clone() });
                 }
             }
         }
@@ -133,282 +106,212 @@ impl NewChat {
         out
     }
 
-    fn commit_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let value = self.to_field.read(cx).value().trim().to_string();
-        if value.is_empty() {
+    /// Return in the To: field: the first suggestion, else the typed address when it is one.
+    fn commit_query(&mut self, cx: &mut Context<Self>) {
+        if let Some(first) = self.suggestions(cx).into_iter().next() {
+            self.add(first.address, first.name, cx);
+        } else if is_address(&self.query) {
+            let address = normalize(&self.query);
+            self.add(address, None, cx);
+        }
+    }
+
+    fn send(&mut self, cx: &mut Context<Self>) {
+        if self.busy || self.recipients.is_empty() || self.draft.text.trim().is_empty() {
             return;
         }
-        let suggestions = self.suggestions(cx);
-        let index = self.highlighted.min(suggestions.len().saturating_sub(1));
-        if let Some(chosen) = suggestions.into_iter().nth(index) {
-            self.add(chosen.address, chosen.name, window, cx);
-        } else if is_address(&value) {
-            let address = normalize(&value);
-            self.add(address, None, window, cx);
-        }
-    }
-
-    fn move_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let count = self.suggestions(cx).len();
-        if count == 0 {
-            return;
-        }
-        let current = self.highlighted.min(count - 1) as isize;
-        self.highlighted = (current + delta).rem_euclid(count as isize) as usize;
-        cx.notify();
-    }
-
-    fn remove(&mut self, address: &str, cx: &mut Context<Self>) {
-        self.recipients.retain(|item| item.address != address);
-        cx.notify();
-    }
-
-    fn ready(&self, cx: &App) -> bool {
-        !self.draft.read(cx).value().trim().is_empty() && !self.recipients.is_empty() && !self.busy
-    }
-
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.ready(cx) {
-            return;
-        }
-        let Some(store) = cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone()) else { return };
-        let text = self.draft.read(cx).value().trim().to_string();
-        let addresses: Vec<String> = self.recipients.iter().map(|item| item.address.clone()).collect();
+        let Some(store) = bridge::store(cx) else { return };
+        let addresses: Vec<String> = self.recipients.iter().map(|r| r.address.clone()).collect();
+        let text = self.draft.text.trim().to_owned();
         self.busy = true;
         self.error = false;
         cx.notify();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let store_for_spawn = store.clone();
-        store.spawn(async move {
-            let result = store_for_spawn.create_chat(&addresses, &text).await;
-            let _ = tx.send(result.is_ok());
-        });
-        let on_close = self.on_close.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(ok) = rx.await else { return };
-            let _ = cx.update(|window, cx| {
-                let _ = this.update(cx, |this, cx| {
-                    if ok {
-                        on_close(window, cx);
-                    } else {
-                        this.busy = false;
-                        this.error = true;
-                        cx.notify();
+        crate::rt::spawn_for(
+            cx.weak_entity(),
+            async move { store.create_chat(&addresses, &text).await },
+            |this, result, cx| {
+                this.busy = false;
+                match result {
+                    Ok(()) => {
+                        if let Some(root) = this.root.upgrade() {
+                            root.update(cx, |root, cx| root.close_new_chat(cx));
+                        }
                     }
-                });
-            });
-        })
-        .detach();
+                    Err(error) => {
+                        tracing::warn!("new chat: {error}");
+                        this.error = true;
+                    }
+                }
+                cx.notify();
+            },
+        );
     }
 }
 
 impl Render for NewChat {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let palette = Theme::get(cx);
+        if self.focus && crate::ui::focus_id(window, cx, "new-chat-to") {
+            self.focus = false;
+        }
+        let theme = cx.theme().clone();
         let suggestions = self.suggestions(cx);
-        let needle = self.to_field.read(cx).value().trim().to_string();
-        let ready = self.ready(cx);
-        let has_recipients = !self.recipients.is_empty();
-        let info_open = crate::app::root(cx).is_some_and(|app| app.read(cx).info_open());
-
-        let to_row = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .flex_wrap()
-            .gap(spacing::X2)
-            .px(spacing::X4)
-            .py(spacing::X2)
-            .min_h(px(44.))
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(palette.sidebar_border)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| match event.keystroke.key.as_str() {
-                "backspace" if this.to_field.read(cx).value().is_empty() && !this.recipients.is_empty() => {
-                    this.recipients.pop();
-                    cx.notify();
-                }
-                "up" => {
-                    this.move_highlight(-1, cx);
-                    cx.stop_propagation();
-                }
-                "down" => {
-                    this.move_highlight(1, cx);
-                    cx.stop_propagation();
-                }
-                _ => {}
-            }))
-            .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.secondary).flex_shrink_0().child("To:"))
-            .children(self.recipients.iter().map(|item| {
-                let label = item.name.clone().unwrap_or_else(|| format_address(&item.address));
-                let address = item.address.clone();
-                Chip::new(ElementId::Name(format!("recipient-{address}").into()), label).on_remove(cx.listener(move |this, _, _, cx| this.remove(&address, cx)))
-            }))
-            .child(div().flex_grow(1.).flex_basis(px(160.)).min_w(px(0.)).child(Input::new(&self.to_field).appearance(false)));
-
-        let list = div().id("new-chat-suggestions").flex().flex_col().flex_grow(1.).min_h(px(0.)).overflow_y_scroll().px(spacing::X2).pt(spacing::X2);
-        let highlighted = self.highlighted.min(suggestions.len().saturating_sub(1));
-        let list = if !suggestions.is_empty() {
-            list.children(suggestions.into_iter().enumerate().map(|(index, item)| {
-                let active = index == highlighted;
-                let fg = if active { palette.on_accent } else { palette.text };
-                let muted = if active { palette.on_accent_soft } else { palette.secondary };
-                let label = item.name.clone().unwrap_or_else(|| format_address(&item.address));
-                let subtitle = item.name.clone().map(|_| format_address(&item.address));
-                let address = item.address.clone();
-                let name = item.name.clone();
-                div()
-                    .id(ElementId::Name(format!("suggest-{}", item.address).into()))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(spacing::X2)
-                    .h(px(44.))
-                    .px(spacing::X2)
-                    .rounded(radius::ROW)
-                    .cursor_pointer()
-                    .flex_shrink_0()
-                    .when(active, |el| el.bg(palette.accent))
-                    .when(!active, |el| el.active(move |style| style.bg(palette.raised_hover)))
-                    .on_click(cx.listener(move |this, _, window, cx| this.add(address.clone(), name.clone(), window, cx)))
-                    .on_hover(cx.listener(move |this, hovered, _window, cx| {
-                        if *hovered && this.highlighted != index {
-                            this.highlighted = index;
-                            cx.notify();
-                        }
-                    }))
-                    .child(avatar(Some(&messages_core::Handle { address: item.address.clone(), service: messages_core::Service::IMessage, name: item.name.clone(), avatar: None }), None, px(30.), cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_grow(1.)
-                            .min_w(px(0.))
-                            .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(fg).text_ellipsis().child(label))
-                            .when_some(subtitle, |el, subtitle| {
-                                el.child(div().text_size(type_scale::MICRO.font_size).line_height(type_scale::MICRO.line_height).text_color(muted).text_ellipsis().child(subtitle))
-                            }),
-                    )
-            }))
-        } else if !needle.is_empty() && is_address(&needle) {
-            let query = needle.clone();
-            list.child(
-                div()
-                    .id("suggest-raw")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(spacing::X2)
-                    .h(px(44.))
-                    .px(spacing::X2)
-                    .rounded(radius::ROW)
-                    .cursor_pointer()
-                    .flex_shrink_0()
-                    .hover(move |style| style.bg(palette.raised))
-                    .active(move |style| style.bg(palette.raised_hover))
-                    .on_click(cx.listener(|this, _, window, cx| this.commit_query(window, cx)))
-                    .child(div().w(px(30.)).h(px(30.)).rounded(px(15.)).bg(palette.selected_soft).flex().items_center().justify_center().flex_shrink_0().child(crate::icons::Icon::new(IconName::Plus).size(px(15.)).color(palette.accent).strong(true)))
-                    .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).text_color(palette.accent).child(format!("Message {query}"))),
-            )
-        } else if needle.is_empty() && !has_recipients {
-            list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(spacing::X1)
-                    .pt(spacing::X10)
-                    .px(spacing::X4)
-                    .child(div().text_size(type_scale::BODY.font_size).line_height(type_scale::BODY.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).child("Who is this going to?"))
-                    .child(div().text_size(type_scale::CAPTION.font_size).line_height(type_scale::CAPTION.line_height).text_color(palette.secondary).text_align(TextAlign::Center).child("Type a name, phone number or email above.")),
-            )
-        } else {
-            list
-        };
-
-        let placeholder = if has_recipients { "iMessage" } else { "Add someone first" };
-        self.draft.update(cx, |state, cx| {
-            state.set_placeholder(placeholder, window, cx);
+        let fallback = (suggestions.is_empty() && is_address(&self.query)).then(|| normalize(&self.query));
+        let ready = !self.recipients.is_empty() && !self.draft.text.trim().is_empty() && !self.busy;
+        let chips = self.recipients.iter().enumerate().map(|(index, r)| {
+            let label_text = r.name.clone().unwrap_or_else(|| format_address(&r.address));
+            h_flex()
+                .id(format!("recipient-{index}"))
+                .gap_1()
+                .pl_2()
+                .rounded_full()
+                .bg(theme.accent_container.bg)
+                .child(text(label_text.clone()).text_color(theme.accent_container.fg))
+                .child(
+                    icon_button(format!("remove-recipient-{index}"), Icon::X)
+                        .tooltip(format!("Remove {label_text}"))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if index < this.recipients.len() {
+                                this.recipients.remove(index);
+                                cx.notify();
+                            }
+                        })),
+                )
         });
-
-        let composer = div()
-            .flex()
-            .flex_row()
-            .items_end()
-            .gap(spacing::X1)
-            .px(spacing::X4)
-            .pt(spacing::X2)
-            .pb(spacing::X3)
-            .flex_shrink_0()
+        let rows = suggestions.iter().map(|s| {
+            let pick = s.clone();
+            h_flex()
+                .id(format!("suggestion-{}", s.address))
+                .gap_2()
+                .px_4()
+                .py_2()
+                .on_tap(
+                    cx.listener(move |this, _: &TapEvent, _, cx| this.add(pick.address.clone(), pick.name.clone(), cx)),
+                )
+                .child(avatar(Person::new(s.name.clone().unwrap_or_else(|| s.address.clone())), 32.))
+                .child(
+                    v_flex().child(text(s.name.clone().unwrap_or_else(|| format_address(&s.address)))).child(
+                        text(format_address(&s.address))
+                            .text_size(theme.type_scale.caption)
+                            .text_color(theme.text.secondary),
+                    ),
+                )
+        });
+        v_flex()
+            .id("new-chat-view")
+            .size_full()
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_end()
-                    .gap(spacing::X1)
-                    .flex_grow(1.)
-                    .min_w(px(0.))
-                    .min_h(px(34.))
-                    .rounded(px(17.))
-                    .border_1()
-                    .border_color(palette.separator)
-                    .bg(palette.canvas)
-                    .pl(spacing::X3)
-                    .pr(spacing::X1)
-                    .py(spacing::X1)
-                    .child(Textarea::new(&self.draft).appearance(false))
+                h_flex()
+                    .h(px(52.))
+                    .px_4()
+                    .gap_2()
+                    .child(label("New Message").text_style(TextStyle::Headline).flex_1())
+                    .child(button("new-chat-cancel", "Cancel").on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(root) = this.root.upgrade() {
+                            root.update(cx, |root, cx| root.close_new_chat(cx));
+                        }
+                    }))),
+            )
+            .child(separator())
+            .child(
+                h_flex()
+                    .px_4()
+                    .py_2()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(text("To:").text_color(theme.text.secondary))
+                    .children(chips)
                     .child(
                         div()
-                            .id("new-chat-send")
-                            .w(px(24.))
-                            .h(px(24.))
-                            .rounded(px(12.))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .bg(if ready { palette.accent } else { palette.ghost })
-                            .when(ready, |el| el.hover(|style| style.opacity(0.88)).active(|style| style.opacity(0.7)))
-                            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
-                            .child(crate::icons::Icon::new(IconName::Send).size(px(14.)).color(if ready { palette.on_accent } else { palette.tertiary }).strong(true)),
+                            .flex_1()
+                            .min_w(px(180.))
+                            .key_context("NewChatTo")
+                            .on_action(cx.listener(|this, _: &crate::actions::RemoveLastRecipient, _, cx| {
+                                // Backspace on an empty To: field takes the last recipient.
+                                if this.query.is_empty() && this.recipients.pop().is_some() {
+                                    cx.notify();
+                                } else {
+                                    cx.propagate();
+                                }
+                            }))
+                            .child(
+                                text_field("new-chat-to")
+                                    .text(self.query.clone())
+                                    .placeholder("Name, phone number or email")
+                                    .label("To")
+                                    .flex_1()
+                                    .min_w(px(180.))
+                                    .on_change(cx.listener(|this, e: &TextChanged, _, cx| {
+                                        this.query = e.text.clone();
+                                        cx.notify();
+                                    }))
+                                    .on_submit(cx.listener(|this, _: &TextSubmitted, _, cx| this.commit_query(cx))),
+                            ),
                     ),
-            );
-
-        div()
-            .id("new-chat")
-            .flex()
-            .flex_col()
-            .flex_grow(1.)
-            .min_w(px(0.))
-            .h_full()
-            .on_key_down({
-                let on_close = self.on_close.clone();
-                move |event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        on_close(window, cx);
-                    }
-                }
-            })
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .h(TITLEBAR_HEIGHT)
-                    .pl(spacing::X4)
-                    .pr(spacing::X2 + if info_open { px(0.) } else { crate::chrome::caption_reserve(window) })
-                    .flex_shrink_0()
-                    .border_b_1()
-                    .border_color(palette.separator)
-                    .child(div().text_size(type_scale::TITLE.font_size).line_height(type_scale::TITLE.line_height).font_weight(FontWeight::SEMIBOLD).text_color(palette.text).flex_grow(1.).child("New message"))
-                    .child(IconButton::new("cancel-new-chat", IconName::Close, "Cancel (Esc)").on_click({
-                        let on_close = self.on_close.clone();
-                        move |_, window, cx| on_close(window, cx)
-                    })),
             )
-            .child(to_row)
-            .child(list)
-            .child(composer)
+            .child(separator())
+            .child(
+                v_flex()
+                    .id("new-chat-suggestions")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(rows)
+                    .when_some(fallback, |col, address| {
+                        let pick = address.clone();
+                        col.child(
+                            div()
+                                .id("new-chat-fallback")
+                                .px_4()
+                                .py_2()
+                                .on_tap(cx.listener(move |this, _: &TapEvent, _, cx| this.add(pick.clone(), None, cx)))
+                                .child(text(format!("Message {}", format_address(&address)))),
+                        )
+                    })
+                    .when(self.recipients.is_empty() && self.query.is_empty(), |col| {
+                        col.child(
+                            v_flex()
+                                .items_center()
+                                .pt_8()
+                                .gap_1()
+                                .child(label("Who Is This Going To?").text_style(TextStyle::Headline))
+                                .child(label("Type a name, phone number or email above.").secondary()),
+                        )
+                    })
+                    .when(self.error, |col| {
+                        col.child(label("Could not start the conversation.").tone(LabelTone::Danger).mx_4())
+                    }),
+            )
+            .child(
+                div().px_4().py_2().child(
+                    composer("new-chat-composer", &self.draft)
+                        .placeholder(if self.recipients.is_empty() { "Add someone first" } else { "iMessage" })
+                        .disabled(self.busy)
+                        .without_attach()
+                        .on_event(cx.listener(move |this, e: &ComposerEvent, _, cx| {
+                            if *e == ComposerEvent::Send {
+                                this.send(cx);
+                            } else {
+                                this.draft.apply(e);
+                            }
+                            cx.notify();
+                        })),
+                ),
+            )
+            .when(!ready, |col| col)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addresses_are_phone_numbers_or_emails() {
+        assert!(is_address("+1 (555) 010-2000"));
+        assert!(is_address("someone@example.com"));
+        assert!(!is_address("12345"));
+        assert!(!is_address("someone@example"));
+        assert_eq!(normalize(" +1 (555) 010-2000 "), "+15550102000");
+        assert_eq!(normalize(" Someone@Example.com "), "someone@example.com");
     }
 }

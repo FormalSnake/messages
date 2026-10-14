@@ -1,18 +1,16 @@
-//! Port of the change-notification path in `docs/rust-architecture.md`
-//! ("How a change reaches a view"): a `StoreEvent` broadcast turns into a
-//! `cx.notify()` on only the entities watching the topic it touched.
-//!
-//! One foreground task (`Bridge::drain`) owns the store's broadcast receiver.
-//! Views never read the channel themselves; they call `bridge.watch(topic,
-//! cx.entity().downgrade().into())` once, in their constructor.
+//! Store events to view notifies (docs/rust-architecture.md, "How a change reaches a view"): a
+//! `StoreEvent` broadcast turns into `cx.notify` on only the entities watching the topic it
+//! touched. Views register once with `Bridge::watch(cx, topic, &cx.weak_entity())`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use gpui_kit::{AnyWeakEntity, App, Global};
 use messages_core::config::Config;
 use messages_core::conversations::conversation_guid;
 use messages_core::store::Incoming;
 use messages_core::{MessagesStore, StoreEvent};
+use nd::prelude::*;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Topic {
@@ -35,61 +33,70 @@ pub enum Topic {
     GifFavorites,
 }
 
-/// Registry of who watches what. A GPUI [`Global`]: every access is from the
-/// foreground thread (a view's constructor, or `Bridge::drain`'s own task),
-/// so no lock is needed.
+struct Watcher {
+    id: EntityId,
+    alive: Box<dyn Fn() -> bool>,
+}
+
 #[derive(Default)]
-pub struct Bridge {
-    watchers: HashMap<Topic, Vec<AnyWeakEntity>>,
-    /// `StoreEvent::Incoming` has no per-view watcher; app.rs registers one
-    /// handler here to post the desktop notification.
-    on_incoming: Option<Box<dyn Fn(&Incoming, &mut App)>>,
-    /// Bumped by every `drain`, so the task of a store that was replaced stops.
+struct State {
+    watchers: HashMap<Topic, Vec<Watcher>>,
+    on_incoming: Option<Rc<dyn Fn(&Incoming, &mut App)>>,
+    /// Bumped by every `drain`, so the pump of a store that was replaced stops.
     epoch: u64,
 }
 
-impl Global for Bridge {}
+/// An app global. nd's `App` hands out globals by shared reference only, so the state sits in
+/// a `RefCell`.
+#[derive(Default)]
+pub struct Bridge(RefCell<State>);
 
 impl Bridge {
     pub fn install(cx: &mut App) {
         cx.set_global(Bridge::default());
+        cx.set_global(StoreHandle(None));
     }
 
-    /// Registers interest in `topic`. Call once per topic from the watching
-    /// view's constructor with `cx.entity().downgrade().into()`.
-    pub fn watch(cx: &mut App, topic: Topic, entity: AnyWeakEntity) {
-        cx.global_mut::<Bridge>().watchers.entry(topic).or_default().push(entity);
+    fn get(cx: &mut App) -> std::cell::RefMut<'_, State> {
+        if !cx.has_global::<Bridge>() {
+            cx.set_global(Bridge::default());
+        }
+        cx.global::<Bridge>().0.borrow_mut()
     }
 
-    /// Drops `entity`'s interest in `topic`, and the topic itself once nobody
-    /// watches it, so a view that moves between chats stops repainting for
-    /// the ones it left.
-    pub fn unwatch(cx: &mut App, topic: &Topic, entity: &AnyWeakEntity) {
-        let watchers = &mut cx.global_mut::<Bridge>().watchers;
+    /// Registers `entity`'s interest in `topic`; a second call for the same pair is a no-op.
+    pub fn watch<V: 'static>(cx: &mut App, topic: Topic, entity: &WeakEntity<V>) {
+        let id = entity.entity_id();
+        let weak = entity.clone();
+        let mut state = Self::get(cx);
+        let watchers = state.watchers.entry(topic).or_default();
+        if !watchers.iter().any(|w| w.id == id) {
+            watchers.push(Watcher { id, alive: Box::new(move || weak.upgrade().is_some()) });
+        }
+    }
+
+    /// Drops `entity`'s interest in `topic`, and the topic once nobody watches it.
+    pub fn unwatch(cx: &mut App, topic: &Topic, id: EntityId) {
+        let mut state = Self::get(cx);
+        let watchers = &mut state.watchers;
         let Some(entities) = watchers.get_mut(topic) else { return };
-        entities.retain(|weak| weak.entity_id() != entity.entity_id() && weak.is_upgradable());
+        entities.retain(|w| w.id != id && (w.alive)());
         if entities.is_empty() {
             watchers.remove(topic);
         }
     }
 
-    /// app.rs's single handler for `StoreEvent::Incoming`: post a desktop
-    /// notification when the window is not focused, per
-    /// docs/rust-parity.md "Notification click activates the window...".
+    /// The one handler for `StoreEvent::Incoming` (the desktop notification).
     pub fn on_incoming(cx: &mut App, handler: impl Fn(&Incoming, &mut App) + 'static) {
-        cx.global_mut::<Bridge>().on_incoming = Some(Box::new(handler));
+        Self::get(cx).on_incoming = Some(Rc::new(handler));
     }
 
-    /// Every member chat guid a `StoreEvent` names is folded to the primary
-    /// conversation guid it belongs to, so a raw socket event and the merged
-    /// thread it repaints agree on one topic key.
+    /// Every member chat guid an event names folds to its conversation's primary guid, so a raw
+    /// socket event and the merged thread it repaints agree on one topic.
     fn topics_for(cx: &App, event: &StoreEvent) -> Vec<Topic> {
-        let fold = |guid: &str| {
-            let store = cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone());
-            match store {
-                Some(store) => conversation_guid(&store.state().grouping, guid).to_owned(),
-                None => guid.to_owned(),
-            }
+        let fold = |guid: &str| match store(cx) {
+            Some(store) => conversation_guid(&store.state().grouping, guid).to_owned(),
+            None => guid.to_owned(),
         };
         match event {
             StoreEvent::Connection => vec![Topic::Connection],
@@ -109,99 +116,94 @@ impl Bridge {
             StoreEvent::Error => vec![Topic::Error],
             StoreEvent::Exporting => vec![Topic::Exporting],
             StoreEvent::GifFavorites => vec![Topic::GifFavorites],
-            // Handled through `on_incoming`, not the topic map.
             StoreEvent::Incoming(_) => vec![],
         }
     }
 
     fn dispatch(cx: &mut App, topic: &Topic) {
-        let watchers = &mut cx.global_mut::<Bridge>().watchers;
-        let Some(entities) = watchers.get_mut(topic) else { return };
-        entities.retain(|weak| weak.is_upgradable());
-        let entities = entities.clone();
-        if entities.is_empty() {
-            watchers.remove(topic);
-        }
-        for weak in entities {
-            cx.notify(weak.entity_id());
+        let ids: Vec<EntityId> = {
+            let mut state = Self::get(cx);
+            let watchers = &mut state.watchers;
+            let Some(entities) = watchers.get_mut(topic) else { return };
+            entities.retain(|w| (w.alive)());
+            let ids = entities.iter().map(|w| w.id).collect::<Vec<_>>();
+            if ids.is_empty() {
+                watchers.remove(topic);
+            }
+            ids
+        };
+        for id in ids {
+            cx.notify(id);
         }
     }
 
     fn dispatch_all(cx: &mut App) {
-        let topics: Vec<Topic> = cx.global::<Bridge>().watchers.keys().cloned().collect();
+        let topics: Vec<Topic> = Self::get(cx).watchers.keys().cloned().collect();
         for topic in topics {
-            Bridge::dispatch(cx, &topic);
+            Self::dispatch(cx, &topic);
         }
     }
 
-    fn dispatch_incoming(cx: &mut App, incoming: &Incoming) {
-        // Take the handler out for the call so it can take `&mut App` itself
-        // (Rust cannot borrow `cx` mutably while `Bridge` still borrows it).
-        let Some(handler) = cx.global_mut::<Bridge>().on_incoming.take() else { return };
-        handler(incoming, cx);
-        cx.global_mut::<Bridge>().on_incoming = Some(handler);
+    /// Delivers one store event; the pump and tests call it.
+    pub fn deliver(cx: &mut App, event: Result<StoreEvent, tokio::sync::broadcast::error::RecvError>) {
+        match event {
+            Ok(StoreEvent::Incoming(incoming)) => {
+                let handler = Self::get(cx).on_incoming.clone();
+                if let Some(handler) = handler {
+                    handler(&incoming, cx);
+                }
+            }
+            Ok(event) => {
+                for topic in Self::topics_for(cx, &event) {
+                    Self::dispatch(cx, &topic);
+                }
+            }
+            // A lagged receiver missed events: every registered view repaints once.
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Self::dispatch_all(cx),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
+        }
     }
 
-    /// Runs for the life of the app: one task draining the store's broadcast
-    /// receiver and turning each event into `cx.notify()` calls.
+    /// Makes `store` current and pumps its broadcast channel into views for as long as it is.
     pub fn drain(cx: &mut App, store: MessagesStore) {
         cx.set_global(StoreHandle(Some(store.clone())));
         let epoch = {
-            let bridge = cx.global_mut::<Bridge>();
-            bridge.epoch += 1;
-            bridge.epoch
+            let mut state = Self::get(cx);
+            state.epoch += 1;
+            state.epoch
         };
-        cx.spawn(async move |cx| {
-            let mut events = store.events();
-            drop(store);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut events = store.events();
+        crate::rt::handle().spawn(async move {
             loop {
                 let event = events.recv().await;
-                if cx.update(|cx| cx.global::<Bridge>().epoch != epoch) {
+                let closed = matches!(event, Err(tokio::sync::broadcast::error::RecvError::Closed));
+                if tx.send(event).is_err() || closed {
                     break;
                 }
-                match event {
-                    Ok(StoreEvent::Incoming(incoming)) => {
-                        let _ = cx.update(|cx| Bridge::dispatch_incoming(cx, &incoming));
-                    }
-                    Ok(event) => {
-                        let _ = cx.update(|cx: &mut App| {
-                            for topic in Bridge::topics_for(cx, &event) {
-                                Bridge::dispatch(cx, &topic);
-                            }
-                        });
-                    }
-                    // A lagged receiver missed events; the safe answer is
-                    // "everything changed", so every registered view repaints once.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        let _ = cx.update(Bridge::dispatch_all);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
             }
-        })
-        .detach();
+        });
+        crate::rt::pump(rx, move |event, cx| {
+            let current = Self::get(cx).epoch == epoch;
+            if current {
+                Self::deliver(cx, event);
+            }
+        });
     }
 }
 
-/// The current store, if construction succeeded. A [`Global`] so
-/// `topics_for`'s conversation-guid folding can reach `state().grouping`
-/// without threading the store through every call site.
+/// The current store, once a connection (or the demo) is configured.
 #[derive(Clone, Default)]
 pub struct StoreHandle(pub Option<MessagesStore>);
 
-impl Global for StoreHandle {}
+pub fn store(cx: &App) -> Option<MessagesStore> {
+    cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone())
+}
 
-/// The loaded `config.json` (plus env overrides). Views read the optional
-/// integrations (Klipy, CanaryLLM) from here rather than loading it again.
+/// The effective core config: `config.json` with the settings and environment over it.
 #[derive(Clone, Default)]
 pub struct ConfigHandle(pub Config);
 
-impl Global for ConfigHandle {}
-
 pub fn config(cx: &App) -> Option<&Config> {
     cx.try_global::<ConfigHandle>().map(|handle| &handle.0)
-}
-
-pub fn store(cx: &App) -> Option<MessagesStore> {
-    cx.try_global::<StoreHandle>().and_then(|handle| handle.0.clone())
 }

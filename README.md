@@ -1,18 +1,20 @@
-<p align="center"><img src="packaging/linux/es.canarycoders.messages.png" width="160" alt="Messages icon"></p>
+<p align="center"><img src="packaging/linux/dev.formalsnake.messages.png" width="160" alt="Messages icon"></p>
 
 # Messages
 
-iMessage on Linux. A native Rust client (GPUI) that talks to a
+iMessage on Linux and macOS. A native Rust client on
+[NativeDesktop](https://github.com/FormalSnake/NativeDesktop) (AppKit on macOS, GPUI on
+Linux) that talks to a
 [BlueBubbles server](https://github.com/BlueBubblesApp/bluebubbles-server)
 running on your Mac.
 
 ![A group thread](docs/images/thread.png)
 
 ```
- Linux / Windows                        Mac
+ Linux / macOS                          Mac
 ┌──────────────────┐  http + socket.io  ┌──────────────────────────────┐
 │ Messages (Rust)  │ ─────────────────▶ │ BlueBubbles server           │
-│ GPUI, Vulkan     │ ◀───────────────── │ reads chat.db, drives        │
+│ NativeDesktop    │ ◀───────────────── │ reads chat.db, drives        │
 └──────────────────┘                    │ Messages.app (Private API)   │
                                         └──────────────────────────────┘
 ```
@@ -71,7 +73,8 @@ Home Manager:
     enable = true;
     autostart = true;                             # start with the graphical session
     environmentFile = "/run/agenix/messages.env"; # optional, server password etc.
-    theme = { accent = "#6099c0"; };              # optional, writes theme.json
+    settings.notifications = true;                # typed, written to config.toml
+    theme = { primary = "#6099c0"; };             # optional, writes theme.json
   };
 }
 ```
@@ -96,7 +99,8 @@ This installs `~/.local/bin/messages` and a desktop entry.
 ### Windows
 
 Install [rustup](https://rustup.rs) and the Visual Studio C++ build tools, then
-`cargo run --release -p messages`.
+`cargo run --release -p messages`. NativeDesktop's Windows backend has not run yet, so this
+build is untested there; the GPUI build before the port (`d12b662`) is the one known to work.
 
 ## Mac setup
 
@@ -110,7 +114,20 @@ messages` runs on fixtures with no Mac.
 
 ## Configuration
 
-`~/.config/messages/config.json` (the app writes the server part itself):
+Settings live in `config.toml` (`~/.config/messages/` on Linux,
+`~/Library/Application Support/messages/` on macOS), editable from the settings window
+(`Cmd+,`), from Nix as `programs.messages.settings`, or per key as `MESSAGES_<KEY>`
+(`MESSAGES_SERVER_URL`, `MESSAGES_DEMO=1`):
+
+```toml
+server_url = "http://your-mac:1234"
+agent_url = "http://your-mac:1236"
+notifications = true
+tray = true
+```
+
+Secrets stay in `~/.config/messages/config.json`, which the app writes itself (and which
+also holds per-chat pins and mutes):
 
 ```json
 {
@@ -120,16 +137,15 @@ messages` runs on fixtures with no Mac.
 }
 ```
 
-Environment overrides: `MESSAGES_SERVER_URL` + `MESSAGES_SERVER_PASSWORD`,
-`MESSAGES_AGENT_URL` + `MESSAGES_AGENT_TOKEN`, `MESSAGES_KLIPY_KEY`,
-`MESSAGES_CANARYLLM_KEY`, `MESSAGES_FONT`.
+Environment overrides for the secrets: `MESSAGES_SERVER_PASSWORD`,
+`MESSAGES_AGENT_TOKEN`, `MESSAGES_KLIPY_KEY`, `MESSAGES_CANARYLLM_KEY`.
 
-`~/.config/messages/theme.json` overrides palette tokens (fields of `Palette`
-in `crates/desktop/src/theme.rs`) and is reloaded live, so matugen can drive it:
+The first launch after the GPUI build (app id `es.canarycoders.messages`) moves the server,
+agent and notification settings out of `config.json` into `config.toml`; caches stay where
+they were. The app id is now `dev.formalsnake.messages`.
 
-```json
-{ "canvas": "#1c1917", "text": "#b4bdc3", "accent": "#6099c0" }
-```
+On Linux, `~/.config/messages/theme.json` is a matugen palette in NativeDesktop's format
+(Material roles such as `primary` and `surface`, per scheme), reloaded live.
 
 ### Mac agent
 
@@ -155,7 +171,7 @@ snapshots, and pins, mutes and GIF favorites synced across clients.
 | `Ctrl+1` to `Ctrl+6` | tapback the last message |
 | `Shift+Ctrl+U` | mark unread |
 
-`Cmd` on macOS. Right-click the send button to schedule a message.
+`Cmd` on macOS. The clock beside the composer schedules a message.
 
 ## Development
 
@@ -167,8 +183,9 @@ bun run agent                                     # the Mac agent
 ```
 
 `crates/core` is the store, transport and BlueBubbles client with no UI
-dependencies. `crates/desktop` is the window. `CLAUDE.md` has the
-architecture notes.
+dependencies. `crates/desktop` is the window on NativeDesktop, checked out beside this repo
+(`../nativedesktop`). `CLAUDE.md` has the architecture notes, `docs/nd-parity.md` what the
+port keeps of the GPUI build.
 
 ## License
 
