@@ -222,8 +222,9 @@ fn real_launch_focuses_the_message_field() {
     assert!(focused.iter().any(|id| id == "composer.field"), "the message field has focus, not {focused:?}");
 }
 
-/// A real two-finger swipe right over a received bubble (posted at the HID tap), then back:
-/// frames across the un-swipe, so the revealed reply action can be checked for clipping.
+/// A real two-finger swipe right over a received bubble (posted at the HID tap) opens Reply; a
+/// click elsewhere closes it, with frames across the close so the arrow can be checked for
+/// clipping.
 #[cfg(target_os = "macos")]
 #[test]
 fn real_swipe_to_reply_and_back_is_captured() {
@@ -257,37 +258,24 @@ fn real_swipe_to_reply_and_back_is_captured() {
     };
     ndshell::input::move_to(at);
     std::thread::sleep(Duration::from_millis(200));
-    // Whether posted trackpad scrolls reach the window at all: a vertical one moves the rows.
-    let y = |app: &nd_test::AppHandle| app.get_by_test_id("row-demo-msg-0012").bounding_box().ok().flatten().map(|b| b.y);
-    let before = y(&app);
-    ndshell::input::post(scroll_event(at, 0, 0, GesturePhase::Began));
-    for _ in 0..10 {
-        std::thread::sleep(Duration::from_millis(16));
-        ndshell::input::post(scroll_event(at, 0, 30, GesturePhase::Changed));
-    }
-    ndshell::input::post(scroll_event(at, 0, 0, GesturePhase::Ended));
-    std::thread::sleep(Duration::from_millis(600));
-    println!("vertical scroll moved the row from {before:?} to {:?}", y(&app));
-    let row = app.get_by_test_id("row-demo-msg-0012").bounding_box().unwrap().expect("laid out");
-    let at = (f64::from(frame.origin.x + row.x + row.width / 3.), f64::from(frame.origin.y + row.y + row.height / 2.));
-    let post = |dx: i32, phase: GesturePhase| {
-        ndshell::input::post(scroll_event(at, dx, 0, phase));
-        std::thread::sleep(Duration::from_millis(16));
-    };
-    ndshell::input::move_to(at);
-    std::thread::sleep(Duration::from_millis(200));
+    // AppKit offers no row actions on the first gesture after launch: a still one goes first.
+    post(0, GesturePhase::Began);
+    post(0, GesturePhase::Ended);
+    std::thread::sleep(Duration::from_millis(300));
+    // Fingers to the right: the row slides right and shows Reply, which stays open once the
+    // fingers lift.
     post(0, GesturePhase::Began);
     for _ in 0..15 {
         post(20, GesturePhase::Changed);
     }
-    shoot("out");
-    for i in 0..10 {
-        post(-30, GesturePhase::Changed);
-        if i % 3 == 2 {
-            shoot(&format!("back-{i}"));
-        }
-    }
     post(0, GesturePhase::Ended);
+    std::thread::sleep(Duration::from_millis(700));
+    shoot("open");
+    // A click elsewhere closes it: the row slides back over the arrow, shot as it goes.
+    ndshell::input::click((at.0 + 400., at.1));
+    for i in 0..6 {
+        shoot(&format!("back-{i}"));
+    }
     for i in 0..4 {
         std::thread::sleep(Duration::from_millis(60));
         shoot(&format!("settle-{i}"));

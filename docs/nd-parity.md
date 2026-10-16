@@ -14,8 +14,8 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 6 boxes are open: four Linux, Windows and Nix legs out of this
-run, the F12 HUD nd has not shipped, and swipe to reply, which a posted swipe does not drive.
+Status: **not at parity.** 5 boxes are open: four Linux, Windows and Nix legs out of this
+run, and the F12 HUD nd has not shipped.
 The GPUI build stays the default until they close.
 
 ## App shell and layout
@@ -70,7 +70,7 @@ The GPUI build stays the default until they close.
 - [x] Send (t3: sending shows the bubble and clears the field)
 - [x] Rows newer than open fade in (t3 `parity::real_a_new_row_fades_in`, frames); late tapbacks fade in (nd tier 2 `msg_gaps`)
 - [x] Timestamp column on hover (t3 `shots::real_hover_and_lightbox_video_are_captured`, shot)
-- [ ] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions); a two-finger swipe posted at the HID tap reaches the window (it scrolls vertically) but never opens the row action, so it is not seen working
+- [x] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions), a bare arrow that stays whole while the message slides back over it (t3 `shots::real_swipe_to_reply_and_back_is_captured`, a two-finger swipe posted at the HID tap, captured open and closing)
 
 ## Bubbles and attachments
 - [x] Run corners, tail on a run's last bubble, emoji-only large, reactions on the bubble (nd `chat_bubble`; shot)
