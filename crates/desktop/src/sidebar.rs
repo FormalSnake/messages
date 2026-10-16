@@ -22,7 +22,8 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const AVATAR_ROW: f32 = 44.;
 const PINNED_AVATAR: f32 = 52.;
 const PINNED_CELL: f32 = 92.;
-const PREVIEW_CHARS: usize = 90;
+/// Long enough that two lines of a row clip it, short enough to keep a novel out of the label.
+const PREVIEW_CHARS: usize = 300;
 const SEARCH_FAILED: &str = "Search failed. Try again.";
 const OPERATOR_TIPS: [&str; 4] = [
     "from:name or from:me",
@@ -272,7 +273,8 @@ impl Sidebar {
                     ),
             )
             .child(
-                text(ui::clamp_preview(&preview_text(Some(&message), &chat), PREVIEW_CHARS))
+                label(ui::clamp_preview(&preview_text(Some(&message), &chat), PREVIEW_CHARS))
+                    .lines(2)
                     .text_size(theme.type_scale.caption)
                     .text_color(theme.text.secondary),
             )
@@ -444,14 +446,14 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
                         .gap_1()
                         .child(text(chat_title(&chat)).font_weight(FontWeight::SEMIBOLD).flex_1().min_w_0())
                         .when(silenced, |row| {
-                            row.child(text("\u{263e}").text_size(theme.type_scale.caption).text_color(secondary))
+                            row.child(icon(Icon::Moon, 11.).text_color(secondary).label("Focus on"))
                         })
                         .when(chat.muted, |row| {
-                            row.child(text("\u{1f515}").text_size(theme.type_scale.caption).text_color(secondary))
+                            row.child(icon(Icon::BellOff, 11.).text_color(secondary).label("Alerts hidden"))
                         })
                         .child(text(date).tabular_nums().text_size(theme.type_scale.caption).text_color(secondary)),
                 )
-                .child(text(preview).text_size(theme.type_scale.footnote).text_color(if typing && !selected {
+                .child(label(preview).lines(2).text_size(theme.type_scale.footnote).text_color(if typing && !selected {
                     theme.accent
                 } else {
                     secondary

@@ -92,8 +92,8 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// A preview cut to what two lines of a sidebar row hold; text has no line clamp on every
-/// backend, so the string is shortened before it gets there.
+/// A preview on one line (newlines and runs of spaces folded), cut at `max` characters on a
+/// word boundary.
 pub fn clamp_preview(text: &str, max: usize) -> String {
     let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if line.chars().count() <= max {
