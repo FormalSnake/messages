@@ -30,6 +30,12 @@ const HIGHLIGHT_FOR: Duration = Duration::from_millis(2200);
 const JUMP_OFFSET: f32 = -96.;
 /// Pages a jump loads at most looking for its message.
 const JUMP_PAGES: usize = 12;
+/// A row dated after the thread opened fades in; everything older paints at once. The slack
+/// covers the Mac's clock running a little behind this one.
+const ENTER_SLACK_MS: i64 = 5000;
+/// How long after its first render a new row still mounts with the fade.
+const ENTER_WINDOW: f64 = 0.4;
+const ENTER: Duration = Duration::from_millis(180);
 
 #[derive(Clone)]
 pub struct Assistant {
@@ -88,6 +94,13 @@ pub struct Thread {
     assistant: Option<Assistant>,
     assistant_loaded: bool,
     requested_older: bool,
+    /// When the open conversation was opened (`now_ms`), and the row keys it has shown.
+    opened_at: i64,
+    known: HashSet<String>,
+    /// New rows that fade in, with the frame time they first rendered at.
+    entering: HashMap<String, Option<f64>>,
+    /// The row under the pointer.
+    hovered: Option<String>,
 }
 
 impl Thread {
@@ -120,6 +133,10 @@ impl Thread {
             assistant: None,
             assistant_loaded: false,
             requested_older: false,
+            opened_at: 0,
+            known: HashSet::new(),
+            entering: HashMap::new(),
+            hovered: None,
         }
     }
 
@@ -218,6 +235,10 @@ impl Thread {
             self.translations.clear();
             self.lightbox = None;
             self.requested_older = false;
+            self.opened_at = ui::now_ms();
+            self.known.clear();
+            self.entering.clear();
+            self.hovered = None;
         }
         let is_group = chat.as_ref().is_some_and(|chat| chat.is_group);
         self.is_group = is_group;
@@ -239,6 +260,18 @@ impl Thread {
             ),
         };
         let slots = self.slots_for(&rows, &messages, &props);
+        if self.thread_for.is_none() {
+            let primed = !self.known.is_empty();
+            for (key, slot) in &slots {
+                if self.known.insert(key.clone())
+                    && primed
+                    && let Slot::Message { data, .. } = slot
+                    && data.message.date > self.opened_at - ENTER_SLACK_MS
+                {
+                    self.entering.insert(key.clone(), None);
+                }
+            }
+        }
         let mut keyed = Vec::with_capacity(slots.len());
         let mut map = HashMap::with_capacity(slots.len());
         for (key, slot) in slots {
@@ -317,6 +350,7 @@ impl Thread {
                         highlighted: self.highlight.as_deref() == Some(message.guid.as_str()),
                         translation: self.translations.get(&message.guid).cloned(),
                         picker: self.picker.as_deref() == Some(message.guid.as_str()),
+                        hovered: self.hovered.as_deref() == Some(data.key.as_str()),
                     };
                     (data.key.clone(), Slot::Message { data: data.clone(), props })
                 }
@@ -520,13 +554,25 @@ impl Thread {
     pub fn show_attachment(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
         let Some(store) = bridge::store(cx) else { return };
         self.lightbox = crate::lightbox::Lightbox::open(&store, reference);
+        self.fetch_lightbox(cx);
         cx.notify();
     }
 
     pub fn step_lightbox(&mut self, delta: isize, cx: &mut Context<Self>) {
         if let Some(lightbox) = self.lightbox.as_mut() {
             lightbox.step(delta);
+            self.fetch_lightbox(cx);
             cx.notify();
+        }
+    }
+
+    /// Downloads what the lightbox shows when the thread left it for a click.
+    fn fetch_lightbox(&mut self, cx: &mut Context<Self>) {
+        let Some(lightbox) = self.lightbox.as_ref() else { return };
+        if lightbox.needs_download() && let Some(reference) = lightbox.current()
+            && !self.media.fetching.contains(&reference.attachment)
+        {
+            self.download(&reference, cx);
         }
     }
 
@@ -686,14 +732,48 @@ impl Thread {
         });
     }
 
-    fn row(&mut self, key: String, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn row(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let slot = self.slots.borrow().get(&key).cloned();
         match slot {
             None => div().into_any_element(),
             Some(Slot::Caption { text, strong }) => message::caption_row(&key, &text, strong, &theme),
             Some(Slot::Typing) => message::typing_row(self.lit, self.typing_who.as_ref(), self.is_group, &theme),
-            Some(Slot::Message { data, props }) => message::render(&data, &props, &self.media, &theme),
+            Some(Slot::Message { data, props }) => {
+                let entering = match self.entering.get_mut(&key) {
+                    Some(first) => {
+                        let now = window.now();
+                        let started = *first.get_or_insert(now);
+                        let fresh = now - started < ENTER_WINDOW;
+                        if !fresh {
+                            self.entering.remove(&key);
+                        }
+                        fresh
+                    }
+                    None => false,
+                };
+                let hover_key = key.clone();
+                div()
+                    .w_full()
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| this.hover_row(&hover_key, *hovered, cx)))
+                    .when(entering, |row| row.animate(Animation::ease_out(ENTER)).enter_from(|pose| pose.opacity(0.)))
+                    .child(message::render(&data, &props, &self.media, &theme))
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn hover_row(&mut self, key: &str, hovered: bool, cx: &mut Context<Self>) {
+        let next = if hovered {
+            Some(key.to_owned())
+        } else if self.hovered.as_deref() == Some(key) {
+            None
+        } else {
+            return;
+        };
+        if next != self.hovered {
+            self.hovered = next;
+            cx.notify();
         }
     }
 
@@ -766,6 +846,19 @@ fn reply_rows(messages: &[Arc<Message>], root: &str, is_group: bool) -> Vec<Row>
         .collect()
 }
 
+/// Swiping a message right replies to it, as in Messages: the table's leading row action, run
+/// by a full swipe.
+fn reply_action(slots: &HashMap<String, Slot>, key: &str) -> RowActions {
+    match slots.get(key) {
+        Some(Slot::Message { data, props }) if props.capabilities.replies && !message::failed(&data.message) => {
+            RowActions::new()
+                .leading(row_action("Reply").icon("reply").dispatch(Reply(message::at(data))))
+                .full_swipe(RowEdge::Leading)
+        }
+        _ => RowActions::new(),
+    }
+}
+
 /// What a row's output depends on, hashed: the list re-renders a row only when it moves.
 fn version(slot: &Slot, media: &Media) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -779,6 +872,7 @@ fn version(slot: &Slot, media: &Media) -> u64 {
             data.receipt.as_ref().map(|r| (&r.text, r.failed)).hash(&mut h);
             (&props.quote, &props.replies, props.highlighted, &props.translation, props.assistant, props.picker)
                 .hash(&mut h);
+            props.hovered.hash(&mut h);
             format!("{:?}", props.capabilities).hash(&mut h);
             for attachment in &data.message.attachments {
                 let guid = &attachment.guid;
@@ -844,8 +938,10 @@ impl Render for Thread {
                 .child(label("Loading earlier messages\u{2026}").secondary())
                 .into_any_element()
         } else {
+            let slots = self.slots.clone();
             list("thread", &self.list, cx.processor(Self::row))
                 .estimated_row_height(px(44.))
+                .row_actions(move |key: String, _| reply_action(&slots.borrow(), &key))
                 .on_near_start({
                     let weak = cx.weak_entity();
                     move |_, cx| {

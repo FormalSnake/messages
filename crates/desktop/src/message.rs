@@ -11,9 +11,12 @@ use messages_core::format::{format_bytes, format_time, is_emoji_only};
 use messages_core::image::{ImageSize, fit_inside};
 use messages_core::open::{TextSegment, split_links};
 use messages_core::{
-    Attachment, Capabilities, DeliveryState, Message, MessagePart, Service, delivery_state, handle_name,
+    Attachment, Capabilities, DeliveryState, Message, MessagePart, RichRun, Service, TextEffect, delivery_state,
+    handle_name,
 };
 use nd::prelude::*;
+use nd::components::media::BUBBLE;
+use nd::theme::FillRole;
 
 use crate::actions::*;
 use crate::rows::{EDIT_WINDOW_MS, MessageRowData, TapbackGroup, UNSEND_WINDOW_MS, effect_name, tapback_groups};
@@ -30,6 +33,8 @@ const LINK_CARD_WIDTH: f32 = 280.;
 const GRID_SIDE: f32 = 128.;
 const GRID_MAX_TILES: usize = 4;
 pub const AVATAR_COLUMN: f32 = 28.;
+/// The time beside a hovered row's bubble.
+const TIME_COLUMN: f32 = 54.;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Quote {
@@ -60,6 +65,8 @@ pub struct RowProps {
     pub translation: Option<Translation>,
     /// The tapback picker is open on this message.
     pub picker: bool,
+    /// The pointer is over the row: its time shows beside the bubble.
+    pub hovered: bool,
 }
 
 /// Downloads the thread started for its attachments, and what came of them.
@@ -80,7 +87,7 @@ pub enum Block {
     Photos(Vec<Attachment>),
     Attachment(Attachment),
     Link { href: String, host: String, matches: bool },
-    Text { subject: Option<String>, body: String },
+    Text { subject: Option<String>, body: RichText },
     Preview,
 }
 
@@ -159,6 +166,66 @@ pub fn emoji_only(message: &Message) -> bool {
 /// The blocks a body paints, in order: the photo grid, the attachments the attributed body did
 /// not place, then the parts with every link split into its own card, and the rich preview last
 /// when no link carried it.
+/// iMessage's Big and Small effects against the bubble's 14.5 pt text (22 pt and 11 pt).
+const BIG_SCALE: f32 = 22. / 14.5;
+const SMALL_SCALE: f32 = 11. / 14.5;
+
+/// The attributed body only marks links someone typed as a link, so bare URLs get the same
+/// pass the plain text path gives them.
+fn linkify(runs: &[RichRun]) -> Vec<RichRun> {
+    let mut out = Vec::new();
+    for run in runs {
+        if run.link.is_some() || run.mention.is_some() {
+            out.push(run.clone());
+            continue;
+        }
+        for segment in split_links(&run.text) {
+            match segment {
+                TextSegment::Link { text, href } => out.push(RichRun { text, link: Some(href), ..run.clone() }),
+                TextSegment::Text(text) => out.push(RichRun { text, ..run.clone() }),
+            }
+        }
+    }
+    out
+}
+
+/// One run of the attributed body as an nd span. Mentions are bold in the accent, underlines
+/// take the accent too, as in Messages.
+fn span_of(run: &RichRun) -> Span {
+    let mut span = span(run.text.clone());
+    if run.bold || run.mention.is_some() {
+        span = span.bold();
+    }
+    if run.italic {
+        span = span.italic();
+    }
+    if run.underline {
+        span = span.underline().color(TextColor::Accent);
+    }
+    if run.strike {
+        span = span.strikethrough();
+    }
+    if run.mention.is_some() {
+        span = span.mention();
+    }
+    match run.effect {
+        Some(TextEffect::Big) => span.scale(BIG_SCALE),
+        Some(TextEffect::Small) => span.scale(SMALL_SCALE),
+        _ => span,
+    }
+}
+
+fn rich_body(runs: &[RichRun]) -> RichText {
+    let mut runs = runs.to_vec();
+    if let Some(first) = runs.first_mut() {
+        first.text = first.text.trim_start().to_owned();
+    }
+    if let Some(last) = runs.last_mut() {
+        last.text = last.text.trim_end().to_owned();
+    }
+    RichText::new(runs.iter().map(span_of))
+}
+
 pub fn blocks_of(message: &Message) -> Vec<Block> {
     if emoji_only(message) {
         return Vec::new();
@@ -209,7 +276,7 @@ pub fn blocks_of(message: &Message) -> Vec<Block> {
             match segment {
                 TextSegment::Link { href, .. } => push_link(blocks, href),
                 TextSegment::Text(value) if !value.trim().is_empty() => {
-                    blocks.push(Block::Text { subject: None, body: value.trim().to_owned() })
+                    blocks.push(Block::Text { subject: None, body: RichText::new([value.trim().to_owned()]) })
                 }
                 TextSegment::Text(_) => {}
             }
@@ -228,20 +295,22 @@ pub fn blocks_of(message: &Message) -> Vec<Block> {
                     }
                 }
                 MessagePart::Text { runs } => {
-                    // Runs flatten to their text: bold, italic, mentions and sized effects have
-                    // no rich text to land in (see the port notes in the README).
-                    let mut text = String::new();
-                    for run in runs {
-                        match &run.link {
-                            Some(href) if !text.is_empty() || !run.text.is_empty() => {
-                                push_text(&mut blocks, &std::mem::take(&mut text), &mut push_link);
-                                push_link(&mut blocks, href.clone());
-                            }
-                            Some(href) => push_link(&mut blocks, href.clone()),
-                            None => text.push_str(&run.text),
+                    let mut pending: Vec<RichRun> = Vec::new();
+                    let flush = |pending: &mut Vec<RichRun>, blocks: &mut Vec<Block>| {
+                        if pending.iter().any(|run| !run.text.trim().is_empty()) {
+                            blocks.push(Block::Text { subject: None, body: rich_body(pending) });
                         }
+                        pending.clear();
+                    };
+                    for run in linkify(runs) {
+                        if let Some(href) = run.link.clone() {
+                            flush(&mut pending, &mut blocks);
+                            push_link(&mut blocks, href);
+                            continue;
+                        }
+                        pending.push(run);
                     }
-                    push_text(&mut blocks, &text, &mut push_link);
+                    flush(&mut pending, &mut blocks);
                 }
             }
         }
@@ -252,7 +321,7 @@ pub fn blocks_of(message: &Message) -> Vec<Block> {
     if let Some(subject) = message.subject.as_ref().filter(|subject| !subject.is_empty()) {
         match blocks.iter_mut().find(|block| matches!(block, Block::Text { .. })) {
             Some(Block::Text { subject: slot, .. }) => *slot = Some(subject.clone()),
-            _ => blocks.insert(0, Block::Text { subject: Some(subject.clone()), body: String::new() }),
+            _ => blocks.insert(0, Block::Text { subject: Some(subject.clone()), body: RichText::default() }),
         }
     }
     if preview.is_some() && !preview_rendered {
@@ -261,11 +330,11 @@ pub fn blocks_of(message: &Message) -> Vec<Block> {
     blocks
 }
 
-fn at(data: &MessageRowData) -> MessageRef {
+pub(crate) fn at(data: &MessageRowData) -> MessageRef {
     MessageRef { chat: data.message.chat_guid.clone(), message: data.message.guid.clone() }
 }
 
-fn failed(message: &Message) -> bool {
+pub(crate) fn failed(message: &Message) -> bool {
     delivery_state(message) == DeliveryState::Failed
 }
 
@@ -358,12 +427,52 @@ fn reactions(groups: &[TapbackGroup]) -> Vec<Reaction> {
     groups.iter().map(|g| Reaction { glyph: g.glyph.clone().into(), count: g.count as u32, mine: g.mine }).collect()
 }
 
-/// One block that is not text.
+/// The tail of a block that ends a run, in the block's fill at its bottom outer corner, the
+/// shape `chat_bubble` gives a text block: it starts inside the block's rounded corner and
+/// curves out past its edge.
+fn with_tail(block: AnyElement, side: BubbleSide, fill: Hsla) -> AnyElement {
+    let (tw, th) = (BUBBLE.tail_width, BUBBLE.tail_height);
+    let lobe = canvas(move |bounds, painter, _| {
+        let (x0, top) = (bounds.origin.x, bounds.origin.y);
+        let bottom = top + px(th);
+        let at = |x: f32, y: Pixels| point(x0 + px(x), y);
+        let path = match side {
+            BubbleSide::Sent => CanvasPath::new()
+                .move_to(at(0., top))
+                .line_to(at(th, top))
+                .quad_to(at(th, bottom - px(2.)), at(th + tw, bottom))
+                .quad_to(at(th - tw * 0.5, bottom), at(0., bottom - px(3.)))
+                .close(),
+            BubbleSide::Received => CanvasPath::new()
+                .move_to(at(tw + th, top))
+                .line_to(at(tw, top))
+                .quad_to(at(tw, bottom - px(2.)), at(0., bottom))
+                .quad_to(at(tw * 1.5, bottom), at(tw + th, bottom - px(3.)))
+                .close(),
+        };
+        painter.fill_path(path, fill);
+    })
+    .w(px(tw + th))
+    .h(px(th))
+    .absolute()
+    .bottom_0();
+    // The lobe hangs past the block into the room a text bubble keeps for its own tail, so the
+    // block lines up with the bubbles above it.
+    let (lobe, wrapper) = match side {
+        BubbleSide::Sent => (lobe.right(px(-tw)), div().mr(px(tw))),
+        BubbleSide::Received => (lobe.left(px(-tw)), div().ml(px(tw))),
+    };
+    // Under the block: the part of the lobe inside the block's corner is hidden by its fill.
+    wrapper.relative().child(lobe).child(block).into_any_element()
+}
+
+/// One block that is not text. `tail` is set when it ends a run.
 fn attachment_block(
     data: &MessageRowData,
     attachment: &Attachment,
     media: &Media,
     assistant: bool,
+    tail: Option<BubbleSide>,
     theme: &Theme,
 ) -> AnyElement {
     let message = &data.message;
@@ -386,13 +495,15 @@ fn attachment_block(
             } else {
                 media_dims(attachment)
             };
+            let tail = tail.filter(|_| !sticker);
             let picture = match attachment.local_path.as_ref().and_then(|p| ui::image_source(&p.to_string_lossy())) {
                 Some(source) => image(source)
                     .id(format!("img-{}", attachment.guid))
                     .alt(attachment.name.clone())
                     .when_some(attachment.width.zip(attachment.height), |img, (w, h)| img.size_hint(w, h))
                     .when(sticker, Image::contain)
-                    .w(px(w))
+                    .when_some(tail, |img, side| img.bubble_tail(side))
+                    .w(px(w + if tail.is_some() { BUBBLE.tail_width } else { 0. }))
                     .h(px(h))
                     .rounded_lg()
                     .into_any_element(),
@@ -432,23 +543,35 @@ fn attachment_block(
                 .filter(|p| !p.as_os_str().is_empty())
                 .and_then(|p| ui::image_source(&p.to_string_lossy()));
             let duration = attachment.duration_ms.map(format_duration).unwrap_or_default();
-            let open = OpenAttachment(reference);
-            div()
+            // A click plays it in the lightbox once it is here, and fetches it before that.
+            let local = attachment.local_path.is_some();
+            let (show, download) = (ShowAttachment(reference.clone()), Download(reference));
+            // With a poster the tail is cut from it; without one the box takes a plain tail.
+            let poster_tail = tail.filter(|_| poster.is_some());
+            let box_w = w + if poster_tail.is_some() { BUBBLE.tail_width } else { 0. };
+            let block = div()
                 .id(id)
-                .w(px(w))
+                .w(px(box_w))
                 .h(px(h))
                 .rounded_lg()
-                .bg(theme.surface.raised)
+                .when(poster.is_none(), |el| el.bg(theme.surface.raised))
                 .flex()
                 .items_center()
                 .justify_center()
-                .on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, open.clone()))
+                .on_tap(move |_, window, cx| {
+                    if local {
+                        crate::ui::dispatch(window, cx, show.clone());
+                    } else {
+                        crate::ui::dispatch(window, cx, download.clone());
+                    }
+                })
                 .context_menu(menu)
                 .when_some(poster, |el, poster| {
                     el.child(
                         image(poster)
                             .alt(attachment.name.clone())
-                            .w(px(w))
+                            .when_some(poster_tail, |img, side| img.bubble_tail(side))
+                            .w(px(box_w))
                             .h(px(h))
                             .rounded_lg()
                             .absolute()
@@ -460,7 +583,7 @@ fn attachment_block(
                     v_flex()
                         .items_center()
                         .gap_1()
-                        .child(text("\u{25b6}").text_size(px(28.)).text_color(theme.text.primary))
+                        .child(icon(Icon::Play, 28.).text_color(theme.text.primary).label("Play"))
                         .child(
                             text(if attachment.local_path.is_none() && fetching {
                                 "Loading\u{2026}".into()
@@ -471,7 +594,11 @@ fn attachment_block(
                             .text_color(theme.text.primary),
                         ),
                 )
-                .into_any_element()
+                .into_any_element();
+            match tail.filter(|_| poster_tail.is_none()) {
+                Some(side) => with_tail(block, side, theme.surface.raised),
+                None => block,
+            }
         }
         Kind::Audio => {
             let playing = media.playing.as_deref() == Some(attachment.guid.as_str());
@@ -479,13 +606,14 @@ fn attachment_block(
             let toggle = OpenAttachment(reference.clone());
             let transcribe = Transcribe(reference);
             let transcript = media.transcripts.get(&attachment.guid).cloned();
+            let fill = if message.from_me { theme.accent } else { theme.surface.raised_hover };
             let pill = h_flex()
                 .id(id)
                 .gap_2()
                 .h(px(40.))
                 .px_3()
                 .rounded_full()
-                .bg(if message.from_me { theme.accent } else { theme.surface.raised_hover })
+                .bg(fill)
                 .context_menu(menu)
                 .child(
                     icon_button(format!("play-{}", attachment.guid), if playing { Icon::Pause } else { Icon::Play })
@@ -503,8 +631,14 @@ fn attachment_block(
                 Some(Translation::Text(text)) => (text.clone(), LabelTone::Primary),
                 None => (String::new(), LabelTone::Primary),
             };
+            let pill = match tail {
+                Some(side) => with_tail(pill.into_any_element(), side, fill),
+                None => pill.into_any_element(),
+            };
             v_flex()
                 .gap_1()
+                .when(message.from_me, |col| col.items_end())
+                .when(!message.from_me, |col| col.items_start())
                 .child(pill)
                 .when(assistant && transcript.is_none(), |col| {
                     col.child(
@@ -518,7 +652,7 @@ fn attachment_block(
         }
         Kind::File => {
             let open = OpenAttachment(reference);
-            h_flex()
+            let block = h_flex()
                 .id(id)
                 .gap_2()
                 .max_w(px(MEDIA_MAX_WIDTH as f32))
@@ -528,7 +662,7 @@ fn attachment_block(
                 .bg(theme.surface.raised_hover)
                 .on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, open.clone()))
                 .context_menu(menu)
-                .child(text("\u{1f4c4}").text_size(px(20.)))
+                .child(icon(Icon::File, 20.).text_color(theme.text.secondary))
                 .child(
                     v_flex().min_w_0().child(text(attachment.name.clone()).font_weight(FontWeight::SEMIBOLD)).child(
                         text(format_bytes(attachment.bytes))
@@ -536,7 +670,11 @@ fn attachment_block(
                             .text_color(theme.text.secondary),
                     ),
                 )
-                .into_any_element()
+                .into_any_element();
+            match tail {
+                Some(side) => with_tail(block, side, theme.surface.raised_hover),
+                None => block,
+            }
         }
     }
 }
@@ -628,6 +766,10 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
     let time: SharedString = format_time(message.date).into();
     let failed = failed(message);
     let show_avatar = props.is_group && !from_me;
+    // My messages that went out as SMS or RCS fill green, as in Messages.
+    let sms = from_me && message.service != Service::IMessage;
+    let last_block = blocks_of(message).len().saturating_sub(1);
+    let tail_here = |index: usize| index == last_block && data.position.ends_run();
 
     let menu_data = data.clone();
     let menu_props = props.clone();
@@ -701,29 +843,52 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
             };
             let element = match block {
                 Block::Text { subject, body } => {
-                    let text_body = match subject {
-                        Some(subject) if body.is_empty() => subject.clone(),
-                        Some(subject) => format!("{subject}\n{body}"),
+                    let rich = match subject {
+                        Some(subject) => {
+                            let mut spans = vec![span(subject.clone()).bold()];
+                            if !body.text().is_empty() {
+                                spans.push(span("\n"));
+                                spans.extend(body.spans().iter().cloned());
+                            }
+                            RichText::new(spans)
+                        }
                         None => body.clone(),
                     };
-                    let mut bubble = chat_bubble(text_body, side)
+                    let mut bubble = chat_bubble(String::new(), side)
+                        .rich(rich)
                         .id(format!("bubble-{}-{index}", data.key))
                         .position(position)
                         .time(time.clone());
                     if Some(index) == first_text {
                         bubble = bubble.reactions(reactions(&groups));
                     }
+                    if sms {
+                        bubble = bubble.role(FillRole::Success);
+                    }
                     bubble.into_any_element()
                 }
+                // Every other block that ends a run carries the tail too, in its own fill or cut
+                // from its picture.
+                // The grid's corner is a picture, not a fill, so a coloured lobe would not continue
+                // it; it stays without a tail.
                 Block::Photos(photos) => photo_grid(data, photos, media, theme),
-                Block::Attachment(attachment) => attachment_block(data, attachment, media, props.assistant, theme),
+                Block::Attachment(attachment) => attachment_block(
+                    data,
+                    attachment,
+                    media,
+                    props.assistant,
+                    tail_here(index).then_some(side),
+                    theme,
+                ),
                 Block::Link { href, host, matches } => {
-                    link_card(href, host, matches.then_some(()).and(message.url_preview.as_ref()), theme)
+                    let card = link_card(href, host, matches.then_some(()).and(message.url_preview.as_ref()), theme);
+                    if tail_here(index) { with_tail(card, side, theme.surface.raised_hover) } else { card }
                 }
                 Block::Preview => {
                     let preview = message.url_preview.as_ref();
                     let href = preview.map(|p| p.url.clone()).unwrap_or_default();
-                    link_card(&href, &host_of(&href), preview, theme)
+                    let card = link_card(&href, &host_of(&href), preview, theme);
+                    if tail_here(index) { with_tail(card, side, theme.surface.raised_hover) } else { card }
                 }
             };
             column.push(element);
@@ -798,8 +963,6 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
         _ => div().w(px(AVATAR_COLUMN)).flex_none().into_any_element(),
     });
     let gap = if data.position.starts_run() { 10. } else { 2. };
-    let reply = Reply(at(data));
-    let can_reply = props.capabilities.replies && !failed;
     let can_react = props.capabilities.reactions && !failed;
     let open_picker = OpenTapbacks(at(data));
     let mine = message.tapbacks.iter().find(|t| t.from_me).map(|t| t.kind);
@@ -835,26 +998,45 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
             })
         })
         .children(picker)
-        .when(can_reply, |col| {
-            col.on_swipe_page(move |e: &SwipePageEvent, window, cx| {
-                if e.direction == SwipeDirection::Back {
-                    crate::ui::dispatch(window, cx, reply.clone());
-                }
-            })
-        })
         .children(sender)
         .child(
-            h_flex().w_full().items_end().gap_2().when(from_me, |row| row.justify_end()).children(avatar_slot).child(
-                v_flex()
-                    .max_w(relative(0.62))
-                    .min_w_0()
-                    .gap_1()
-                    .when(from_me, |col| col.items_end())
-                    .when(!from_me, |col| col.items_start())
-                    .children(column),
-            ),
+            h_flex()
+                .w_full()
+                .items_end()
+                .gap_2()
+                .when(from_me, |row| row.justify_end())
+                .children(avatar_slot)
+                .when(from_me, |row| row.child(time_column(&time, true, props.hovered, theme)))
+                .child(
+                    v_flex()
+                        .max_w(relative(0.62))
+                        .min_w_0()
+                        .gap_1()
+                        .when(from_me, |col| col.items_end())
+                        .when(!from_me, |col| col.items_start())
+                        .children(column),
+                )
+                .when(!from_me, |row| row.child(time_column(&time, false, props.hovered, theme))),
         )
         .into_any_element()
+}
+
+/// The message's time on the bubble's inner side, there only while the row is hovered. The
+/// column keeps its width either way, so bubbles never shift under the pointer.
+fn time_column(time: &SharedString, align_right: bool, shown: bool, theme: &Theme) -> Div {
+    div()
+        .w(px(TIME_COLUMN))
+        .flex_none()
+        .pb(px(5.))
+        .when(align_right, |col| col.flex().justify_end())
+        .when(!shown, |col| col.opacity(0.))
+        .child(
+            text(time.clone())
+                .tabular_nums()
+                .text_size(theme.type_scale.caption)
+                .text_color(theme.text.tertiary)
+                .whitespace_nowrap(),
+        )
 }
 
 /// The typing bubble: three dots, `lit` the bright one, stepping while someone types.
