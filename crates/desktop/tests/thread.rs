@@ -154,6 +154,10 @@ fn sending_shows_the_bubble_and_the_demo_answers() {
     }
     let app = open_alex();
     let field = app.get_by_test_id("composer.field");
+    // Keys reach only the key window, which a window launched right after another test's may
+    // not be yet: a click in the field makes it so.
+    let b = field.bounding_box().unwrap().expect("laid out");
+    app.mouse().click(b.x + 40., b.y + b.height / 2.).unwrap();
     field.fill("hello from the port").unwrap();
     field.press("enter").unwrap();
     expect(&app.get_by_text("hello from the port").first()).to_be_visible().unwrap();
@@ -186,7 +190,7 @@ fn details_open_and_close_from_the_toolbar() {
     let app = open_alex();
     let width = || app.get_by_test_id("thread-view").bounding_box().unwrap().map_or(0., |b| b.width);
     let wide = width();
-    app.get_by_test_id("thread-identity").click().unwrap();
+    app.get_by_test_id("chat-title").click().unwrap();
     expect(&app.get_by_text("Photos and Files").first()).to_be_visible().unwrap();
     let started = Instant::now();
     while width() > wide - 200. {
@@ -195,7 +199,7 @@ fn details_open_and_close_from_the_toolbar() {
     }
     // A collapsed inspector keeps its nodes, still reported visible (docs/nd-parity.md), so the
     // thread getting its width back is what says the panel closed.
-    app.get_by_test_id("thread-identity").click().unwrap();
+    app.get_by_test_id("chat-title").click().unwrap();
     let started = Instant::now();
     while width() < wide - 1. {
         assert!(started.elapsed() < Duration::from_secs(5), "the inspector never gave its room back");
