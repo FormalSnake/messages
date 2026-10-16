@@ -173,10 +173,9 @@ gap); the rest is the app's.
 | Toolbar buttons | 36 glass circles at 8, 8 | 37x36 at 8, 8 | NSToolbar |
 | Transcript under the toolbar | scrolls under it, blurred, first row rests below | same | nd `content_under_toolbar()` |
 | Compose button | leads the conversation's half | same | nd `navigation()` |
-| Conversation in the toolbar | 40 avatar over a 25 capsule, band about 76 | 32 avatar beside the name capsule, row 52 | open: see below |
+| Conversation at the top | 40 avatar 6 from the top over a 27 capsule (45 to 72) | same | app, over the transcript |
 
-Open: Messages draws the conversation's avatar over its name in a band taller than NSToolbar's
-row. An NSToolbar item stays inside the row: a taller item is cut, and a bottom titlebar
-accessory that would make room grows the band by at least 36 pt. A view hung in the titlebar
-under the centred item drew its frame but not its content. So the port shows the avatar beside
-the name.
+Messages (a Catalyst app) draws the conversation over its transcript, not as a toolbar item:
+its accessibility tree has the name's button beside the transcript and only compose, filter and
+FaceTime in the toolbar. The port does the same. When a FaceTime banner or a summary card sits
+above the transcript, the conversation moves back into the toolbar, avatar beside name.

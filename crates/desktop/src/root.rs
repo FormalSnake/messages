@@ -668,6 +668,11 @@ impl Render for Root {
         let width = window.viewport_size().width;
         let wide = width <= 0. || width >= 900.;
 
+        let shown = selected.is_some() && self.new_chat.is_none();
+        // The transcript runs up under the toolbar while nothing sits above it in the content;
+        // the conversation then stands over it, avatar over name, as in Messages.
+        let under = shown && self.header.read(cx).is_empty(cx);
+        let stacked = if under { header::identity(true, true, cx) } else { None };
         let content = if unconfigured || offline_empty {
             self.connect.clone().into_any_element()
         } else if let Some(new_chat) = self.new_chat.clone() {
@@ -675,9 +680,13 @@ impl Render for Root {
         } else if selected.is_some() {
             v_flex()
                 .size_full()
+                .relative()
                 .child(self.header.clone())
                 .child(div().flex_1().min_h_0().child(self.thread.clone()))
                 .child(self.composer.clone())
+                .children(stacked.map(|identity| {
+                    h_flex().absolute().top(px(header::IDENTITY_TOP)).left_0().right_0().justify_center().child(identity)
+                }))
                 .into_any_element()
         } else {
             empty_state(status, reason)
@@ -688,7 +697,6 @@ impl Render for Root {
         let switcher = self.switcher.element(self.store(), cx);
         // Messages' unified toolbar: compose at the start of the conversation's half, the
         // conversation in the middle, its actions at the end.
-        let shown = selected.is_some() && self.new_chat.is_none();
         let mut bar = toolbar()
             .hide_title()
             .navigation(
@@ -698,15 +706,12 @@ impl Render for Root {
                     .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
             )
             .flexible_space();
-        if let Some(identity) = header::toolbar_identity(shown, cx) {
+        if !under && let Some(identity) = header::identity(shown, false, cx) {
             bar = bar.centered_item(identity).flexible_space();
         }
         for item in header::toolbar_items(shown, cx) {
             bar = bar.item(item);
         }
-        // The transcript scrolls under the toolbar's blur, as in Messages, while nothing sits
-        // above it in the content.
-        let under = shown && self.header.read(cx).is_empty(cx);
         let mut root = scaffold();
         if under {
             root = root.content_under_toolbar();
