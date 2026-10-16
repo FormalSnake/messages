@@ -48,9 +48,29 @@ fn real_every_demo_conversation_is_captured() {
         // Pictures decode off the main thread; give them a moment before the capture.
         std::thread::sleep(Duration::from_millis(1500));
         let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
-        app.screenshot(&shot, None).unwrap();
+        // The whole window, toolbar and sidebar included, as the system draws it.
+        let main = windows_of(app.pid()).first().map(|w| w.0).expect("the app has a window");
+        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(&shot).status();
         println!("screenshot {}", shot.display());
     }
+}
+
+/// The on-screen windows of `pid`, largest first: (id, width, height).
+fn windows_of(pid: u32) -> Vec<(u32, u32, u32)> {
+    let script = format!(
+        "import CoreGraphics\nlet l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]\nfor w in l where (w[\"kCGWindowOwnerPID\"] as? Int) == {pid} {{ let b = w[\"kCGWindowBounds\"] as! [String: Any]; print(w[\"kCGWindowNumber\"]!, b[\"Width\"]!, b[\"Height\"]!) }}"
+    );
+    let out = std::process::Command::new("swift").args(["-e", &script]).output().expect("swift runs");
+    let mut found: Vec<(u32, u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let n: Vec<u32> = l.split_whitespace().filter_map(|p| p.parse::<f64>().ok().map(|f| f as u32)).collect();
+            (n.len() == 3).then(|| (n[0], n[1], n[2]))
+        })
+        .collect();
+    found.retain(|w| w.1 > 100 && w.2 > 100);
+    found.sort_by_key(|w| std::cmp::Reverse(w.1 * w.2));
+    found
 }
 
 fn real_allowed() -> bool {
@@ -91,12 +111,16 @@ fn real_hover_and_lightbox_video_are_captured() {
     std::thread::sleep(Duration::from_millis(500));
     let at = video.bounding_box().unwrap().expect("the video block is laid out");
     app.mouse().click(at.x + at.width / 2., at.y + at.height / 2.).unwrap();
-    expect(&app.get_by_test_id("lightbox-video-demo-video-1")).to_be_visible().unwrap();
-    expect(&app.get_by_test_id("lightbox-seek")).to_be_visible().unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
-    let shot = dir.join("shot-lightbox-video.png");
-    app.screenshot(&shot, None).unwrap();
-    println!("screenshot {}", shot.display());
+    // Quick Look opens in its own panel: find it among the app's windows and capture it.
+    std::thread::sleep(Duration::from_millis(2000));
+    let windows = windows_of(app.pid());
+    println!("windows {windows:?}");
+    assert!(windows.len() >= 2, "Quick Look opened a panel beside the main window: {windows:?}");
+    for (i, (id, _, _)) in windows.iter().enumerate() {
+        let shot = dir.join(format!("shot-quicklook-{i}.png"));
+        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &id.to_string()]).arg(&shot).status();
+        println!("screenshot {}", shot.display());
+    }
     println!("{}", app.snapshot().unwrap());
 }
 

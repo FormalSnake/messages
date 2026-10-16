@@ -172,8 +172,6 @@ pub fn toolbar_items(shown: bool, cx: &mut App) -> Vec<AnyElement> {
         let guid = chat.guid.clone();
         items.push(
             icon_button("facetime", Icon::Video)
-                .bezel(Bezel::Circle)
-                .size(px(28.))
                 .tooltip("FaceTime")
                 .on_click(move |_, _, cx| {
                     if let Some(store) = bridge::store(cx) {

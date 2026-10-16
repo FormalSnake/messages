@@ -651,7 +651,8 @@ fn attachment_block(
                 .into_any_element()
         }
         Kind::File => {
-            let open = OpenAttachment(reference);
+            // Opens in Quick Look, as in Messages; the menu still has Open.
+            let open = ShowAttachment(reference);
             let block = h_flex()
                 .id(id)
                 .gap_2()

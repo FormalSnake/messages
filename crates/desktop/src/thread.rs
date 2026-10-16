@@ -551,8 +551,31 @@ impl Thread {
         });
     }
 
-    pub fn show_attachment(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
+    /// Previews an attachment as Messages does: Quick Look over every attachment of the loaded
+    /// conversation that is on disk, zooming out of the one clicked. Where the platform has no
+    /// preview panel, or the file is not here yet, the in-window lightbox shows it.
+    pub fn show_attachment(&mut self, reference: &AttachmentRef, window: nd::core::WindowId, cx: &mut Context<Self>) {
         let Some(store) = bridge::store(cx) else { return };
+        let items: Vec<(String, nd::system::PreviewItem)> = {
+            let state = store.state();
+            let Some(chat) = state.selected_chat.clone() else { return };
+            conversation_messages(&state, &chat)
+                .iter()
+                .flat_map(|m| m.attachments.iter())
+                .filter(|a| !a.hidden)
+                .filter_map(|a| {
+                    let path = a.local_path.clone()?;
+                    let source = if a.mime.starts_with("image/") { format!("img-{}", a.guid) } else { format!("att-{}", a.guid) };
+                    Some((a.guid.clone(), nd::system::PreviewItem { path, source: Some(source.into()) }))
+                })
+                .collect()
+        };
+        if let Some(index) = items.iter().position(|(guid, _)| *guid == reference.attachment) {
+            let items = items.into_iter().map(|(_, item)| item).collect();
+            if nd::system::quick_look(window, items, index, cx) {
+                return;
+            }
+        }
         self.lightbox = crate::lightbox::Lightbox::open(&store, reference);
         self.fetch_lightbox(cx);
         cx.notify();
