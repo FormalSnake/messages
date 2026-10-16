@@ -10,6 +10,8 @@ the feature was seen working, and the line says how:
   a thread open (AppKit light and dark, GPUI light, dark and matugen).
 - **unit**: a unit test in `crates/desktop/src` (named in the line).
 - **shot**: seen in a screenshot of the running app on the demo data (macOS).
+- **linux shot**: `scripts/linux-gate shots`, the same test in a private headless Hyprland on
+  g815, in the Linux look (light, dark, matugen) and the Windows skin (`ND_PRESET=fluent`).
 
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
@@ -119,11 +121,11 @@ The GPUI build stays the default until they close.
 - [x] Single instance: a second launch raises the first (nd-ipc; not exercised)
 - [x] Theme from nd-theme, live matugen `theme.json` on Linux (audit's matugen variants)
 - [x] `MESSAGES_FONT` (nd's app font override; t3 `parity`, captured in Courier New)
-- [ ] Icons on Linux: nd's GPUI backend draws a ring for every icon outside its few glyphs (settings, compose, info, clock, mail)
+- [x] Icons on Linux: compose, search, settings, plus, emoji, video, moon and play draw as Lucide glyphs (linux shot)
 
 ## Platforms and packaging
 - [x] macOS (AppKit) build and run (t3, audit)
-- [ ] Linux on g815: `cargo build -p messages` finishes; tests, the headless run and the audit there did not run, the disk was full
+- [x] Linux on g815: build, every demo conversation in headless Hyprland (linux shot), the audit's four GPUI variants pass; `thread.rs` there needs the compositor the shots start
 - [ ] Windows: nd's Windows backend has never run
 - [x] App id `dev.formalsnake.messages`, desktop entry and icon renamed, install script removes the old id's entry (code)
 - [ ] Nix package: needs NativeDesktop as a git dependency at a published rev; the home-manager module is generated but the package still builds the path dependency
