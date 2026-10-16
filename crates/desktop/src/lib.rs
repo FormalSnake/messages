@@ -41,10 +41,14 @@ pub fn init(cx: &mut App) {
 }
 
 pub fn open(cx: &mut App) -> WindowHandle<root::Root> {
-    let options = WindowOptions::main("main")
+    let mut options = WindowOptions::main("main")
         .title("Messages")
         .size(size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)))
         .min_size(size(px(MIN_SIZE.0), px(MIN_SIZE.1)));
+    // `GPUIX_BACKGROUND=1` opens the window without taking focus, for scripts and screenshots.
+    if std::env::var("GPUIX_BACKGROUND").is_ok_and(|v| v == "1") {
+        options = options.background();
+    }
     cx.open_window(options, |window, cx| cx.new(|cx| root::Root::new(window, cx)))
 }
 

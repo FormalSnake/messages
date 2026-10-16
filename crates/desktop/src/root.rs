@@ -158,6 +158,12 @@ impl Root {
     /// updates what views read from the config.
     pub fn apply_config(&mut self, config: Config, cx: &mut Context<Self>) {
         cx.set_global(ConfigHandle(config.clone()));
+        // `MESSAGES_FONT` (or `font` in config.json) sets the text family; unset keeps the
+        // platform's. Only a change touches the theme, which re-renders every view.
+        if config.font != self.config.font {
+            let font = config.font.clone().unwrap_or_default();
+            nd::theme::set_app_theme(cx, nd::theme::ThemeRefinement::new().font(font));
+        }
         let key = connection_key(&config);
         self.config = config;
         let current = match &self.store {
@@ -450,6 +456,22 @@ impl Root {
         .on_action(cx.listener(|this, _: &LightboxCopy, _, cx| {
             this.thread.update(cx, |thread, cx| thread.copy_lightbox(cx));
         }))
+        .on_action(cx.listener(|this, _: &LightboxPlay, _, cx| {
+            this.thread.update(cx, |thread, cx| {
+                if let Some(lightbox) = thread.lightbox_mut() {
+                    lightbox.toggle_play();
+                }
+                cx.notify();
+            });
+        }))
+        .on_action(cx.listener(|this, _: &LightboxMute, _, cx| {
+            this.thread.update(cx, |thread, cx| {
+                if let Some(lightbox) = thread.lightbox_mut() {
+                    lightbox.toggle_mute();
+                }
+                cx.notify();
+            });
+        }))
         .on_action(cx.listener(|this, ShowAttachment(r): &ShowAttachment, _, cx| {
             let r = r.clone();
             this.thread.update(cx, |thread, cx| thread.show_attachment(&r, cx));
@@ -662,15 +684,23 @@ impl Render for Root {
         let toasts = self.toast.as_ref().map(|(_, text)| toast("error", text.clone()).timeout(TOAST_FOR));
         let info = self.info_open && selected.is_some() && self.new_chat.is_none();
         let switcher = self.switcher.element(self.store(), cx);
+        // Messages' unified toolbar: compose at the start of the conversation's half, the
+        // conversation in the middle, its actions at the end.
+        let shown = selected.is_some() && self.new_chat.is_none();
         let mut bar = toolbar()
-            .sidebar_toggle()
+            .hide_title()
             .item(
                 icon_button("new-chat", Icon::SquarePen)
+                    .bezel(Bezel::Circle)
+                    .size(px(28.))
                     .tooltip("New Message")
                     .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
             )
             .flexible_space();
-        for item in header::toolbar_items(selected.is_some() && self.new_chat.is_none(), self.info_open, cx) {
+        if let Some(identity) = header::toolbar_identity(shown, cx) {
+            bar = bar.centered_item(identity).flexible_space();
+        }
+        for item in header::toolbar_items(shown, cx) {
             bar = bar.item(item);
         }
         let root = scaffold()

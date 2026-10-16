@@ -9,7 +9,6 @@ use messages_core::{DeliveryState, GroupEvent, Message, Service, Tapback, delive
 use nd::components::RunPosition as Position;
 
 /// Same author within this long joins the previous bubble's run.
-pub const RUN_GAP_MS: i64 = 60_000;
 pub const EDIT_WINDOW_MS: i64 = 15 * 60_000;
 pub const UNSEND_WINDOW_MS: i64 = 2 * 60_000;
 
@@ -138,14 +137,12 @@ pub fn build_rows(messages: &[Arc<Message>], options: &BuildOptions) -> Vec<Row>
             let previous = &messages[index - 1];
             same_author(previous, message)
                 && !is_event(previous)
-                && message.date - previous.date < RUN_GAP_MS
                 && !needs_separator(Some(previous.date), message.date)
                 && !show_quote
         };
         let joins_next = messages.get(index + 1).is_some_and(|next| {
             same_author(message, next)
                 && !is_event(next)
-                && next.date - message.date < RUN_GAP_MS
                 && !needs_separator(Some(message.date), next.date)
                 && !quoted[index + 1]
         });
@@ -316,20 +313,25 @@ mod tests {
         let reply = message("about the old one", 201_000, |m| m.reply_to = Some(old.guid.clone()));
         let rows = message_rows(&[old, filler, plain, reply], None);
         assert_eq!(rows.iter().map(|r| r.show_quote).collect::<Vec<_>>(), vec![false, false, false, true]);
-        assert_eq!(rows[2..].iter().map(|r| r.position).collect::<Vec<_>>(), vec![Position::Single, Position::Single]);
+        // The plain message closes the run the old ones started; the quote opens its own.
+        assert_eq!(rows[2..].iter().map(|r| r.position).collect::<Vec<_>>(), vec![Position::Last, Position::Single]);
     }
 
     #[test]
-    fn runs_break_after_a_minute_and_on_a_new_author() {
+    fn runs_break_on_a_new_author_or_a_time_separator_only() {
+        // As in Messages: minutes between two messages from one sender keep them one run (one
+        // tail, on the last); a new sender or a time separator starts the next.
         let a = message("a", 0, |_| {});
         let b = message("b", 30_000, |_| {});
-        let c = message("c", 95_000, |_| {});
-        let d = message("d", 96_000, |m| m.from_me = true);
-        let rows = message_rows(&[a, b, c, d], None);
+        let c = message("c", 10 * 60_000, |_| {});
+        let d = message("d", 10 * 60_000 + 1_000, |m| m.from_me = true);
+        let e = message("e", 3 * 60 * 60_000, |m| m.from_me = true);
+        let rows = message_rows(&[a, b, c, d, e], None);
         assert_eq!(
             rows.iter().map(|r| r.position).collect::<Vec<_>>(),
-            vec![Position::First, Position::Last, Position::Single, Position::Single]
+            vec![Position::First, Position::Middle, Position::Last, Position::Single, Position::Single]
         );
+        assert!(rows.iter().map(|r| r.position.ends_run()).eq([false, false, true, true, true]), "only a run's last bubble has a tail");
     }
 
     #[test]

@@ -186,7 +186,7 @@ fn details_open_and_close_from_the_toolbar() {
     let app = open_alex();
     let width = || app.get_by_test_id("thread-view").bounding_box().unwrap().map_or(0., |b| b.width);
     let wide = width();
-    app.get_by_test_id("toggle-info").click().unwrap();
+    app.get_by_test_id("thread-identity").click().unwrap();
     expect(&app.get_by_text("Photos and Files").first()).to_be_visible().unwrap();
     let started = Instant::now();
     while width() > wide - 200. {
@@ -195,7 +195,7 @@ fn details_open_and_close_from_the_toolbar() {
     }
     // A collapsed inspector keeps its nodes, still reported visible (docs/nd-parity.md), so the
     // thread getting its width back is what says the panel closed.
-    app.get_by_test_id("toggle-info").click().unwrap();
+    app.get_by_test_id("thread-identity").click().unwrap();
     let started = Instant::now();
     while width() < wide - 1. {
         assert!(started.elapsed() < Duration::from_secs(5), "the inspector never gave its room back");
