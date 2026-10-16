@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Builds and runs the NativeDesktop port on the Linux host, the way NativeDesktop's own
+# scripts/linux-gate does: one build at a time on the host (its shared flock), a target dir per
+# lane, quiet builds, NativeDesktop's dev shell (Wayland, Vulkan through lavapipe, labwc for the
+# headless Hyprland the tests start).
+#
+#   scripts/linux-gate sync                copy this checkout and the NativeDesktop checkout the
+#                                          crates point at ($ND_DIR, default the sibling named in
+#                                          Cargo.toml) to the host, side by side as here
+#                                          ND_OVERLAY=<nd checkout> then applies that checkout's diff
+#                                          against $ND_DIR's HEAD on top, for a lane whose own nd
+#                                          changes sit on another worktree's uncommitted state
+#   scripts/linux-gate shots [chats]       build, then capture the demo conversations in a private
+#                                          headless Hyprland (tests/shots.rs); ND_PRESET, ND_SCHEME and
+#                                          ND_THEME_JSON pass through; the PNGs are copied to
+#                                          target/linux-shots/ here
+#   scripts/linux-gate run '<command>'     any command in the dev shell there, in the app checkout
+#
+# The host is `ssh g815` ($MESSAGES_LINUX_HOST). The checkouts land in
+# ~/Developer/messages-lanes/<branch>/ there. Targets live under NativeDesktop's
+# ~/.cache/nd-build/targets/ (as messages-<branch>), so its LRU cap counts them too.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+host=${MESSAGES_LINUX_HOST:-g815}
+branch=$(git -C "$root" rev-parse --abbrev-ref HEAD)
+nd_name=$(grep -o '\.\./nativedesktop[^/"]*' "$root/Cargo.toml" | head -n 1 | cut -d/ -f2)
+nd_dir=${ND_DIR:-"$root/../$nd_name"}
+lane="Developer/messages-lanes/${branch//\//-}"
+targets='$HOME/.cache/nd-build/targets'
+target="$targets/messages-${branch//\//-}"
+cap=${ND_LINUX_TARGET_CAP_GB:-40}
+
+remote() {
+  ssh "$host" "bash -lc $(printf %q "$1")" 2>&1 | grep -v -e 'post-quantum' -e 'store now' -e 'openssh.com/pq' || true
+}
+
+in_shell() {
+  local evict body
+  evict="t=\"$target\"; mkdir -p \"$targets\" \"\$t\" && touch \"\$t\"
+while gb=\$(du -s --block-size=1G \"$targets\" | cut -f1); [ \"\$gb\" -gt $cap ]; do
+  old=\$(ls -1dt \"$targets\"/*/ | grep -vxF \"\$t/\" | tail -n 1)
+  [ -n \"\$old\" ] || break
+  echo \"linux-gate: targets at \$gb GB (cap $cap), dropping \$old\"
+  rm -rf -- \"\${old:?}\"
+done
+echo \"linux-gate: targets at \$gb GB (cap $cap)\"; df -h / | tail -1"
+  body="$evict
+cd \"\$HOME/$lane/messages\" && nice -n 19 ionice -c3 nix develop \"path:\$HOME/$lane/$nd_name\" -c env CARGO_TARGET_DIR=\"\$t\" CARGO_BUILD_BUILD_DIR=\"\$t\" CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 nice -n 19 ionice -c3 bash -c $(printf %q "$1")"
+  printf 'mkdir -p ~/.cache/nd-build && flock -o ~/.cache/nd-build/build.lock bash -c %q' "$body"
+}
+
+cmd_sync() {
+  [ -d "$nd_dir/crates/nd" ] || { echo "linux-gate: no NativeDesktop checkout at $nd_dir" >&2; exit 1; }
+  ssh "$host" "mkdir -p ~/$lane/messages ~/$lane/$nd_name" 2>/dev/null
+  rsync -az --delete --exclude target --exclude .git --exclude .direnv --exclude node_modules "$root/" "$host:$lane/messages/"
+  rsync -az --delete --exclude target --exclude .git --exclude .direnv "$nd_dir/" "$host:$lane/$nd_name/"
+  if [ -n "${ND_OVERLAY:-}" ]; then
+    git -C "$ND_OVERLAY" diff "$(git -C "$nd_dir" rev-parse HEAD)" -- . \
+      | ssh "$host" "cd ~/$lane/$nd_name && patch -p1 --forward --no-backup-if-mismatch -r -" 2>&1 \
+      | grep -v -e 'post-quantum' -e 'store now' -e 'openssh.com/pq' || true
+  fi
+  echo "linux-gate: synced $branch and $(basename "$nd_dir") to $host:~/$lane"
+}
+
+cmd_shots() {
+  local chats=${1:-} pass
+  pass="SHOT_CHATS=$(printf %q "$chats") ND_PRESET=$(printf %q "${ND_PRESET:-}") ND_SCHEME=$(printf %q "${ND_SCHEME:-}")"
+  [ -n "${ND_THEME_JSON+x}" ] && pass="$pass ND_THEME_JSON=$(printf %q "$ND_THEME_JSON")"
+  remote "$(in_shell "cargo build -p messages --bin messages 2>&1 | grep -E '^(error|warning: unused)' -A5 || true
+env $pass ND_REAL=1 cargo test -p messages --test shots real_every_demo_conversation_is_captured -- --nocapture 2>&1 | grep -E 'screenshot|panicked|error|test result' || true")"
+  mkdir -p "$root/target/linux-shots"
+  rsync -az "$host:.cache/nd-build/targets/messages-${branch//\//-}/tmp/shots/" "$root/target/linux-shots/"
+  echo "linux-gate: shots in $root/target/linux-shots"
+}
+
+case "${1:-}" in
+  sync) cmd_sync ;;
+  shots) shift; cmd_shots "$@" ;;
+  run) shift; remote "$(in_shell "$*")" ;;
+  *) sed -n '2,20p' "$0"; exit 2 ;;
+esac

@@ -24,6 +24,9 @@ nd-ipc = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd-ipc" }
 nd = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd", features = ["test", "audit"] }
 nd-test = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd-test" }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+ndshell = { path = "../../../nativedesktop-wt-msg-gaps/crates/ndshell" }
+
 [build-dependencies]
 nd = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd", default-features = false, features = ["build"] }
 

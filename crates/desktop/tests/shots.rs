@@ -32,13 +32,29 @@ fn real_every_demo_conversation_is_captured() {
         Some(list) => list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect(),
         None => CHATS.to_vec(),
     };
-    let app = launch_app(
-        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
-            .env("MESSAGES_DEMO", "1")
-            .env("ND_AUTOMATION_CAPTURE", "region"),
-    )
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shots").join(variant());
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut options =
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1").env("ND_AUTOMATION_CAPTURE", "region");
+    if let Ok(scheme) = std::env::var("ND_SCHEME")
+        && !scheme.is_empty()
+    {
+        let toml = dir.join("theme.toml");
+        std::fs::write(&toml, format!("appearance = \"{scheme}\"\n")).unwrap();
+        options = options.env("ND_THEME_TOML", toml.display().to_string());
+    }
+    #[cfg(target_os = "linux")]
+    let compositor = ndshell::hyprland::Hyprland::start(ndshell::hyprland::Options {
+        width: 1400,
+        height: 900,
+        ..Default::default()
+    })
     .unwrap();
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    #[cfg(target_os = "linux")]
+    for (key, value) in compositor.client_env() {
+        options = options.env(key, value);
+    }
+    let app = launch_app(options).unwrap();
     for chat in chats {
         let row = app.get_by_test_id(chat);
         expect(&row).to_be_visible().unwrap();
@@ -51,6 +67,12 @@ fn real_every_demo_conversation_is_captured() {
         app.screenshot(&shot, None).unwrap();
         println!("screenshot {}", shot.display());
     }
+}
+
+/// Where a run's pictures go: the look and scheme it was asked for (`ND_PRESET`, `ND_SCHEME`).
+fn variant() -> String {
+    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    format!("{}-{}", get("ND_PRESET").unwrap_or_else(|| "native".into()), get("ND_SCHEME").unwrap_or_else(|| "system".into()))
 }
 
 fn real_allowed() -> bool {
