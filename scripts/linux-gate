@@ -11,8 +11,8 @@
 #                                          against $ND_DIR's HEAD on top, for a lane whose own nd
 #                                          changes sit on another worktree's uncommitted state
 #   scripts/linux-gate shots [chats]       build, then capture the demo conversations in a private
-#                                          headless Hyprland (tests/shots.rs); ND_PRESET, ND_SCHEME and
-#                                          ND_THEME_JSON pass through; the PNGs are copied to
+#                                          headless Hyprland (tests/shots.rs), in each of SHOT_VARIANTS
+#                                          (`native-light,fluent-dark`); the PNGs are copied to
 #                                          target/linux-shots/ here
 #   scripts/linux-gate run '<command>'     any command in the dev shell there, in the app checkout
 #
@@ -65,10 +65,9 @@ cmd_sync() {
 
 cmd_shots() {
   local chats=${1:-} pass
-  pass="SHOT_CHATS=$(printf %q "$chats") ND_PRESET=$(printf %q "${ND_PRESET:-}") ND_SCHEME=$(printf %q "${ND_SCHEME:-}")"
-  [ -n "${ND_THEME_JSON+x}" ] && pass="$pass ND_THEME_JSON=$(printf %q "$ND_THEME_JSON")"
+  pass="SHOT_CHATS=$(printf %q "$chats") SHOT_VARIANTS=$(printf %q "${SHOT_VARIANTS:-}")"
   remote "$(in_shell "cargo build -p messages --bin messages 2>&1 | grep -E '^(error|warning: unused)' -A5 || true
-env $pass ND_REAL=1 cargo test -p messages --test shots real_every_demo_conversation_is_captured -- --nocapture 2>&1 | grep -E 'screenshot|panicked|error|test result' || true")"
+env $pass ND_REAL=1 cargo test -p messages --test shots real_every_demo_conversation_is_captured -- --nocapture 2>&1 | grep -E -A3 'screenshot|panicked|test result' || true")"
   mkdir -p "$root/target/linux-shots"
   rsync -az "$host:.cache/nd-build/targets/messages-${branch//\//-}/tmp/shots/" "$root/target/linux-shots/"
   echo "linux-gate: shots in $root/target/linux-shots"

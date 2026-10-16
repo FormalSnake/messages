@@ -27,22 +27,11 @@ fn real_every_demo_conversation_is_captured() {
         println!("skipped: opens a real window; run with ND_REAL=1");
         return;
     }
-    let wanted = std::env::var("SHOT_CHATS").ok();
+    let wanted = std::env::var("SHOT_CHATS").ok().filter(|w| !w.trim().is_empty());
     let chats: Vec<&str> = match wanted.as_deref() {
         Some(list) => list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect(),
         None => CHATS.to_vec(),
     };
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shots").join(variant());
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut options =
-        LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1").env("ND_AUTOMATION_CAPTURE", "region");
-    if let Ok(scheme) = std::env::var("ND_SCHEME")
-        && !scheme.is_empty()
-    {
-        let toml = dir.join("theme.toml");
-        std::fs::write(&toml, format!("appearance = \"{scheme}\"\n")).unwrap();
-        options = options.env("ND_THEME_TOML", toml.display().to_string());
-    }
     #[cfg(target_os = "linux")]
     let compositor = ndshell::hyprland::Hyprland::start(ndshell::hyprland::Options {
         width: 1400,
@@ -50,29 +39,63 @@ fn real_every_demo_conversation_is_captured() {
         ..Default::default()
     })
     .unwrap();
-    #[cfg(target_os = "linux")]
-    for (key, value) in compositor.client_env() {
-        options = options.env(key, value);
-    }
-    let app = launch_app(options).unwrap();
-    for chat in chats {
-        let row = app.get_by_test_id(chat);
-        expect(&row).to_be_visible().unwrap();
-        let bounds = row.bounding_box().unwrap().expect("the row is laid out");
-        app.mouse().click(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.).unwrap();
-        expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
-        // Pictures decode off the main thread; give them a moment before the capture.
-        std::thread::sleep(Duration::from_millis(1500));
-        let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
+    // `SHOT_VARIANTS`: `<preset>-<scheme>` pairs, comma separated (`fluent-dark`); `native` is
+    // the platform's own look, `system` its own scheme.
+    let variants = std::env::var("SHOT_VARIANTS").unwrap_or_default();
+    let variants: Vec<&str> = variants.split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+    for variant in if variants.is_empty() { vec!["native-system"] } else { variants } {
+        let (preset, scheme) = variant.split_once('-').unwrap_or((variant, "system"));
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shots").join(variant);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut options = LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1");
+        if preset != "native" {
+            options = options.env("ND_PRESET", preset);
+        }
+        if scheme != "system" {
+            let toml = dir.join("theme.toml");
+            std::fs::write(&toml, format!("appearance = \"{scheme}\"\n")).unwrap();
+            options = options.env("ND_THEME_TOML", toml.display().to_string());
+        }
+        #[cfg(target_os = "linux")]
+        for (key, value) in compositor.client_env() {
+            options = options.env(key, value);
+        }
+        let app = launch_app(options).unwrap();
+        for chat in &chats {
+            let row = app.get_by_test_id(chat);
+            expect(&row).to_be_visible().unwrap();
+            let bounds = row.bounding_box().unwrap().expect("the row is laid out");
+            app.mouse().click(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.).unwrap();
+            expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
+            // Pictures decode off the main thread; give them a moment before the capture.
+            std::thread::sleep(Duration::from_millis(1500));
+            let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
+            #[cfg(target_os = "linux")]
+            grab(&compositor, app.pid(), &shot);
+            #[cfg(not(target_os = "linux"))]
+            app.screenshot(&shot, None).unwrap();
+            println!("screenshot {}", shot.display());
+        }
+        // A draft in the field, for the send button inside it.
+        app.get_by_test_id("composer.field").fill("Running late, see you at 8").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let shot = dir.join("shot-draft.png");
+        #[cfg(target_os = "linux")]
+        grab(&compositor, app.pid(), &shot);
+        #[cfg(not(target_os = "linux"))]
         app.screenshot(&shot, None).unwrap();
         println!("screenshot {}", shot.display());
     }
 }
 
-/// Where a run's pictures go: the look and scheme it was asked for (`ND_PRESET`, `ND_SCHEME`).
-fn variant() -> String {
-    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-    format!("{}-{}", get("ND_PRESET").unwrap_or_else(|| "native".into()), get("ND_SCHEME").unwrap_or_else(|| "system".into()))
+/// The app's window from the headless output: GPUI on Linux reads no frame back from a real
+/// window, so the compositor's screencopy (grim) takes it.
+#[cfg(target_os = "linux")]
+fn grab(compositor: &ndshell::hyprland::Hyprland, pid: u32, out: &std::path::Path) {
+    let client = compositor.wait_for_client(pid, Duration::from_secs(10)).unwrap();
+    let geometry = format!("{},{} {}x{}", client.at.0, client.at.1, client.size.0, client.size.1);
+    let status = compositor.command("grim").arg("-g").arg(&geometry).arg(out).status().unwrap();
+    assert!(status.success(), "grim -g {geometry} failed");
 }
 
 fn real_allowed() -> bool {
