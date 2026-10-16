@@ -13,6 +13,8 @@ use crate::settings::MessagesSettings;
 pub struct Connect {
     url: SharedString,
     password: SharedString,
+    /// The password shows as plain text (the eye in the field).
+    revealed: bool,
     loaded: bool,
 }
 
@@ -27,7 +29,7 @@ impl Connect {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let weak = cx.weak_entity();
         crate::bridge::Bridge::watch(cx, crate::bridge::Topic::Connection, &weak);
-        Self { url: SharedString::default(), password: SharedString::default(), loaded: false }
+        Self { url: SharedString::default(), password: SharedString::default(), revealed: false, loaded: false }
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -145,7 +147,15 @@ impl Render for Connect {
                         .on_submit(cx.listener(|this, _: &TextSubmitted, _, cx| this.submit(cx))),
                 )
                 .child(
-                    secure_field("server-password")
+                    if self.revealed { text_field("server-password") } else { secure_field("server-password") }
+                        .trailing_icon(
+                            if self.revealed { Icon::EyeOff } else { Icon::Eye },
+                            if self.revealed { "Hide Password" } else { "Show Password" },
+                        )
+                        .on_icon_click(cx.listener(|this, _: &FieldIconClicked, _, cx| {
+                            this.revealed = !this.revealed;
+                            cx.notify();
+                        }))
                         .text(self.password.clone())
                         .placeholder("Password")
                         .label("Password")
