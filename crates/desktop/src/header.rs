@@ -93,8 +93,10 @@ pub struct Header {
     request: u64,
 }
 
-/// The open conversation as the toolbar's centre item: its avatar over its name in a capsule
-/// with a chevron, the Focus moon beside the name. A click toggles the details.
+/// The open conversation as the toolbar's centre item: its avatar beside its name in a capsule,
+/// the Focus moon after it; a click toggles the details. Messages puts the avatar over the name
+/// in a band taller than NSToolbar's row, which an NSToolbar item cannot grow to (see the
+/// spacing table in docs/nd-parity.md), so the two sit side by side at Messages' sizes.
 pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
     if !shown {
         return None;
@@ -154,26 +156,30 @@ pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
                 .into_any_element(),
         );
     }
+    // In a Liquid Glass capsule, as Messages shows the conversation on macOS 26: nd draws glass
+    // the size of a control as a capsule.
     Some(
-        // Messages' toolbar: the avatar over the name.
-        v_flex()
-            .id("thread-identity")
-            .items_center()
-            .gap(px(2.))
-            .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
-            .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
-            .child(ui::chat_avatar(&chat, 28.))
-            // The name is a button, as Messages' is: it opens the details, and its tooltip
-            // carries the line under the name (service, shared location).
-            .child(
-                button("chat-title", chat_title(&chat))
-                    .bezel(Bezel::Borderless)
-                    .tooltip(subtitle(&chat, &handles, sharing))
-                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
+        glass().child(
+                h_flex()
+                    .id("thread-identity")
+                    .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
+                    .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
+                    .h(px(36.))
+                    .pl(px(3.))
+                    .pr_2()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(ui::chat_avatar(&chat, 30.))
+                    .child(
+                        button("chat-title", chat_title(&chat))
+                            .bezel(Bezel::Borderless)
+                            .tooltip(subtitle(&chat, &handles, sharing))
+                            .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
+                    )
+                    .when(silenced, |row| {
+                        row.child(icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"))
+                    }),
             )
-            .when(silenced, |row| {
-                row.child(icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"))
-            })
             .into_any_element(),
     )
 }

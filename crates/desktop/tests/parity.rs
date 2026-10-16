@@ -57,7 +57,9 @@ fn isolated(name: &str) -> LaunchOptions {
 
 fn shot(app: &nd_test::AppHandle, name: &str) {
     let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("parity-{name}.png"));
-    app.screenshot(&path, None).unwrap();
+    if let Err(e) = app.screenshot(&path, None) {
+        panic!("{e:?}\n{}", app.stderr_tail(200).join("\n"));
+    }
     println!("screenshot {}", path.display());
 }
 

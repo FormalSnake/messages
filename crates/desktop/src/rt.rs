@@ -53,9 +53,10 @@ pub fn detach(future: impl Future<Output = ()> + Send + 'static) {
     handle().spawn(future);
 }
 
-/// Calls `done` on the main thread after `delay`.
+/// Calls `done` on the main thread after `delay`. The sleep is made inside the task: a timer made
+/// on the main thread panics when AppKit renders from a callback outside the runtime's context.
 pub fn after(delay: Duration, done: impl FnOnce(&mut App) + 'static) {
-    spawn(tokio::time::sleep(delay), move |(), cx| done(cx));
+    spawn(async move { tokio::time::sleep(delay).await }, move |(), cx| done(cx));
 }
 
 /// Pumps a channel filled on another thread into `handle` on the main thread, a batch per hop,

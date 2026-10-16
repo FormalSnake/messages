@@ -19,7 +19,8 @@ use crate::bridge::{self, Bridge, Topic};
 use crate::ui;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
-/// Messages' sidebar row: a 40 pt avatar on an 80 pt row, the unread dot in a 20 pt gutter.
+/// Messages' sidebar row, measured: a 40 pt avatar 28 pt from the window's edge on an 80 pt
+/// row, the unread dot centred 19 pt in, the text 6 pt after the avatar.
 const AVATAR_ROW: f32 = 40.;
 const ROW_HEIGHT: f32 = 80.;
 const PINNED_AVATAR: f32 = 52.;
@@ -425,21 +426,24 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
     let secondary = if selected { theme.text.primary } else { theme.text.secondary };
     h_flex()
         .id(format!("chat-{}", chat.identifier))
-        .gap(px(10.))
         .h(px(ROW_HEIGHT))
         .pr_3()
         .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
         .child(
+            // The source list insets the row 16 pt; the dot's centre lands 19 pt from the edge
+            // and the avatar 28, as measured in Messages.
             div()
-                .w(px(20.))
+                .w(px(12.))
                 .flex()
-                .justify_center()
                 .flex_none()
-                .when(unread, |col| col.child(ui::dot(theme.accent, 8.).id(format!("unread-{}", chat.identifier)))),
+                .when(unread, |col| {
+                    col.child(ui::dot(theme.accent, 8.).ml(px(-1.)).id(format!("unread-{}", chat.identifier)))
+                }),
         )
         .child(ui::chat_avatar(&chat, AVATAR_ROW))
         .child(
             v_flex()
+                .ml(px(6.))
                 .flex_1()
                 .min_w_0()
                 .h_full()
@@ -600,9 +604,10 @@ impl Render for Sidebar {
             .size_full()
             .context_menu(|menu, _, _| menu.item("New Message", NewChat))
             .child(
-                div().px_2().pb_2().flex_none().child(
+                div().px_2().pt(px(10.)).pb_2().flex_none().child(
                     text_field("sidebar-search")
                         .search()
+                        .large()
                         .text(self.query.clone())
                         .placeholder("Search")
                         .label("Search")

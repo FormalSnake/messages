@@ -33,6 +33,9 @@ const LINK_CARD_WIDTH: f32 = 280.;
 const GRID_SIDE: f32 = 128.;
 const GRID_MAX_TILES: usize = 4;
 pub const AVATAR_COLUMN: f32 = 28.;
+/// The transcript's side inset to a bubble's edge: 20 pt in Messages, measured; the row's own
+/// layout adds the rest.
+const THREAD_INSET: f32 = 14.;
 /// The time beside a hovered row's bubble.
 const TIME_COLUMN: f32 = 54.;
 
@@ -427,43 +430,30 @@ fn reactions(groups: &[TapbackGroup]) -> Vec<Reaction> {
     groups.iter().map(|g| Reaction { glyph: g.glyph.clone().into(), count: g.count as u32, mine: g.mine }).collect()
 }
 
-/// The tail of a block that ends a run, in the block's fill at its bottom outer corner, the
-/// shape `chat_bubble` gives a text block: it starts inside the block's rounded corner and
-/// curves out past its edge.
+/// The tail of a block that ends a run, in the block's fill under its bottom outer corner: the
+/// lobe `chat_bubble` gives a text block, hanging `BUBBLE.tail_drop` below the block.
 fn with_tail(block: AnyElement, side: BubbleSide, fill: Hsla) -> AnyElement {
-    let (tw, th) = (BUBBLE.tail_width, BUBBLE.tail_height);
+    let (reach, drop) = (BUBBLE.tail_height, BUBBLE.tail_drop);
+    let sent = side == BubbleSide::Sent;
     let lobe = canvas(move |bounds, painter, _| {
-        let (x0, top) = (bounds.origin.x, bounds.origin.y);
-        let bottom = top + px(th);
-        let at = |x: f32, y: Pixels| point(x0 + px(x), y);
-        let path = match side {
-            BubbleSide::Sent => CanvasPath::new()
-                .move_to(at(0., top))
-                .line_to(at(th, top))
-                .quad_to(at(th, bottom - px(2.)), at(th + tw, bottom))
-                .quad_to(at(th - tw * 0.5, bottom), at(0., bottom - px(3.)))
-                .close(),
-            BubbleSide::Received => CanvasPath::new()
-                .move_to(at(tw + th, top))
-                .line_to(at(tw, top))
-                .quad_to(at(tw, bottom - px(2.)), at(0., bottom))
-                .quad_to(at(tw * 1.5, bottom), at(tw + th, bottom - px(3.)))
-                .close(),
-        };
+        let o = bounds.origin;
+        // The block's outer edge at `reach`, its bottom 6 pt down the canvas.
+        let at = |inset: f32, y: f32| point(o.x + px(if sent { reach - inset } else { inset }), o.y + px(y));
+        let path = CanvasPath::new()
+            .move_to(at(reach, 0.))
+            .line_to(at(8., 0.))
+            .quad_to(at(5., 5.), at(5.5, 6. + drop))
+            .quad_to(at(10., 7.), at(reach, 6.))
+            .close();
         painter.fill_path(path, fill);
     })
-    .w(px(tw + th))
-    .h(px(th))
+    .w(px(reach))
+    .h(px(6. + drop))
     .absolute()
     .bottom_0();
-    // The lobe hangs past the block into the room a text bubble keeps for its own tail, so the
-    // block lines up with the bubbles above it.
-    let (lobe, wrapper) = match side {
-        BubbleSide::Sent => (lobe.right(px(-tw)), div().mr(px(tw))),
-        BubbleSide::Received => (lobe.left(px(-tw)), div().ml(px(tw))),
-    };
+    let lobe = if sent { lobe.right_0() } else { lobe.left_0() };
     // Under the block: the part of the lobe inside the block's corner is hidden by its fill.
-    wrapper.relative().child(lobe).child(block).into_any_element()
+    div().relative().pb(px(drop)).child(lobe).child(block).into_any_element()
 }
 
 /// One block that is not text. `tail` is set when it ends a run.
@@ -503,8 +493,8 @@ fn attachment_block(
                     .when_some(attachment.width.zip(attachment.height), |img, (w, h)| img.size_hint(w, h))
                     .when(sticker, Image::contain)
                     .when_some(tail, |img, side| img.bubble_tail(side))
-                    .w(px(w + if tail.is_some() { BUBBLE.tail_width } else { 0. }))
-                    .h(px(h))
+                    .w(px(w))
+                    .h(px(h + if tail.is_some() { BUBBLE.tail_drop } else { 0. }))
                     .rounded_lg()
                     .into_any_element(),
                 None => placeholder(
@@ -548,11 +538,12 @@ fn attachment_block(
             let (show, download) = (ShowAttachment(reference.clone()), Download(reference));
             // With a poster the tail is cut from it; without one the box takes a plain tail.
             let poster_tail = tail.filter(|_| poster.is_some());
-            let box_w = w + if poster_tail.is_some() { BUBBLE.tail_width } else { 0. };
+            let box_w = w;
+            let box_h = h + if poster_tail.is_some() { BUBBLE.tail_drop } else { 0. };
             let block = div()
                 .id(id)
                 .w(px(box_w))
-                .h(px(h))
+                .h(px(box_h))
                 .rounded_lg()
                 .when(poster.is_none(), |el| el.bg(theme.surface.raised))
                 .flex()
@@ -572,7 +563,7 @@ fn attachment_block(
                             .alt(attachment.name.clone())
                             .when_some(poster_tail, |img, side| img.bubble_tail(side))
                             .w(px(box_w))
-                            .h(px(h))
+                            .h(px(box_h))
                             .rounded_lg()
                             .absolute()
                             .top_0()
@@ -982,7 +973,7 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
         (Some(sender), true) => ui::avatar_of(sender, AVATAR_COLUMN).into_any_element(),
         _ => div().w(px(AVATAR_COLUMN)).flex_none().into_any_element(),
     });
-    let gap = if data.position.starts_run() { 10. } else { 2. };
+    let gap = if data.position.starts_run() { BUBBLE.run_gap } else { BUBBLE.in_run_gap };
     let can_react = props.capabilities.reactions && !failed;
     let open_picker = OpenTapbacks(at(data));
     let mine = message.tapbacks.iter().find(|t| t.from_me).map(|t| t.kind);
@@ -1007,7 +998,7 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
     v_flex()
         .id(format!("row-{}", data.key))
         .w_full()
-        .px_4()
+        .px(px(THREAD_INSET))
         .pt(px(gap))
         .when(from_me, |col| col.items_end())
         .when(props.highlighted, |col| col.bg(theme.selection))

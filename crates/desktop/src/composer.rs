@@ -789,8 +789,9 @@ impl Render for Composer {
                 )
             })
             .child(
-                // Messages' bar: the field 12 pt in from the pane's edges, 10 pt above and below.
-                h_flex().px(px(12.)).py(px(10.)).items_end().child(extras).child(
+                // Messages' bar, measured: the plus button 11 pt from the pane's edge and the
+                // window's bottom (the menu's 1 pt anchor sits before it).
+                h_flex().pl(px(10.)).pr(px(11.)).py(px(11.)).items_end().child(extras).child(
                     composer("composer", &self.draft)
                         .placeholder(placeholder)
                         .when(is_editing, |composer| composer.send_icon(Icon::CircleCheck, "Save Edit"))

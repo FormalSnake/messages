@@ -145,3 +145,36 @@ template that carries the GPUI patch table and the Apple linker setting; offscre
 `NSTableView` rows and collapsed panes still reported visible to automation; list rows
 have no semantic click on AppKit (only a pointer click selects one) and toolbar items report
 bounds in their own coordinates.
+
+## Appendix: measured spacing against Messages.app
+
+Both windows captured on this Mac at 2x (`screencapture -l`), dark appearance (the system's;
+light was not switched for the run), measured with a pixel-scan script over the PNGs, in points.
+Messages' window was 2056x1291, the port's 1120x760: every value here is an inset or a size, not
+a share of the window. Platform conventions live in nd (`BUBBLE`, `COMPOSER_ROW`, the composer's
+gap); the rest is the app's.
+
+| What | Messages | Port | Where |
+| --- | --- | --- | --- |
+| Sidebar width | 320 | 320 | app (`SIDEBAR_WIDTH`) |
+| Sidebar search, top and height | 62, 36 capsule | 62, 36 capsule | nd `large()` (extra large NSSearchField) |
+| Sidebar row pitch | 80.5 | 80 + hairline | app |
+| Sidebar avatar, its x | 40, 28 | 40, 28 | app |
+| Sent bubble edge to window edge | 20 | 20 | app (`THREAD_INSET`) |
+| Received bubble edge to sidebar | 20 | 20 | app |
+| Bubble height, one line / with tail | 30 / 35 | 30 / 35 | nd `BUBBLE` |
+| Text to bubble edge, left / right | 13 / 13 | 13 / 13 | nd `BUBBLE.padding_x` |
+| Text top / bottom in a tailed bubble | 10 / 13 | 11 / 13 | nd `BUBBLE.padding_y` |
+| Gap inside a run | 3 | 3 | nd `BUBBLE.in_run_gap` |
+| Tail | hangs 5 under the corner, inside the width | same | nd `chat_bubble` |
+| Plus button, size and x | 31x30 at 11 | 32x31 at 11 | nd `COMPOSER_ROW`, app |
+| Field start | 51 | 51 | nd composer gap 9 |
+| Field and plus to window bottom | 11 | 11 | app |
+| Toolbar buttons | 36 glass circles at 8, 8 | 37x36 at 8, 8 | NSToolbar |
+| Conversation in the toolbar | 40 avatar over a 25 capsule, band about 76 | 32 avatar beside the name capsule, row 52 | open: see below |
+
+Open: Messages draws the conversation's avatar over its name in a band taller than NSToolbar's
+row. An NSToolbar item stays inside the row: a taller item is cut, and a bottom titlebar
+accessory that would make room grows the band by at least 36 pt. A view hung in the titlebar
+under the centred item drew its frame but not its content. So the port shows the avatar beside
+the name.
