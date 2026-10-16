@@ -691,7 +691,7 @@ impl Render for Root {
         let shown = selected.is_some() && self.new_chat.is_none();
         let mut bar = toolbar()
             .hide_title()
-            .item(
+            .navigation(
                 // A toolbar item: on macOS 26 the toolbar gives it its glass.
                 icon_button("new-chat", Icon::SquarePen)
                     .tooltip("New Message")
@@ -704,7 +704,14 @@ impl Render for Root {
         for item in header::toolbar_items(shown, cx) {
             bar = bar.item(item);
         }
-        let root = scaffold()
+        // The transcript scrolls under the toolbar's blur, as in Messages, while nothing sits
+        // above it in the content.
+        let under = shown && self.header.read(cx).is_empty(cx);
+        let mut root = scaffold();
+        if under {
+            root = root.content_under_toolbar();
+        }
+        let root = root
             .key_context(CONTEXT)
             .toolbar(bar)
             .sidebar(

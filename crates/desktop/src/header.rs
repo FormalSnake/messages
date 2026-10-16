@@ -327,6 +327,14 @@ fn facetime_banner(call: &FaceTimeCall, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+impl Header {
+    /// Shows nothing: no FaceTime banner and no summary card, so the transcript can run up
+    /// under the toolbar.
+    pub fn is_empty(&self, cx: &App) -> bool {
+        self.card.is_none() && bridge::store(cx).is_none_or(|store| store.state().facetime.is_none())
+    }
+}
+
 impl Render for Header {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(cx);

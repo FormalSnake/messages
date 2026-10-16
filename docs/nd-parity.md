@@ -171,6 +171,8 @@ gap); the rest is the app's.
 | Field start | 51 | 51 | nd composer gap 9 |
 | Field and plus to window bottom | 11 | 11 | app |
 | Toolbar buttons | 36 glass circles at 8, 8 | 37x36 at 8, 8 | NSToolbar |
+| Transcript under the toolbar | scrolls under it, blurred, first row rests below | same | nd `content_under_toolbar()` |
+| Compose button | leads the conversation's half | same | nd `navigation()` |
 | Conversation in the toolbar | 40 avatar over a 25 capsule, band about 76 | 32 avatar beside the name capsule, row 52 | open: see below |
 
 Open: Messages draws the conversation's avatar over its name in a band taller than NSToolbar's
