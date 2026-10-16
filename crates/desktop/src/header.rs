@@ -117,15 +117,14 @@ pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
     let theme = cx.theme().clone();
     let menu_chat = chat.clone();
     Some(
-        // Avatar beside the name: an NSToolbar item is one control tall, so Messages' avatar over
-        // the name does not fit the unified toolbar nd builds.
-        h_flex()
+        // Messages' toolbar: the avatar over the name.
+        v_flex()
             .id("thread-identity")
             .items_center()
-            .gap(px(6.))
+            .gap(px(2.))
             .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
             .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
-            .child(ui::chat_avatar(&chat, 22.))
+            .child(ui::chat_avatar(&chat, 28.))
             // The name is a button, as Messages' is: it opens the details, and its tooltip
             // carries the line under the name (service, shared location).
             .child(
@@ -172,8 +171,6 @@ pub fn toolbar_items(shown: bool, cx: &mut App) -> Vec<AnyElement> {
         let guid = chat.guid.clone();
         items.push(
             icon_button("facetime", Icon::Video)
-                .bezel(Bezel::Circle)
-                .size(px(28.))
                 .tooltip("FaceTime")
                 .on_click(move |_, _, cx| {
                     if let Some(store) = bridge::store(cx) {

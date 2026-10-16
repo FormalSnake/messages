@@ -14,8 +14,9 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 26 boxes are open, most of them on missing NativeDesktop
-APIs (listed at the end). The GPUI build stays the default until they close.
+Status: **not at parity.** 6 boxes are open: four Linux, Windows and Nix legs out of this
+run, the F12 HUD nd has not shipped, and swipe to reply, which a posted swipe does not drive.
+The GPUI build stays the default until they close.
 
 ## App shell and layout
 - [x] Title "Messages", default 1120x760, min 720x480 (t3: every test opens it; shot)
@@ -25,9 +26,9 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [x] Connect screen when unconfigured or offline with no chats (unit: `connect::tests`; shot of the settings window not taken)
 - [x] One store per connection; a settings edit that keeps the connection never reconnects (`root::connection_key`, unit via `settings::tests`)
 - [x] Notification click raises the window and opens the chat (nd-system `NotificationClicked` handler; not clicked on a real notification: see open items)
-- [ ] Window opens unfocused with `GPUIX_BACKGROUND=1`: nd's `WindowOptions` has no focus flag
-- [ ] F12 frame overlay: replaced by nd's dev HUD and `nd diagnose`, not the same readout
-- [ ] Bottom inset follows IME insets: open in the GPUI build too
+- [x] Window opens unfocused with `GPUIX_BACKGROUND=1` (nd `WindowOptions::background`; t3 `shots::real_a_background_launch_does_not_take_focus`)
+- [ ] F12 frame overlay: nd has no in-app frame HUD yet (its docs list it as not shipped); `nd diagnose` has the frame timings
+- [x] Bottom inset follows IME insets: the GPUI build (d12b662) never had it, so nothing is lost
 
 ## Connect and settings
 - [x] Address and password fields, `^https?://\S+$` plus a password to enable Connect (unit: `connect::tests`)
@@ -35,7 +36,7 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [x] Settings window (`Cmd+,`) with the connection and every `MessagesSettings` field as native rows; Nix-managed keys read-only (nd `settings_form`)
 - [x] `config.toml`, `MESSAGES_<KEY>` overrides, generated home-manager options (unit: `settings::tests::nix_options_are_generated_from_the_settings`)
 - [x] Move from `es.canarycoders.messages`: `config.json` settings into `config.toml` on first launch (unit: `migrate::tests`)
-- [ ] Password reveal button: nd's `secure_field` has none
+- [x] Password reveal: the field's trailing eye (t3 `parity::real_the_password_eye_shows_and_hides_the_password`, captured)
 
 ## Sidebar
 - [x] Search field, debounced 250 ms, operator search, tips, "No Results" note (code; search ran against the demo transport by hand only)
@@ -46,8 +47,8 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [x] Right-click on the sidebar offers New Message (code)
 - [x] Footer: status dot and host, waiting count, settings button (shot)
 - [x] Virtualized (nd `list`, an `NSTableView`) (t3)
-- [ ] Muted bell and Focus moon as icons: nd's icon set has neither, so they are text glyphs (☾, 🔕)
-- [ ] Previews clamp at two lines: nd text has no line clamp, so previews are cut at 90 characters
+- [x] Muted bell and Focus moon as icons (nd `icon()`, `moon`, `bell-off`; shot of the moon in Ben's row and toolbar)
+- [x] Previews clamp at two lines (nd `label().lines(2)`; shot)
 
 ## Switcher and new chat
 - [x] Cmd/Ctrl+K palette, fuzzy over conversations, Return opens (t3)
@@ -67,9 +68,9 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [x] Double-click opens the tapback picker; the message menu lists who reacted (code; not driven)
 - [x] Message menu: tapbacks, retry, reply, copy, translate, links, attachment, edit, undo send (code: `message::message_menu`)
 - [x] Send (t3: sending shows the bubble and clears the field)
-- [ ] Rows newer than open fade in; late tapbacks fade in: nd has no element animation
-- [ ] Timestamp column on hover: nd has no hover; the bubble's tooltip shows the time instead
-- [ ] Swipe right to reply: mapped to nd's page swipe, which only fires with "Swipe between pages" on
+- [x] Rows newer than open fade in (t3 `parity::real_a_new_row_fades_in`, frames); late tapbacks fade in (nd tier 2 `msg_gaps`)
+- [x] Timestamp column on hover (t3 `shots::real_hover_and_lightbox_video_are_captured`, shot)
+- [ ] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions); a two-finger swipe posted at the HID tap reaches the window (it scrolls vertically) but never opens the row action, so it is not seen working
 
 ## Bubbles and attachments
 - [x] Run corners, tail on a run's last bubble, emoji-only large, reactions on the bubble (nd `chat_bubble`; shot)
@@ -80,13 +81,13 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [x] Voice note pill with play/stop (core player, as before) (code)
 - [x] Stickers, file pills, link cards (code; link card in a shot of Ben's chat not taken)
 - [x] Over-25 MB pictures wait for a click (code)
-- [ ] Rich text: bold, italic, underline, strikethrough, mentions and links in the accent: nd text, labels and `chat_bubble` take one plain string
-- [ ] Big/small text effects: same reason
-- [ ] Subject line bold: same reason
-- [ ] SMS bubbles in green: `chat_bubble` has no fill other than the accent
-- [ ] Tails on picture and media blocks, picture tail cut: `chat_bubble` draws the only tail
-- [ ] Demo photos (SVG data URLs) render: nd's image pipeline has no SVG; real attachments are raster
-- [ ] File and video marks are text glyphs, not icons: no standalone icon element
+- [x] Rich text: bold, italic, underline, strikethrough, mentions in the accent; typed links become cards as before (shot of Design crit)
+- [x] Big/small text effects (shot: "shipped" in Design crit)
+- [x] Subject line bold (the demo's Chloe message has one; t3 `parity`, captured)
+- [x] SMS bubbles in green (`FillRole::Success`; shot of Jordan's chat)
+- [x] Tails on picture and media blocks, the picture cut into its tail (nd `image().bubble_tail`, tier 2; shot of the video and GIF); a photo grid has none
+- [x] Demo photos (SVG data URLs) render (shot)
+- [x] File and video marks are icons (nd `icon()`; shot of the play mark)
 
 ## Composer
 - [x] Draft per conversation, Return sends, grows to eight lines, pasted and dropped files stage (nd `composer`; t3 send)
@@ -95,8 +96,8 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [x] GIF picker with search, favorites and trending (code; needs a Klipy key)
 - [x] Effect picker, scheduled sends list, send-later options and typed time (code)
 - [x] Autofocus on chat, reply or edit change (code)
-- [ ] Send button turns into a check while editing and green for SMS: nd's composer has no send-button variant
-- [ ] "Type a path…" fallback when the picker fails: dropped, the picker exists on every target nd runs on
+- [x] Send button turns into a check while editing and green for SMS (nd composer `send_icon`/`send_fill`, tier 2)
+- [x] "Type a path…": "Attach by Path…" in the composer's plus menu stages the file (t3 `parity::real_attach_by_path_stages_the_file`)
 
 ## Header, details, FaceTime, Find My
 - [x] Title, 30 pt avatar, subtitle with service and "Sharing location", Focus moon (shot)
@@ -109,15 +110,15 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 
 ## Lightbox
 - [x] Every picture and video of the thread, previous and next (buttons, Left/Right, j/k), Copy, Open, Close (code; not driven)
-- [ ] In-app video playback: nd has no surface to paint decoded frames on (`canvas` paints nothing yet); videos open in the system player
-- [ ] Fade in and out: no element animation
+- [x] In-app video playback: Quick Look on macOS, as Messages (t3 captures the panel playing the demo clip); the lightbox plays it with nd `video()` where there is no Quick Look
+- [x] Fade in and out (nd panels fade, tier 2)
 
 ## System
 - [x] Desktop notifications for messages while in the background (nd-system; not seen on screen)
 - [x] Tray / menu bar item with the unread count and unread chats (nd-system; not seen on screen)
 - [x] Single instance: a second launch raises the first (nd-ipc; not exercised)
 - [x] Theme from nd-theme, live matugen `theme.json` on Linux (audit's matugen variants)
-- [ ] `MESSAGES_FONT`: nd's theme has no app font override
+- [x] `MESSAGES_FONT` (nd's app font override; t3 `parity`, captured in Courier New)
 - [ ] Icons on Linux: nd's GPUI backend draws a ring for every icon outside its few glyphs (settings, compose, info, clock, mail)
 
 ## Platforms and packaging
@@ -126,7 +127,7 @@ APIs (listed at the end). The GPUI build stays the default until they close.
 - [ ] Windows: nd's Windows backend has never run
 - [x] App id `dev.formalsnake.messages`, desktop entry and icon renamed, install script removes the old id's entry (code)
 - [ ] Nix package: needs NativeDesktop as a git dependency at a published rev; the home-manager module is generated but the package still builds the path dependency
-- [ ] `scripts/screenshot.sh`: removed with the GPUI `screenshot` feature; nd's automation `screenshot` replaces it in tests
+- [x] Screenshots: `crates/desktop/tests/shots.rs` captures every demo conversation, whole windows (replaces `scripts/screenshot.sh`)
 
 ## NativeDesktop gaps behind the open boxes
 Fixed on `port-messages-fixes` in the NativeDesktop repo (this port builds against it):

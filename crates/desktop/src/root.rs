@@ -472,9 +472,9 @@ impl Root {
                 cx.notify();
             });
         }))
-        .on_action(cx.listener(|this, ShowAttachment(r): &ShowAttachment, _, cx| {
-            let r = r.clone();
-            this.thread.update(cx, |thread, cx| thread.show_attachment(&r, cx));
+        .on_action(cx.listener(|this, ShowAttachment(r): &ShowAttachment, window, cx| {
+            let (r, window) = (r.clone(), window.id());
+            this.thread.update(cx, |thread, cx| thread.show_attachment(&r, window, cx));
         }))
     }
 
@@ -664,7 +664,9 @@ impl Render for Root {
         let unconfigured = matches!(self.store, StoreStatus::Unconfigured);
         let offline_empty = status == ConnectionStatus::Offline && !has_chats && !demo && self.store().is_some();
         let selected = self.selected();
-        let wide = window.viewport_size().width >= 900.;
+        // The pane opens at its width once; a window opened under 900 pt starts it compact.
+        let width = window.viewport_size().width;
+        let wide = width <= 0. || width >= 900.;
 
         let content = if unconfigured || offline_empty {
             self.connect.clone().into_any_element()
@@ -690,9 +692,8 @@ impl Render for Root {
         let mut bar = toolbar()
             .hide_title()
             .item(
+                // A toolbar item: on macOS 26 the toolbar gives it its glass.
                 icon_button("new-chat", Icon::SquarePen)
-                    .bezel(Bezel::Circle)
-                    .size(px(28.))
                     .tooltip("New Message")
                     .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
             )

@@ -72,8 +72,8 @@ fn real_every_demo_conversation_is_captured() {
             let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
             #[cfg(target_os = "linux")]
             grab(&compositor, app.pid(), &shot);
-            #[cfg(not(target_os = "linux"))]
-            app.screenshot(&shot, None).unwrap();
+            #[cfg(target_os = "macos")]
+            grab_macos(app.pid(), &shot);
             println!("screenshot {}", shot.display());
         }
         // A draft in the field, for the send button inside it.
@@ -82,8 +82,8 @@ fn real_every_demo_conversation_is_captured() {
         let shot = dir.join("shot-draft.png");
         #[cfg(target_os = "linux")]
         grab(&compositor, app.pid(), &shot);
-        #[cfg(not(target_os = "linux"))]
-        app.screenshot(&shot, None).unwrap();
+        #[cfg(target_os = "macos")]
+        grab_macos(app.pid(), &shot);
         println!("screenshot {}", shot.display());
     }
 }
@@ -96,6 +96,31 @@ fn grab(compositor: &ndshell::hyprland::Hyprland, pid: u32, out: &std::path::Pat
     let geometry = format!("{},{} {}x{}", client.at.0, client.at.1, client.size.0, client.size.1);
     let status = compositor.command("grim").arg("-g").arg(&geometry).arg(out).status().unwrap();
     assert!(status.success(), "grim -g {geometry} failed");
+}
+
+/// The whole window, toolbar and sidebar included, as the system draws it.
+#[cfg(target_os = "macos")]
+fn grab_macos(pid: u32, out: &std::path::Path) {
+    let main = windows_of(pid).first().map(|w| w.0).expect("the app has a window");
+    let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(out).status();
+}
+
+/// The on-screen windows of `pid`, largest first: (id, width, height).
+fn windows_of(pid: u32) -> Vec<(u32, u32, u32)> {
+    let script = format!(
+        "import CoreGraphics\nlet l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]\nfor w in l where (w[\"kCGWindowOwnerPID\"] as? Int) == {pid} {{ let b = w[\"kCGWindowBounds\"] as! [String: Any]; print(w[\"kCGWindowNumber\"]!, b[\"Width\"]!, b[\"Height\"]!) }}"
+    );
+    let out = std::process::Command::new("swift").args(["-e", &script]).output().expect("swift runs");
+    let mut found: Vec<(u32, u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let n: Vec<u32> = l.split_whitespace().filter_map(|p| p.parse::<f64>().ok().map(|f| f as u32)).collect();
+            (n.len() == 3).then(|| (n[0], n[1], n[2]))
+        })
+        .collect();
+    found.retain(|w| w.1 > 100 && w.2 > 100);
+    found.sort_by_key(|w| std::cmp::Reverse(w.1 * w.2));
+    found
 }
 
 fn real_allowed() -> bool {
@@ -136,12 +161,16 @@ fn real_hover_and_lightbox_video_are_captured() {
     std::thread::sleep(Duration::from_millis(500));
     let at = video.bounding_box().unwrap().expect("the video block is laid out");
     app.mouse().click(at.x + at.width / 2., at.y + at.height / 2.).unwrap();
-    expect(&app.get_by_test_id("lightbox-video-demo-video-1")).to_be_visible().unwrap();
-    expect(&app.get_by_test_id("lightbox-seek")).to_be_visible().unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
-    let shot = dir.join("shot-lightbox-video.png");
-    app.screenshot(&shot, None).unwrap();
-    println!("screenshot {}", shot.display());
+    // Quick Look opens in its own panel: find it among the app's windows and capture it.
+    std::thread::sleep(Duration::from_millis(2000));
+    let windows = windows_of(app.pid());
+    println!("windows {windows:?}");
+    assert!(windows.len() >= 2, "Quick Look opened a panel beside the main window: {windows:?}");
+    for (i, (id, _, _)) in windows.iter().enumerate() {
+        let shot = dir.join(format!("shot-quicklook-{i}.png"));
+        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &id.to_string()]).arg(&shot).status();
+        println!("screenshot {}", shot.display());
+    }
     println!("{}", app.snapshot().unwrap());
 }
 
@@ -212,6 +241,9 @@ fn real_composer_buttons_line_up_with_the_field() {
     let one = report("word");
     let send = bounds_of(&app, "composer.send").expect("the send button shows with text");
     assert!((centre(send) - centre(one)).abs() <= 1., "send centres on the field: {send:?} against {one:?}");
+    // Keys reach only the key window: a click in the field makes it so.
+    let f = bounds_of(&app, "composer.field").expect("field");
+    app.mouse().click(f.0 + 200., f.1 + f.3 / 2.).unwrap();
     app.get_by_test_id("composer.field").press("shift-enter").unwrap();
     app.get_by_test_id("composer.field").type_text("second line").unwrap();
     app.get_by_test_id("composer.field").press("shift-enter").unwrap();
@@ -222,5 +254,92 @@ fn real_composer_buttons_line_up_with_the_field() {
     for id in ["composer.attach", "composer.emoji", "composer.send"] {
         let b = bounds_of(&app, id).expect(id);
         assert!(((b.1 + b.3) - (tall.1 + tall.3)).abs() <= 1., "{id} stays on the last line: {b:?} against {tall:?}");
+    }
+}
+
+/// At launch the message field has the keyboard, as in Messages, not the sidebar's search.
+#[test]
+fn real_launch_focuses_the_message_field() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let app = launch_app(LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1")).unwrap();
+    expect(&app.get_by_test_id("composer.field")).to_be_visible().unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let tree = app.tree(None).unwrap();
+    let focused: Vec<String> = tree.windows[0].root.iter().filter(|n| n.focused).filter_map(|n| n.test_id.clone()).collect();
+    assert!(focused.iter().any(|id| id == "composer.field"), "the message field has focus, not {focused:?}");
+}
+
+/// A real two-finger swipe right over a received bubble (posted at the HID tap), then back:
+/// frames across the un-swipe, so the revealed reply action can be checked for clipping.
+#[cfg(target_os = "macos")]
+#[test]
+fn real_swipe_to_reply_and_back_is_captured() {
+    use ndshell::input::{GesturePhase, scroll_event};
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let app = launch_app(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
+            .env("MESSAGES_DEMO", "1")
+            .env("ND_AUTOMATION_CAPTURE", "region"),
+    )
+    .unwrap();
+    expect(&app.get_by_test_id("row-demo-msg-0012")).to_be_visible().unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let tree = app.tree(None).unwrap();
+    let frame = tree.windows[0].frame.expect("the window's frame");
+    let row = app.get_by_test_id("row-demo-msg-0012").bounding_box().unwrap().expect("laid out");
+    let at = (f64::from(frame.origin.x + row.x + row.width / 3.), f64::from(frame.origin.y + row.y + row.height / 2.));
+    let main = windows_of(app.pid()).first().map(|w| w.0).expect("a window");
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let shoot = |name: &str| {
+        let shot = dir.join(format!("shot-swipe-{name}.png"));
+        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(&shot).status();
+        println!("screenshot {}", shot.display());
+    };
+    let post = |dx: i32, phase: GesturePhase| {
+        ndshell::input::post(scroll_event(at, dx, 0, phase));
+        std::thread::sleep(Duration::from_millis(16));
+    };
+    ndshell::input::move_to(at);
+    std::thread::sleep(Duration::from_millis(200));
+    // Whether posted trackpad scrolls reach the window at all: a vertical one moves the rows.
+    let y = |app: &nd_test::AppHandle| app.get_by_test_id("row-demo-msg-0012").bounding_box().ok().flatten().map(|b| b.y);
+    let before = y(&app);
+    ndshell::input::post(scroll_event(at, 0, 0, GesturePhase::Began));
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(16));
+        ndshell::input::post(scroll_event(at, 0, 30, GesturePhase::Changed));
+    }
+    ndshell::input::post(scroll_event(at, 0, 0, GesturePhase::Ended));
+    std::thread::sleep(Duration::from_millis(600));
+    println!("vertical scroll moved the row from {before:?} to {:?}", y(&app));
+    let row = app.get_by_test_id("row-demo-msg-0012").bounding_box().unwrap().expect("laid out");
+    let at = (f64::from(frame.origin.x + row.x + row.width / 3.), f64::from(frame.origin.y + row.y + row.height / 2.));
+    let post = |dx: i32, phase: GesturePhase| {
+        ndshell::input::post(scroll_event(at, dx, 0, phase));
+        std::thread::sleep(Duration::from_millis(16));
+    };
+    ndshell::input::move_to(at);
+    std::thread::sleep(Duration::from_millis(200));
+    post(0, GesturePhase::Began);
+    for _ in 0..15 {
+        post(20, GesturePhase::Changed);
+    }
+    shoot("out");
+    for i in 0..10 {
+        post(-30, GesturePhase::Changed);
+        if i % 3 == 2 {
+            shoot(&format!("back-{i}"));
+        }
+    }
+    post(0, GesturePhase::Ended);
+    for i in 0..4 {
+        std::thread::sleep(Duration::from_millis(60));
+        shoot(&format!("settle-{i}"));
     }
 }
