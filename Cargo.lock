@@ -4068,6 +4068,7 @@ dependencies = [
  "nd-ipc",
  "nd-settings",
  "nd-test",
+ "ndshell",
  "reqwest",
  "schemars",
  "serde",
