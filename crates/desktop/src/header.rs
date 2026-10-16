@@ -118,25 +118,30 @@ pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
     };
     let theme = cx.theme().clone();
     let menu_chat = chat.clone();
+    // In a Liquid Glass capsule, as Messages shows the conversation on macOS 26: nd draws glass
+    // the size of a control as a capsule.
     Some(
-        h_flex()
-            .id("thread-identity")
-            .gap(px(6.))
-            .items_center()
-            .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
-            .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
-            .child(ui::chat_avatar(&chat, 32.))
-            // The name is a button in a glass capsule, as Messages' is: it opens the details, and
-            // its tooltip carries the line under the name (service, shared location).
-            .child(
-                button("chat-title", chat_title(&chat))
-                    .bezel(Bezel::Glass)
-                    .tooltip(subtitle(&chat, &handles, sharing))
-                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
+        glass().child(
+                h_flex()
+                    .id("thread-identity")
+                    .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
+                    .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
+                    .h(px(36.))
+                    .pl(px(3.))
+                    .pr_2()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(ui::chat_avatar(&chat, 30.))
+                    .child(
+                        button("chat-title", chat_title(&chat))
+                            .bezel(Bezel::Borderless)
+                            .tooltip(subtitle(&chat, &handles, sharing))
+                            .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
+                    )
+                    .when(silenced, |row| {
+                        row.child(icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"))
+                    }),
             )
-            .when(silenced, |row| {
-                row.child(icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"))
-            })
             .into_any_element(),
     )
 }
