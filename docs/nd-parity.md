@@ -14,9 +14,9 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 11 boxes are open: four Linux, Windows and Nix legs out of this
-run, the F12 HUD nd has not shipped, and six implemented but not yet seen working. The GPUI
-build stays the default until they close.
+Status: **not at parity.** 6 boxes are open: four Linux, Windows and Nix legs out of this
+run, the F12 HUD nd has not shipped, and swipe to reply, which a posted swipe does not drive.
+The GPUI build stays the default until they close.
 
 ## App shell and layout
 - [x] Title "Messages", default 1120x760, min 720x480 (t3: every test opens it; shot)
@@ -36,7 +36,7 @@ build stays the default until they close.
 - [x] Settings window (`Cmd+,`) with the connection and every `MessagesSettings` field as native rows; Nix-managed keys read-only (nd `settings_form`)
 - [x] `config.toml`, `MESSAGES_<KEY>` overrides, generated home-manager options (unit: `settings::tests::nix_options_are_generated_from_the_settings`)
 - [x] Move from `es.canarycoders.messages`: `config.json` settings into `config.toml` on first launch (unit: `migrate::tests`)
-- [ ] Password reveal: the field's trailing eye swaps a secure field for a plain one (code); the connect screen is not captured yet
+- [x] Password reveal: the field's trailing eye (t3 `parity::real_the_password_eye_shows_and_hides_the_password`, captured)
 
 ## Sidebar
 - [x] Search field, debounced 250 ms, operator search, tips, "No Results" note (code; search ran against the demo transport by hand only)
@@ -68,9 +68,9 @@ build stays the default until they close.
 - [x] Double-click opens the tapback picker; the message menu lists who reacted (code; not driven)
 - [x] Message menu: tapbacks, retry, reply, copy, translate, links, attachment, edit, undo send (code: `message::message_menu`)
 - [x] Send (t3: sending shows the bubble and clears the field)
-- [ ] Rows newer than open fade in (code, `enter_from`; not captured); late tapbacks fade in (nd tier 2 `msg_gaps`)
+- [x] Rows newer than open fade in (t3 `parity::real_a_new_row_fades_in`, frames); late tapbacks fade in (nd tier 2 `msg_gaps`)
 - [x] Timestamp column on hover (t3 `shots::real_hover_and_lightbox_video_are_captured`, shot)
-- [ ] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions); not driven with a real trackpad swipe
+- [ ] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions); a two-finger swipe posted at the HID tap reaches the window (it scrolls vertically) but never opens the row action, so it is not seen working
 
 ## Bubbles and attachments
 - [x] Run corners, tail on a run's last bubble, emoji-only large, reactions on the bubble (nd `chat_bubble`; shot)
@@ -83,7 +83,7 @@ build stays the default until they close.
 - [x] Over-25 MB pictures wait for a click (code)
 - [x] Rich text: bold, italic, underline, strikethrough, mentions in the accent; typed links become cards as before (shot of Design crit)
 - [x] Big/small text effects (shot: "shipped" in Design crit)
-- [ ] Subject line bold: a bold first run (code); no demo message has a subject
+- [x] Subject line bold (the demo's Chloe message has one; t3 `parity`, captured)
 - [x] SMS bubbles in green (`FillRole::Success`; shot of Jordan's chat)
 - [x] Tails on picture and media blocks, the picture cut into its tail (nd `image().bubble_tail`, tier 2; shot of the video and GIF); a photo grid has none
 - [x] Demo photos (SVG data URLs) render (shot)
@@ -97,7 +97,7 @@ build stays the default until they close.
 - [x] Effect picker, scheduled sends list, send-later options and typed time (code)
 - [x] Autofocus on chat, reply or edit change (code)
 - [x] Send button turns into a check while editing and green for SMS (nd composer `send_icon`/`send_fill`, tier 2)
-- [ ] "Type a path…": back as "Attach by Path…" in the composer's plus menu (code; the popover not captured)
+- [x] "Type a path…": "Attach by Path…" in the composer's plus menu stages the file (t3 `parity::real_attach_by_path_stages_the_file`)
 
 ## Header, details, FaceTime, Find My
 - [x] Title, 30 pt avatar, subtitle with service and "Sharing location", Focus moon (shot)
@@ -118,7 +118,7 @@ build stays the default until they close.
 - [x] Tray / menu bar item with the unread count and unread chats (nd-system; not seen on screen)
 - [x] Single instance: a second launch raises the first (nd-ipc; not exercised)
 - [x] Theme from nd-theme, live matugen `theme.json` on Linux (audit's matugen variants)
-- [ ] `MESSAGES_FONT`: set as nd's app font override (code); not captured
+- [x] `MESSAGES_FONT` (nd's app font override; t3 `parity`, captured in Courier New)
 - [ ] Icons on Linux: nd's GPUI backend draws a ring for every icon outside its few glyphs (settings, compose, info, clock, mail)
 
 ## Platforms and packaging
