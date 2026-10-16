@@ -685,7 +685,10 @@ impl Render for Composer {
         let is_editing = editing.is_some();
         // Texts to an SMS or RCS conversation go out green, as their bubbles do.
         let sms_fill = sms.then(|| cx.theme().fill(nd::theme::FillRole::Success).0);
-        if self.focus_for.as_ref() != Some(&mode) && crate::ui::focus_id(window, cx, "composer.field") {
+        // A new conversation, reply or edit puts the keyboard in the field, as in Messages. The
+        // window applies the request once the field is mounted, at launch too.
+        if self.focus_for.as_ref() != Some(&mode) {
+            window.focus("composer.field");
             self.focus_for = Some(mode);
         }
         let theme = cx.theme().clone();

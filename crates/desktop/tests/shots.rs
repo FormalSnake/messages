@@ -203,3 +203,18 @@ fn real_composer_buttons_line_up_with_the_field() {
         assert!(((b.1 + b.3) - (tall.1 + tall.3)).abs() <= 1., "{id} stays on the last line: {b:?} against {tall:?}");
     }
 }
+
+/// At launch the message field has the keyboard, as in Messages, not the sidebar's search.
+#[test]
+fn real_launch_focuses_the_message_field() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let app = launch_app(LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1")).unwrap();
+    expect(&app.get_by_test_id("composer.field")).to_be_visible().unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let tree = app.tree(None).unwrap();
+    let focused: Vec<String> = tree.windows[0].root.iter().filter(|n| n.focused).filter_map(|n| n.test_id.clone()).collect();
+    assert!(focused.iter().any(|id| id == "composer.field"), "the message field has focus, not {focused:?}");
+}
