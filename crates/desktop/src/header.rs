@@ -93,11 +93,12 @@ pub struct Header {
     request: u64,
 }
 
-/// The open conversation as the toolbar's centre item: its avatar beside its name in a capsule,
-/// the Focus moon after it; a click toggles the details. Messages puts the avatar over the name
-/// in a band taller than NSToolbar's row, which an NSToolbar item cannot grow to (see the
-/// spacing table in docs/nd-parity.md), so the two sit side by side at Messages' sizes.
-pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
+/// The open conversation: its avatar and its name, the Focus moon after the name; a click on the
+/// name toggles the details. `stacked` is Messages' look on macOS 26, the avatar over the name
+/// in a Liquid Glass capsule, drawn by the transcript at the top of its half where it runs up
+/// under the toolbar. Otherwise it is the toolbar's centre item, the avatar beside the name,
+/// since an NSToolbar item cannot grow past the toolbar's row (docs/nd-parity.md).
+pub fn identity(shown: bool, stacked: bool, cx: &mut App) -> Option<AnyElement> {
     if !shown {
         return None;
     }
@@ -156,10 +157,40 @@ pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
                 .into_any_element(),
         );
     }
+    let name = button("chat-title", chat_title(&chat))
+        .bezel(Bezel::Borderless)
+        .tooltip(subtitle(&chat, &handles, sharing))
+        .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo));
+    let moon = silenced.then(|| icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"));
+    if stacked {
+        return Some(
+            v_flex()
+                .id("thread-identity")
+                .items_center()
+                .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
+                .child(ui::chat_avatar(&chat, IDENTITY_AVATAR))
+                .child(
+                    glass().mt(px(-1.)).child(
+                        h_flex()
+                            .h(px(IDENTITY_CAPSULE))
+                            .pl(px(4.))
+                            .pr(px(8.))
+                            .gap(px(2.))
+                            .items_center()
+                            .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
+                            .child(name)
+                            .children(moon)
+                            .child(icon(Icon::ChevronRight, 9.).text_color(theme.text.secondary)),
+                    ),
+                )
+                .into_any_element(),
+        );
+    }
     // In a Liquid Glass capsule, as Messages shows the conversation on macOS 26: nd draws glass
     // the size of a control as a capsule.
     Some(
-        glass().child(
+        glass()
+            .child(
                 h_flex()
                     .id("thread-identity")
                     .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
@@ -170,19 +201,18 @@ pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
                     .gap(px(6.))
                     .items_center()
                     .child(ui::chat_avatar(&chat, 30.))
-                    .child(
-                        button("chat-title", chat_title(&chat))
-                            .bezel(Bezel::Borderless)
-                            .tooltip(subtitle(&chat, &handles, sharing))
-                            .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
-                    )
-                    .when(silenced, |row| {
-                        row.child(icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"))
-                    }),
+                    .child(name)
+                    .children(moon),
             )
             .into_any_element(),
     )
 }
+
+/// Messages' conversation over the transcript: a 40 pt avatar 6 pt from the window's top, the
+/// name's capsule 27 pt tall under it.
+const IDENTITY_AVATAR: f32 = 40.;
+const IDENTITY_CAPSULE: f32 = 27.;
+pub const IDENTITY_TOP: f32 = 6.;
 
 /// The toolbar's items for the open conversation: Catch me up and FaceTime. The details open
 /// from the conversation's name, as in Messages, or with Cmd-I.
@@ -363,6 +393,14 @@ fn facetime_banner(call: &FaceTimeCall, theme: &Theme) -> AnyElement {
             }
         }))
         .into_any_element()
+}
+
+impl Header {
+    /// Shows nothing: no FaceTime banner and no summary card, so the transcript can run up
+    /// under the toolbar.
+    pub fn is_empty(&self, cx: &App) -> bool {
+        self.card.is_none() && bridge::store(cx).is_none_or(|store| store.state().facetime.is_none())
+    }
 }
 
 impl Render for Header {

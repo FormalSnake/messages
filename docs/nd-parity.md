@@ -16,8 +16,8 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 6 boxes are open: four Linux, Windows and Nix legs out of this
-run, the F12 HUD nd has not shipped, and swipe to reply, which a posted swipe does not drive.
+Status: **not at parity.** 5 boxes are open: four Linux, Windows and Nix legs out of this
+run, and the F12 HUD nd has not shipped.
 The GPUI build stays the default until they close.
 
 ## App shell and layout
@@ -72,7 +72,7 @@ The GPUI build stays the default until they close.
 - [x] Send (t3: sending shows the bubble and clears the field)
 - [x] Rows newer than open fade in (t3 `parity::real_a_new_row_fades_in`, frames); late tapbacks fade in (nd tier 2 `msg_gaps`)
 - [x] Timestamp column on hover (t3 `shots::real_hover_and_lightbox_video_are_captured`, shot)
-- [ ] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions); a two-finger swipe posted at the HID tap reaches the window (it scrolls vertically) but never opens the row action, so it is not seen working
+- [x] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions), a bare arrow that stays whole while the message slides back over it (t3 `shots::real_swipe_to_reply_and_back_is_captured`, a two-finger swipe posted at the HID tap, captured open and closing)
 
 ## Bubbles and attachments
 - [x] Run corners, tail on a run's last bubble, emoji-only large, reactions on the bubble (nd `chat_bubble`; shot)
@@ -173,10 +173,11 @@ gap); the rest is the app's.
 | Field start | 51 | 51 | nd composer gap 9 |
 | Field and plus to window bottom | 11 | 11 | app |
 | Toolbar buttons | 36 glass circles at 8, 8 | 37x36 at 8, 8 | NSToolbar |
-| Conversation in the toolbar | 40 avatar over a 25 capsule, band about 76 | 32 avatar beside the name capsule, row 52 | open: see below |
+| Transcript under the toolbar | scrolls under it, blurred, first row rests below | same | nd `content_under_toolbar()` |
+| Compose button | leads the conversation's half | same | nd `navigation()` |
+| Conversation at the top | 40 avatar 6 from the top over a 27 capsule (45 to 72) | same | app, over the transcript |
 
-Open: Messages draws the conversation's avatar over its name in a band taller than NSToolbar's
-row. An NSToolbar item stays inside the row: a taller item is cut, and a bottom titlebar
-accessory that would make room grows the band by at least 36 pt. A view hung in the titlebar
-under the centred item drew its frame but not its content. So the port shows the avatar beside
-the name.
+Messages (a Catalyst app) draws the conversation over its transcript, not as a toolbar item:
+its accessibility tree has the name's button beside the transcript and only compose, filter and
+FaceTime in the toolbar. The port does the same. When a FaceTime banner or a summary card sits
+above the transcript, the conversation moves back into the toolbar, avatar beside name.
