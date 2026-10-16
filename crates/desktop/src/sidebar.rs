@@ -19,7 +19,9 @@ use crate::bridge::{self, Bridge, Topic};
 use crate::ui;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
-const AVATAR_ROW: f32 = 44.;
+/// Messages' sidebar row: a 40 pt avatar on an 80 pt row, the unread dot in a 20 pt gutter.
+const AVATAR_ROW: f32 = 40.;
+const ROW_HEIGHT: f32 = 80.;
 const PINNED_AVATAR: f32 = 52.;
 const PINNED_CELL: f32 = 92.;
 /// Long enough that two lines of a row clip it, short enough to keep a novel out of the label.
@@ -423,13 +425,13 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
     let secondary = if selected { theme.text.primary } else { theme.text.secondary };
     h_flex()
         .id(format!("chat-{}", chat.identifier))
-        .gap_2()
-        .h(px(68.))
+        .gap(px(10.))
+        .h(px(ROW_HEIGHT))
         .pr_3()
         .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
         .child(
             div()
-                .w(px(16.))
+                .w(px(20.))
                 .flex()
                 .justify_center()
                 .flex_none()
@@ -440,18 +442,24 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
             v_flex()
                 .flex_1()
                 .min_w_0()
+                .h_full()
+                .justify_center()
                 .gap_0p5()
+                .relative()
+                // The hairline under each row, from the text's edge, as Messages draws them.
+                .when(!selected, |col| col.child(separator().absolute().bottom_0().left_0().right_0()))
                 .child(
                     h_flex()
                         .gap_1()
-                        .child(text(chat_title(&chat)).font_weight(FontWeight::SEMIBOLD).flex_1().min_w_0())
+                        // One line, cut with an ellipsis, as Messages' names are.
+                        .child(label(chat_title(&chat)).font_weight(FontWeight::BOLD).flex_1().min_w_0())
                         .when(silenced, |row| {
                             row.child(icon(Icon::Moon, 11.).text_color(secondary).label("Focus on"))
                         })
                         .when(chat.muted, |row| {
                             row.child(icon(Icon::BellOff, 11.).text_color(secondary).label("Alerts hidden"))
                         })
-                        .child(text(date).tabular_nums().text_size(theme.type_scale.caption).text_color(secondary)),
+                        .child(label(date).text_size(theme.type_scale.footnote).text_color(secondary).flex_none()),
                 )
                 .child(label(preview).lines(2).text_size(theme.type_scale.footnote).text_color(if typing && !selected {
                     theme.accent
@@ -614,7 +622,8 @@ impl Render for Sidebar {
             .when(!pinned.is_empty(), |col| col.child(self.pinned_strip(&pinned, cx)))
             .child(
                 list("chats", &self.list, cx.processor(Self::row))
-                    .estimated_row_height(px(68.))
+                    .inset()
+                    .estimated_row_height(px(ROW_HEIGHT))
                     .selection(Selection::single())
                     .on_select(cx.listener(|_, e: &SelectEvent<Item>, window, cx| match &e.key {
                         Item::Chat(guid) => Self::open(guid, window, cx),
