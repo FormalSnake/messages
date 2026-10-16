@@ -191,6 +191,9 @@ fn real_composer_buttons_line_up_with_the_field() {
     let one = report("word");
     let send = bounds_of(&app, "composer.send").expect("the send button shows with text");
     assert!((centre(send) - centre(one)).abs() <= 1., "send centres on the field: {send:?} against {one:?}");
+    // Keys reach only the key window: a click in the field makes it so.
+    let f = bounds_of(&app, "composer.field").expect("field");
+    app.mouse().click(f.0 + 200., f.1 + f.3 / 2.).unwrap();
     app.get_by_test_id("composer.field").press("shift-enter").unwrap();
     app.get_by_test_id("composer.field").type_text("second line").unwrap();
     app.get_by_test_id("composer.field").press("shift-enter").unwrap();
