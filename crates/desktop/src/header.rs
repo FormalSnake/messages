@@ -116,6 +116,44 @@ pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
     };
     let theme = cx.theme().clone();
     let menu_chat = chat.clone();
+    if !cfg!(target_os = "macos") {
+        // GNOME's header bar and WinUI's title bar have no room for macOS' stacked identity:
+        // the avatar beside the name and the line under it, all of it opening the details.
+        return Some(
+            h_flex()
+                .id("thread-identity")
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
+                .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
+                .child(ui::chat_avatar(&chat, 32.))
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .child(text(chat_title(&chat)).id("chat-title").font_weight(FontWeight::SEMIBOLD))
+                                .when(silenced, |row| {
+                                    row.child(
+                                        icon(Icon::Moon, 11.)
+                                            .text_color(theme.text.secondary)
+                                            .label("Focus on")
+                                            .id("silenced"),
+                                    )
+                                }),
+                        )
+                        .child(
+                            text(subtitle(&chat, &handles, sharing))
+                                .text_size(theme.type_scale.caption)
+                                .text_color(theme.text.secondary),
+                        ),
+                )
+                .into_any_element(),
+        );
+    }
     Some(
         // Messages' toolbar: the avatar over the name.
         v_flex()

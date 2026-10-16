@@ -579,19 +579,37 @@ fn attachment_block(
                             .left_0(),
                     )
                 })
+                // The play mark and the length sit on the overlay surface, so they read over
+                // any frame, light or dark.
                 .child(
                     v_flex()
                         .items_center()
                         .gap_1()
-                        .child(icon(Icon::Play, 28.).text_color(theme.text.primary).label("Play"))
                         .child(
-                            text(if attachment.local_path.is_none() && fetching {
-                                "Loading\u{2026}".into()
-                            } else {
-                                duration
-                            })
-                            .text_size(theme.type_scale.caption)
-                            .text_color(theme.text.primary),
+                            div()
+                                .size(px(44.))
+                                .rounded_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(theme.surface.overlay)
+                                .child(icon(Icon::Play, 22.).text_color(theme.text.primary).label("Play")),
+                        )
+                        .child(
+                            div()
+                                .px_2()
+                                .rounded_full()
+                                .bg(theme.surface.overlay)
+                                .child(
+                                    text(if attachment.local_path.is_none() && fetching {
+                                        "Loading\u{2026}".into()
+                                    } else {
+                                        duration
+                                    })
+                                    .tabular_nums()
+                                    .text_size(theme.type_scale.caption)
+                                    .text_color(theme.text.primary),
+                                ),
                         ),
                 )
                 .into_any_element();
@@ -944,6 +962,7 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
                 .when(notify, |row| {
                     row.child(
                         link(format!("notify-{}", data.key), "Notify Anyway")
+                            .text_size(theme.type_scale.caption)
                             .on_click(move |_, window, cx| crate::ui::dispatch(window, cx, notify_anyway.clone())),
                     )
                 })
@@ -1035,7 +1054,7 @@ fn time_column(time: &SharedString, align_right: bool, shown: bool, theme: &Them
             text(time.clone())
                 .tabular_nums()
                 .text_size(theme.type_scale.caption)
-                .text_color(theme.text.tertiary)
+                .text_color(theme.text.secondary)
                 .whitespace_nowrap(),
         )
 }
@@ -1082,7 +1101,9 @@ pub fn caption_row(key: &str, caption: &str, strong: usize, theme: &Theme) -> An
                     .text_color(theme.text.secondary),
             )
         })
-        .child(text(rest.trim().to_owned()).text_size(theme.type_scale.caption).text_color(theme.text.tertiary))
+        // Secondary, not tertiary: the time is read, and tertiary falls under 4.5:1 on GPUI's
+        // and matugen's surfaces.
+        .child(text(rest.trim().to_owned()).text_size(theme.type_scale.caption).text_color(theme.text.secondary))
         .into_any_element()
 }
 
