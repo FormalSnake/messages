@@ -1,0 +1,181 @@
+//! Screenshots of the real app on the demo data, one per conversation, for the parity checklist
+//! (docs/nd-parity.md, "shot"). `SHOT_CHATS` names the sidebar test ids to open (comma
+//! separated); without it every demo conversation is captured. The pictures land in the test's
+//! target tmp dir and the path is printed.
+//!
+//! It opens a real window, so it runs only under nextest or with `ND_REAL=1`.
+
+use std::time::Duration;
+
+use nd_test::{LaunchOptions, expect, launch_app};
+
+const CHATS: &[&str] = &[
+    "chat-+14155550134",
+    "chat-chat240119384759",
+    "chat-priya.natarajan@icloud.com",
+    "chat-+14155550188",
+    "chat-chat881204957120",
+    "chat-+14155550199",
+    "chat-+34612345678",
+    "chat-+14155550170",
+    "chat-chloe@martin.design",
+];
+
+#[test]
+fn real_every_demo_conversation_is_captured() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let wanted = std::env::var("SHOT_CHATS").ok();
+    let chats: Vec<&str> = match wanted.as_deref() {
+        Some(list) => list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect(),
+        None => CHATS.to_vec(),
+    };
+    let app = launch_app(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
+            .env("MESSAGES_DEMO", "1")
+            .env("ND_AUTOMATION_CAPTURE", "region"),
+    )
+    .unwrap();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    for chat in chats {
+        let row = app.get_by_test_id(chat);
+        expect(&row).to_be_visible().unwrap();
+        let bounds = row.bounding_box().unwrap().expect("the row is laid out");
+        app.mouse().click(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.).unwrap();
+        expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
+        // Pictures decode off the main thread; give them a moment before the capture.
+        std::thread::sleep(Duration::from_millis(1500));
+        let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
+        app.screenshot(&shot, None).unwrap();
+        println!("screenshot {}", shot.display());
+    }
+}
+
+fn real_allowed() -> bool {
+    std::env::var_os("NEXTEST").is_some() || std::env::var_os("ND_REAL").is_some_and(|v| v == "1")
+}
+
+/// Alex's conversation open, the pointer over its newest message, then the video in the
+/// lightbox: captured for the checklist (hover time, picture tails, in-app playback).
+#[test]
+fn real_hover_and_lightbox_video_are_captured() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let app = launch_app(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
+            .env("MESSAGES_DEMO", "1")
+            .env("ND_AUTOMATION_CAPTURE", "region"),
+    )
+    .unwrap();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let row = app.get_by_test_id("chat-+14155550134");
+    expect(&row).to_be_visible().unwrap();
+    let bounds = row.bounding_box().unwrap().expect("the row is laid out");
+    app.mouse().click(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.).unwrap();
+    expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let last = app.get_by_test_id("row-demo-msg-0014").bounding_box().unwrap().expect("the last row is laid out");
+    app.mouse().move_to(last.x + last.width / 2., last.y + last.height / 2.).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let shot = dir.join("shot-hover.png");
+    app.screenshot(&shot, None).unwrap();
+    println!("screenshot {}", shot.display());
+
+    let video = app.get_by_test_id("att-demo-video-1");
+    video.scroll_into_view().ok();
+    std::thread::sleep(Duration::from_millis(500));
+    let at = video.bounding_box().unwrap().expect("the video block is laid out");
+    app.mouse().click(at.x + at.width / 2., at.y + at.height / 2.).unwrap();
+    expect(&app.get_by_test_id("lightbox-video-demo-video-1")).to_be_visible().unwrap();
+    expect(&app.get_by_test_id("lightbox-seek")).to_be_visible().unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    let shot = dir.join("shot-lightbox-video.png");
+    app.screenshot(&shot, None).unwrap();
+    println!("screenshot {}", shot.display());
+    println!("{}", app.snapshot().unwrap());
+}
+
+/// `GPUIX_BACKGROUND=1` opens the window without making it key.
+#[test]
+fn real_a_background_launch_does_not_take_focus() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let app = launch_app(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1").env("GPUIX_BACKGROUND", "1"),
+    )
+    .unwrap();
+    expect(&app.get_by_test_id("chat-+14155550134")).to_be_visible().unwrap();
+    let tree = app.tree(None).unwrap();
+    let window = &tree.windows[0];
+    assert!(window.visible, "the window is on screen");
+    assert!(!window.key, "the window did not take focus");
+}
+
+fn bounds_of(app: &nd_test::AppHandle, id: &str) -> Option<(f32, f32, f32, f32)> {
+    app.get_by_test_id(id).bounding_box().ok().flatten().map(|b| (b.x, b.y, b.width, b.height))
+}
+
+/// The composer empty, with a word, and grown to several lines: captured, and the buttons'
+/// centres checked against the field's single line, then their bottoms against its last.
+#[test]
+fn real_composer_buttons_line_up_with_the_field() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    let app = launch_app(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
+            .env("MESSAGES_DEMO", "1")
+            .env("ND_AUTOMATION_CAPTURE", "region"),
+    )
+    .unwrap();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let row = app.get_by_test_id("chat-chloe@martin.design");
+    expect(&row).to_be_visible().unwrap();
+    let at = row.bounding_box().unwrap().expect("the row is laid out");
+    app.mouse().click(at.x + at.width / 2., at.y + at.height / 2.).unwrap();
+    expect(&app.get_by_test_id("composer.field")).to_be_visible().unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let centre = |b: (f32, f32, f32, f32)| b.1 + b.3 / 2.;
+    let report = |what: &str| {
+        let field = bounds_of(&app, "composer.field").expect("field");
+        println!("{what}: field {field:?}");
+        for id in ["composer.attach", "composer.emoji", "composer.send"] {
+            if let Some(b) = bounds_of(&app, id) {
+                println!("{what}: {id} {b:?} centre off {:.1} bottom off {:.1}", centre(b) - centre(field), (b.1 + b.3) - (field.1 + field.3));
+            }
+        }
+        let shot = dir.join(format!("shot-composer-{what}.png"));
+        app.screenshot(&shot, None).unwrap();
+        println!("screenshot {}", shot.display());
+        field
+    };
+    let empty = report("empty");
+    for id in ["composer.attach", "composer.emoji"] {
+        let b = bounds_of(&app, id).expect(id);
+        assert!((centre(b) - centre(empty)).abs() <= 1., "{id} centres on the field: {b:?} against {empty:?}");
+    }
+    app.get_by_test_id("composer.field").type_text("Hello there").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let one = report("word");
+    let send = bounds_of(&app, "composer.send").expect("the send button shows with text");
+    assert!((centre(send) - centre(one)).abs() <= 1., "send centres on the field: {send:?} against {one:?}");
+    app.get_by_test_id("composer.field").press("shift-enter").unwrap();
+    app.get_by_test_id("composer.field").type_text("second line").unwrap();
+    app.get_by_test_id("composer.field").press("shift-enter").unwrap();
+    app.get_by_test_id("composer.field").type_text("third line").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let tall = report("lines");
+    assert!(tall.3 > one.3 + 20., "the field grew: {tall:?}");
+    for id in ["composer.attach", "composer.emoji", "composer.send"] {
+        let b = bounds_of(&app, id).expect(id);
+        assert!(((b.1 + b.3) - (tall.1 + tall.3)).abs() <= 1., "{id} stays on the last line: {b:?} against {tall:?}");
+    }
+}

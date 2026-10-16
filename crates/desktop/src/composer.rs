@@ -10,6 +10,7 @@ use messages_core::conversations::{conversation_guid, conversation_messages};
 use messages_core::format::{format_scheduled_for, parse_schedule_time};
 use messages_core::gifs::{Gif, KlipyClient, download_gif, favorite_gifs};
 use messages_core::{Message, Service};
+use nd::components::media::COMPOSER_ROW;
 use nd::prelude::*;
 
 use crate::actions::*;
@@ -49,13 +50,15 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 enum Popover {
     #[default]
     None,
     Gif,
+    Apps,
     Effects,
     Schedule,
+    Path,
 }
 
 #[derive(Default)]
@@ -75,6 +78,9 @@ pub struct Composer {
     popover: Popover,
     schedule_text: SharedString,
     schedule_error: Option<String>,
+    /// "Attach by Path": what is typed, and why the last one did not attach.
+    path_text: SharedString,
+    path_error: Option<String>,
     clipboard_notice: bool,
     gif: GifState,
     klipy: Option<Arc<KlipyClient>>,
@@ -96,6 +102,8 @@ impl Composer {
             popover: Popover::None,
             schedule_text: SharedString::default(),
             schedule_error: None,
+            path_text: SharedString::default(),
+            path_error: None,
             clipboard_notice: false,
             gif: GifState::default(),
             klipy: None,
@@ -141,18 +149,12 @@ impl Composer {
         }
     }
 
-    fn event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn event(&mut self, event: &ComposerEvent, _window: &mut Window, cx: &mut Context<Self>) {
         match event {
             ComposerEvent::Attach => {
-                let dialog = OpenDialog::file().multiple().title("Attach Files");
-                let weak = cx.weak_entity();
-                window.open_dialog(cx, dialog, {
-                    move |paths, cx| {
-                        if let Some(paths) = paths {
-                            weak.update(cx, |this, cx| this.stage_files(paths, cx));
-                        }
-                    }
-                });
+                self.popover = if self.popover == Popover::Apps { Popover::None } else { Popover::Apps };
+                cx.notify();
+                return;
             }
             ComposerEvent::Send => {
                 self.send(cx);
@@ -488,6 +490,122 @@ impl Composer {
             .into_any_element()
     }
 
+    fn choose_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = OpenDialog::file().multiple().title("Attach Files");
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, dialog, {
+            move |paths, cx| {
+                if let Some(paths) = paths {
+                    weak.update(cx, |this, cx| this.stage_files(paths, cx));
+                }
+            }
+        });
+    }
+
+    /// The "+" menu: files, GIFs, effects, send later and attach by path, each opening its own
+    /// panel in the same place.
+    fn apps_popover(&self, klipy: bool, effects: bool, can_schedule: bool, cx: &mut Context<Self>) -> AnyElement {
+        let go = |to: Popover| {
+            cx.listener(move |this: &mut Self, _: &ClickEvent, _, cx| {
+                this.popover = to;
+                if to == Popover::Gif && this.gif.items.is_empty() {
+                    this.search_gifs(cx);
+                }
+                cx.notify();
+            })
+        };
+        let item = |id: &'static str, glyph: Icon, title: &'static str| {
+            button(id, title).icon(glyph).bezel(Bezel::Borderless).w_full()
+        };
+        popover("composer-apps-menu")
+            .placement(Placement::Above)
+            .w(px(220.))
+            .p_1()
+            .on_dismiss(cx.listener(|this, _: &Dismissed, _, cx| {
+                if this.popover == Popover::Apps {
+                    this.popover = Popover::None;
+                    cx.notify();
+                }
+            }))
+            .child(
+                v_flex()
+                    .gap_0p5()
+                    .items_start()
+                    .child(item("apps-files", Icon::Image, "Photos and Files\u{2026}").on_click(cx.listener(
+                        |this, _: &ClickEvent, window, cx| {
+                            this.popover = Popover::None;
+                            this.choose_files(window, cx);
+                            cx.notify();
+                        },
+                    )))
+                    .when(klipy, |col| col.child(item("gif", Icon::Smile, "GIFs").on_click(go(Popover::Gif))))
+                    .when(effects, |col| {
+                        col.child(
+                            item("effect", Icon::Star, if self.effect.is_some() { "Message Effect \u{2022}" } else { "Message Effect" })
+                                .on_click(go(Popover::Effects)),
+                        )
+                    })
+                    .when(can_schedule, |col| {
+                        col.child(item("send-later", Icon::Clock, "Send Later").on_click(go(Popover::Schedule)))
+                    })
+                    .child(item("attach-path", Icon::FileText, "Attach by Path\u{2026}").on_click(go(Popover::Path))),
+            )
+            .into_any_element()
+    }
+
+    /// Stages the typed path (`~` is the home folder) when it names a file.
+    fn submit_path(&mut self, cx: &mut Context<Self>) {
+        let raw = self.path_text.trim().to_owned();
+        if raw.is_empty() {
+            return;
+        }
+        let path = match raw.strip_prefix('~') {
+            Some(rest) => std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(rest.trim_start_matches('/')))
+                .unwrap_or_else(|| PathBuf::from(&raw)),
+            None => PathBuf::from(&raw),
+        };
+        if !path.is_file() {
+            self.path_error = Some(format!("No file at {}", path.display()));
+            cx.notify();
+            return;
+        }
+        self.path_text = SharedString::default();
+        self.path_error = None;
+        self.popover = Popover::None;
+        self.stage_files(vec![path], cx);
+    }
+
+    fn path_popover(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme().clone();
+        popover("attach-path")
+            .placement(Placement::Above)
+            .w(px(360.))
+            .p_3()
+            .on_dismiss(cx.listener(|this, _: &Dismissed, _, cx| {
+                this.popover = Popover::None;
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        text_field("attach-path-field")
+                            .text(self.path_text.clone())
+                            .placeholder("Path to a file, for example ~/Pictures/photo.jpg")
+                            .label("Path")
+                            .on_change(cx.listener(|this, e: &TextChanged, _, cx| {
+                                this.path_text = e.text.clone();
+                                this.path_error = None;
+                                cx.notify();
+                            }))
+                            .on_submit(cx.listener(|this, _: &TextSubmitted, _, cx| this.submit_path(cx))),
+                    )
+                    .children(self.path_error.clone().map(|e| text(e).text_color(theme.text.danger))),
+            )
+            .into_any_element()
+    }
+
     fn schedule_popover(&self, cx: &mut Context<Self>) -> AnyElement {
         let now = ui::now_ms();
         let theme = cx.theme().clone();
@@ -564,6 +682,9 @@ impl Render for Composer {
             )
         };
         let mode = (chat.clone(), replying.as_ref().map(|m| m.guid.clone()), editing.as_ref().map(|m| m.guid.clone()));
+        let is_editing = editing.is_some();
+        // Texts to an SMS or RCS conversation go out green, as their bubbles do.
+        let sms_fill = sms.then(|| cx.theme().fill(nd::theme::FillRole::Success).0);
         if self.focus_for.as_ref() != Some(&mode) && crate::ui::focus_id(window, cx, "composer.field") {
             self.focus_for = Some(mode);
         }
@@ -587,7 +708,7 @@ impl Render for Composer {
                 .gap_2()
                 .px_4()
                 .py_1()
-                .child(text("\u{1f552}"))
+                .child(icon(Icon::Clock, 14.).text_color(theme.text.secondary))
                 .child(
                     v_flex().flex_1().min_w_0().child(text(ui::clamp_preview(&item.text, 80))).child(
                         text(format!("Sends at {}", format_scheduled_for(item.send_at, now)))
@@ -613,51 +734,16 @@ impl Render for Composer {
             })
         });
 
-        let extras = h_flex()
-            .gap_1()
-            .when(klipy, |row| {
-                row.child(
-                    div()
-                        .child(button("gif", "GIF").tooltip("GIFs").on_click(cx.listener(
-                            |this, _: &ClickEvent, _, cx| {
-                                this.popover = if this.popover == Popover::Gif { Popover::None } else { Popover::Gif };
-                                if this.popover == Popover::Gif && this.gif.items.is_empty() {
-                                    this.search_gifs(cx);
-                                }
-                                cx.notify();
-                            },
-                        )))
-                        .when(self.popover == Popover::Gif, |anchor| anchor.child(self.gif_popover(cx))),
-                )
-            })
-            .when(effects, |row| {
-                row.child(
-                    div()
-                        .child(
-                            button("effect", if self.effect.is_some() { "Effect \u{2022}" } else { "Effect" })
-                                .tooltip("Send with an effect")
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.popover =
-                                        if this.popover == Popover::Effects { Popover::None } else { Popover::Effects };
-                                    cx.notify();
-                                })),
-                        )
-                        .when(self.popover == Popover::Effects, |anchor| anchor.child(self.effects_popover(cx))),
-                )
-            })
-            .when(can_schedule || self.popover == Popover::Schedule, |row| {
-                row.child(
-                    div()
-                        .child(icon_button("send-later", Icon::Clock).tooltip("Send Later").on_click(cx.listener(
-                            |this, _: &ClickEvent, _, cx| {
-                                this.popover =
-                                    if this.popover == Popover::Schedule { Popover::None } else { Popover::Schedule };
-                                cx.notify();
-                            },
-                        )))
-                        .when(self.popover == Popover::Schedule, |anchor| anchor.child(self.schedule_popover(cx))),
-                )
-            });
+        // Messages' "+": everything that is not typing lives in one menu beside the field.
+        let popover = match self.popover {
+            Popover::None => None,
+            Popover::Apps => Some(self.apps_popover(klipy, effects, can_schedule, cx)),
+            Popover::Gif => Some(self.gif_popover(cx)),
+            Popover::Effects => Some(self.effects_popover(cx)),
+            Popover::Schedule => Some(self.schedule_popover(cx)),
+            Popover::Path => Some(self.path_popover(cx)),
+        };
+        let extras = div().id("composer-apps").w(px(0.)).h(px(COMPOSER_ROW)).children(popover);
 
         v_flex()
             .id("composer-area")
@@ -698,9 +784,12 @@ impl Render for Composer {
                 )
             })
             .child(
-                h_flex().px_4().py_2().gap_2().items_end().child(extras).child(
+                // Messages' bar: the field 12 pt in from the pane's edges, 10 pt above and below.
+                h_flex().px(px(12.)).py(px(10.)).items_end().child(extras).child(
                     composer("composer", &self.draft)
                         .placeholder(placeholder)
+                        .when(is_editing, |composer| composer.send_icon(Icon::CircleCheck, "Save Edit"))
+                        .when_some(sms_fill, |composer, fill| composer.send_fill(fill))
                         .flex_1()
                         .on_event(cx.listener(|this, e: &ComposerEvent, window, cx| this.event(e, window, cx))),
                 ),
