@@ -17,7 +17,7 @@ use crate::{composer, connect, details, header, new_chat, sidebar, switcher, thr
 /// How long an error toast stays up.
 const TOAST_FOR: Duration = Duration::from_secs(6);
 /// Sidebar width at and above 900 pt of window; narrower windows get the compact one.
-const SIDEBAR_WIDTH: f32 = 300.;
+const SIDEBAR_WIDTH: f32 = 320.;
 const SIDEBAR_WIDTH_COMPACT: f32 = 248.;
 pub const INFO_WIDTH: f32 = 280.;
 
