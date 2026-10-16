@@ -1,6 +1,7 @@
-//! The conversation's title row above the thread (avatar, title, the line under it, the Focus
-//! moon), the toolbar items that act on it (Catch me up, FaceTime, details), and the incoming
-//! FaceTime banner.
+//! The conversation in the window's toolbar, as Messages shows it (its avatar over its name,
+//! the Focus moon, the service and location line as the tooltip; a click opens the details),
+//! the toolbar items that act on it (Catch me up, FaceTime), and what sits over the thread: the
+//! incoming FaceTime banner and the Catch me up card.
 
 use std::sync::Arc;
 
@@ -92,8 +93,57 @@ pub struct Header {
     request: u64,
 }
 
-/// The toolbar's items for the open conversation: Catch me up, FaceTime and the details toggle.
-pub fn toolbar_items(shown: bool, info_open: bool, cx: &mut App) -> Vec<AnyElement> {
+/// The open conversation as the toolbar's centre item: its avatar over its name in a capsule
+/// with a chevron, the Focus moon beside the name. A click toggles the details.
+pub fn toolbar_identity(shown: bool, cx: &mut App) -> Option<AnyElement> {
+    if !shown {
+        return None;
+    }
+    let store = bridge::store(cx)?;
+    let (chat, handles, sharing, silenced) = {
+        let state = store.state();
+        let chat = state.selected_chat.as_deref().and_then(|g| state.chat(g)).cloned()?;
+        let handles = conversation_handles(&state, &chat.guid);
+        let sharing = !chat.is_group
+            && handles.first().is_some_and(|first| {
+                let friends: Vec<FriendLocation> = state.locations.values().cloned().collect();
+                let mut addresses = vec![first.address.clone()];
+                addresses.extend(contact_addresses(&state.contacts, &first.address));
+                match_friend(&friends, &addresses).is_some()
+            });
+        let silenced = conversation_focus(&state, &chat.guid) == FocusStatus::Silenced;
+        (chat, handles, sharing, silenced)
+    };
+    let theme = cx.theme().clone();
+    let menu_chat = chat.clone();
+    Some(
+        // Avatar beside the name: an NSToolbar item is one control tall, so Messages' avatar over
+        // the name does not fit the unified toolbar nd builds.
+        h_flex()
+            .id("thread-identity")
+            .items_center()
+            .gap(px(6.))
+            .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
+            .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
+            .child(ui::chat_avatar(&chat, 22.))
+            // The name is a button, as Messages' is: it opens the details, and its tooltip
+            // carries the line under the name (service, shared location).
+            .child(
+                button("chat-title", chat_title(&chat))
+                    .bezel(Bezel::Borderless)
+                    .tooltip(subtitle(&chat, &handles, sharing))
+                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
+            )
+            .when(silenced, |row| {
+                row.child(icon(Icon::Moon, 11.).text_color(theme.text.secondary).label("Focus on").id("silenced"))
+            })
+            .into_any_element(),
+    )
+}
+
+/// The toolbar's items for the open conversation: Catch me up and FaceTime. The details open
+/// from the conversation's name, as in Messages, or with Cmd-I.
+pub fn toolbar_items(shown: bool, cx: &mut App) -> Vec<AnyElement> {
     if !shown {
         return Vec::new();
     }
@@ -121,8 +171,10 @@ pub fn toolbar_items(shown: bool, info_open: bool, cx: &mut App) -> Vec<AnyEleme
     if capabilities.facetime && !chat.is_group {
         let guid = chat.guid.clone();
         items.push(
-            button("facetime", "FaceTime")
-                .tooltip("Start a FaceTime call")
+            icon_button("facetime", Icon::Video)
+                .bezel(Bezel::Circle)
+                .size(px(28.))
+                .tooltip("FaceTime")
                 .on_click(move |_, _, cx| {
                     if let Some(store) = bridge::store(cx) {
                         let guid = guid.clone();
@@ -132,16 +184,6 @@ pub fn toolbar_items(shown: bool, info_open: bool, cx: &mut App) -> Vec<AnyEleme
                 .into_any_element(),
         );
     }
-    items.push(
-        icon_button("toggle-info", Icon::Info)
-            .tooltip(format!(
-                "{} ({})",
-                if info_open { "Hide Details" } else { "Show Details" },
-                ui::shortcut("I", false)
-            ))
-            .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
-            .into_any_element(),
-    );
     items
 }
 
@@ -286,24 +328,14 @@ impl Render for Header {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(cx);
         let Some(store) = bridge::store(cx) else { return div().into_any_element() };
-        let (chat, handles, sharing, silenced, call) = {
+        let call = {
             let state = store.state();
-            let Some(chat) = self.chat.as_deref().and_then(|g| state.chat(g)).cloned() else {
+            if self.chat.as_deref().and_then(|g| state.chat(g)).is_none() {
                 return div().into_any_element();
-            };
-            let handles = conversation_handles(&state, &chat.guid);
-            let sharing = !chat.is_group
-                && handles.first().is_some_and(|first| {
-                    let friends: Vec<FriendLocation> = state.locations.values().cloned().collect();
-                    let mut addresses = vec![first.address.clone()];
-                    addresses.extend(contact_addresses(&state.contacts, &first.address));
-                    match_friend(&friends, &addresses).is_some()
-                });
-            let silenced = conversation_focus(&state, &chat.guid) == FocusStatus::Silenced;
-            (chat, handles, sharing, silenced, state.facetime.clone())
+            }
+            state.facetime.clone()
         };
         let theme = cx.theme().clone();
-        let menu_chat = chat.clone();
         let card = self.card.clone().map(|card| {
             let (body, color) = match card {
                 Card::Loading => ("Summarizing\u{2026}".to_owned(), theme.text.secondary),
@@ -331,35 +363,6 @@ impl Render for Header {
             .id("conversation-header")
             .w_full()
             .flex_none()
-            .child(
-                h_flex()
-                    .id("thread-identity")
-                    .gap_2()
-                    .h(px(52.))
-                    .px_4()
-                    .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
-                    .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
-                    .child(ui::chat_avatar(&chat, 30.))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .child(text(chat_title(&chat)).id("chat-title").font_weight(FontWeight::SEMIBOLD))
-                                    .when(silenced, |row| {
-                                        row.child(text("\u{263e}").text_color(theme.text.secondary).id("silenced"))
-                                    }),
-                            )
-                            .child(
-                                text(subtitle(&chat, &handles, sharing))
-                                    .text_size(theme.type_scale.caption)
-                                    .text_color(theme.text.secondary),
-                            ),
-                    ),
-            )
-            .child(separator())
             .children(call.map(|call| facetime_banner(&call, &theme)))
             .children(card)
             .into_any_element()

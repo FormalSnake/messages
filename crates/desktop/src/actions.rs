@@ -65,7 +65,10 @@ macro_rules! message_actions {
 
 message_actions!(Reply, CopyText, Translate, Edit, Unsend, Retry, NotifyAnyway, OpenThread, JumpTo, OpenTapbacks);
 
-actions!(messages, [CloseTapbacks, LightboxPrev, LightboxNext, LightboxCopy, RemoveLastRecipient]);
+actions!(
+    messages,
+    [CloseTapbacks, LightboxPrev, LightboxNext, LightboxCopy, LightboxPlay, LightboxMute, RemoveLastRecipient]
+);
 
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = messages, no_json)]
@@ -143,6 +146,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("right", LightboxNext, Some("Lightbox")),
         KeyBinding::new("j", LightboxNext, Some("Lightbox")),
         KeyBinding::new("secondary-c", LightboxCopy, Some("Lightbox")),
+        KeyBinding::new("space", LightboxPlay, Some("Lightbox")),
+        KeyBinding::new("m", LightboxMute, Some("Lightbox")),
         KeyBinding::new("backspace", RemoveLastRecipient, Some("NewChatTo")),
     ]);
     cx.bind_keys(bindings);
