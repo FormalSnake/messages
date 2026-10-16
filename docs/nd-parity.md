@@ -157,6 +157,7 @@ gap); the rest is the app's.
 | What | Messages | Port | Where |
 | --- | --- | --- | --- |
 | Sidebar width | 320 | 320 | app (`SIDEBAR_WIDTH`) |
+| Sidebar search, top and height | 62, 36 capsule | 62, 36 capsule | nd `large()` (extra large NSSearchField) |
 | Sidebar row pitch | 80.5 | 80 + hairline | app |
 | Sidebar avatar, its x | 40, 28 | 40, 28 | app |
 | Sent bubble edge to window edge | 20 | 20 | app (`THREAD_INSET`) |
