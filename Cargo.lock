@@ -4307,10 +4307,12 @@ dependencies = [
  "nd-core",
  "nd-diag",
  "nd-gpui",
+ "nd-icons",
  "nd-macros",
  "nd-os-linux",
  "nd-os-web",
  "nd-os-windows",
+ "nd-settings",
  "nd-system",
  "nd-terminal",
  "nd-theme",
@@ -4319,6 +4321,8 @@ dependencies = [
  "nd-virtual",
  "nd-webview",
  "ndshell",
+ "serde",
+ "serde_json",
  "toml 0.9.12+spec-1.1.0",
  "wasm-bindgen-test",
 ]
@@ -4327,6 +4331,7 @@ dependencies = [
 name = "nd-automation"
 version = "0.1.0"
 dependencies = [
+ "interprocess",
  "nd-core",
  "nd-ui",
  "serde",
@@ -4344,13 +4349,16 @@ dependencies = [
  "nd-diag",
  "nd-gesture",
  "nd-gpui",
+ "nd-icons",
  "nd-theme",
  "nd-ui",
  "nd-virtual",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-av-foundation",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "objc2-core-media",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
  "objc2-web-kit",
@@ -4368,6 +4376,7 @@ dependencies = [
  "nd-diag",
  "nd-gesture",
  "nd-gpui",
+ "nd-icons",
  "nd-theme",
  "nd-ui",
  "nd-virtual",
@@ -4378,16 +4387,23 @@ dependencies = [
 name = "nd-components"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "image",
+ "js-sys",
  "nd-core",
  "nd-gpui",
+ "nd-icons",
  "nd-macros",
  "nd-settings",
  "nd-theme",
  "nd-ui",
+ "resvg",
  "serde",
  "serde_json",
  "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -4432,6 +4448,10 @@ dependencies = [
  "gpui-pre-platform",
  "taffy 0.13.0",
 ]
+
+[[package]]
+name = "nd-icons"
+version = "0.1.0"
 
 [[package]]
 name = "nd-ipc"
@@ -4480,6 +4500,10 @@ name = "nd-os-windows"
 version = "0.1.0"
 dependencies = [
  "nd-backend-gpui",
+ "nd-core",
+ "nd-gpui",
+ "nd-theme",
+ "nd-ui",
  "raw-window-handle",
  "windows 0.62.2",
 ]
@@ -4504,6 +4528,7 @@ dependencies = [
 name = "nd-settings-derive"
 version = "0.1.0"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4577,6 +4602,7 @@ dependencies = [
 name = "nd-test"
 version = "0.1.0"
 dependencies = [
+ "interprocess",
  "nd-automation",
  "nd-core",
  "nd-ui",
@@ -5057,9 +5083,11 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "objc2 0.6.5",
+ "objc2-core-foundation",
  "objc2-core-media",
  "objc2-foundation 0.3.2",
  "objc2-media-toolbox",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -5198,6 +5226,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "dispatch2",
  "objc2 0.6.5",
  "objc2-core-audio",

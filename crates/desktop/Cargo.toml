@@ -16,16 +16,16 @@ tracing.workspace = true
 schemars = "1.2.3"
 toml_edit = "0.25"
 base64 = "0.22"
-nd = { path = "../../../nativedesktop-wt-port-messages/crates/nd", features = ["settings-ui"] }
-nd-settings = { path = "../../../nativedesktop-wt-port-messages/crates/nd-settings" }
-nd-ipc = { path = "../../../nativedesktop-wt-port-messages/crates/nd-ipc" }
+nd = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd", features = ["settings-ui"] }
+nd-settings = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd-settings" }
+nd-ipc = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd-ipc" }
 
 [dev-dependencies]
-nd = { path = "../../../nativedesktop-wt-port-messages/crates/nd", features = ["test", "audit"] }
-nd-test = { path = "../../../nativedesktop-wt-port-messages/crates/nd-test" }
+nd = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd", features = ["test", "audit"] }
+nd-test = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd-test" }
 
 [build-dependencies]
-nd = { path = "../../../nativedesktop-wt-port-messages/crates/nd", default-features = false, features = ["build"] }
+nd = { path = "../../../nativedesktop-wt-msg-gaps/crates/nd", default-features = false, features = ["build"] }
 
 # The appearance audit owns the main thread (AppKit), so libtest's harness is off.
 [[test]]
