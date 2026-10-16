@@ -501,7 +501,8 @@ fn seeds(p: &People, now: Millis) -> Vec<Seed> {
             display_name: None,
             icon: None,
             participants: vec![p.chloe.clone()],
-            rows: vec![row("Do you still have that Inter alternative you mentioned? The one with the tabular figures", 9 * DAY, chloe)],
+            rows: vec![row("Do you still have that Inter alternative you mentioned? The one with the tabular figures", 9 * DAY, chloe)
+                .with(|m| m.subject = Some("Typefaces".into()))],
         },
     ]
 }

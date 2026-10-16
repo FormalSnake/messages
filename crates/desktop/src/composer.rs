@@ -746,7 +746,9 @@ impl Render for Composer {
             Popover::Schedule => Some(self.schedule_popover(cx)),
             Popover::Path => Some(self.path_popover(cx)),
         };
-        let extras = div().id("composer-apps").w(px(0.)).h(px(COMPOSER_ROW)).children(popover);
+        // The panels hang off a sliver beside the plus button: a popover needs an anchor with an
+        // area to point at.
+        let extras = div().id("composer-apps").w(px(1.)).h(px(COMPOSER_ROW)).children(popover);
 
         v_flex()
             .id("composer-area")
