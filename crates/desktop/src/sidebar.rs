@@ -604,9 +604,10 @@ impl Render for Sidebar {
             .size_full()
             .context_menu(|menu, _, _| menu.item("New Message", NewChat))
             .child(
-                div().px_2().pb_2().flex_none().child(
+                div().px_2().pt(px(10.)).pb_2().flex_none().child(
                     text_field("sidebar-search")
                         .search()
+                        .large()
                         .text(self.query.clone())
                         .placeholder("Search")
                         .label("Search")
