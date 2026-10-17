@@ -207,6 +207,45 @@ fn details_open_and_close_from_the_toolbar() {
     }
 }
 
+/// The thread's widths while the details panel opens, sampled until it settles: one sample
+/// between the two ends means the inspector slid rather than jumped.
+fn opening_widths(app: &nd_test::AppHandle, wide: f32) -> Vec<f32> {
+    let width = || app.get_by_test_id("thread-view").bounding_box().unwrap().map_or(0., |b| b.width);
+    app.get_by_test_id("chat-title").click().unwrap();
+    let started = Instant::now();
+    let mut widths = vec![width()];
+    while started.elapsed() < Duration::from_secs(2) {
+        widths.push(width());
+    }
+    assert!(*widths.last().unwrap() < wide - 200., "the inspector never took its room: {widths:?}");
+    widths
+}
+
+#[test]
+fn details_slide_open_the_first_time_too() {
+    if !real_allowed() {
+        return;
+    }
+    let app = open_alex();
+    let width = || app.get_by_test_id("thread-view").bounding_box().unwrap().map_or(0., |b| b.width);
+    let wide = width();
+    for open in ["first", "second"] {
+        let widths = opening_widths(&app, wide);
+        let narrow = *widths.last().unwrap();
+        let mut widths = widths;
+        widths.dedup();
+        let between = widths.iter().filter(|w| **w < wide - 1. && **w > narrow + 1.).count();
+        println!("{open} open: {between} widths mid-slide: {widths:?}");
+        assert!(between > 0, "the {open} open jumped instead of sliding: {widths:?}");
+        app.get_by_test_id("chat-title").click().unwrap();
+        let started = Instant::now();
+        while width() < wide - 1. {
+            assert!(started.elapsed() < Duration::from_secs(5), "the inspector never gave its room back");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
 #[test]
 fn a_new_conversation_starts_from_a_typed_address() {
     if !real_allowed() {
