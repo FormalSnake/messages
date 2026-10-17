@@ -26,13 +26,13 @@ debug = "line-tables-only"
 # rev for all) once that branch is merged. nd carries its own patched GPUI, which only
 # reaches this workspace through the patch table below.
 [patch.crates-io]
-gpui-pre = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-pre" }
-gpui-fast = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-fast" }
-gpui-pre-linux = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-pre-linux" }
-gpui-fast-linux = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-fast-linux" }
-gpui-pre-wgpu = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-pre-wgpu" }
-gpui-fast-wgpu = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-fast-wgpu" }
-gpui-pre-windows = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-pre-windows" }
-gpui-fast-windows = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-fast-windows" }
-gpui-pre-apple = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-pre-apple" }
-gpui-fast-apple = { path = "../nativedesktop-wt-nd-video/crates/nd-gpui/vendor/gpui-fast-apple" }
+gpui-pre = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre" }
+gpui-fast = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast" }
+gpui-pre-linux = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-linux" }
+gpui-fast-linux = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-linux" }
+gpui-pre-wgpu = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-wgpu" }
+gpui-fast-wgpu = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-wgpu" }
+gpui-pre-windows = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-windows" }
+gpui-fast-windows = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-windows" }
+gpui-pre-apple = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-apple" }
+gpui-fast-apple = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-apple" }

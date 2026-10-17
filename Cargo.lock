@@ -4385,6 +4385,7 @@ dependencies = [
  "nd-virtual",
  "unicode-segmentation",
  "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
