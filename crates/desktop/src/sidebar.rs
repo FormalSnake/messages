@@ -24,6 +24,10 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 const AVATAR_ROW: f32 = 40.;
 const ROW_HEIGHT: f32 = 80.;
 const PINNED_AVATAR: f32 = 52.;
+/// Messages' search field: 62 pt from the window's top, 36 tall.
+const SEARCH_TOP: f32 = 62.;
+/// How far down the toolbar's band and blur reach over the sidebar: under the search field.
+pub const SIDEBAR_BAND: f32 = 106.;
 const PINNED_CELL: f32 = 92.;
 /// Long enough that two lines of a row clip it, short enough to keep a novel out of the label.
 const PREVIEW_CHARS: usize = 300;
@@ -38,6 +42,8 @@ const OPERATOR_TIPS: [&str; 4] = [
 /// One row of the list.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Item {
+    /// The pinned conversations' grid, the list's first row so it scrolls away with the list.
+    Pinned,
     Chat(String),
     ResultsHeader,
     /// A search hit, by message guid.
@@ -47,6 +53,7 @@ pub enum Item {
 
 pub struct Sidebar {
     list: ListState<Item>,
+    pinned: Vec<Arc<Chat>>,
     query: SharedString,
     results: Vec<Message>,
     search_error: Option<String>,
@@ -144,6 +151,7 @@ impl Sidebar {
         }
         Self {
             list: ListState::new(cx).estimated_row_height(px(64.)),
+            pinned: Vec::new(),
             query: SharedString::default(),
             results: Vec::new(),
             search_error: None,
@@ -221,6 +229,10 @@ impl Sidebar {
 
     fn row(&mut self, item: Item, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match item {
+            Item::Pinned => {
+                let pinned = self.pinned.clone();
+                self.pinned_strip(&pinned, cx)
+            }
             Item::Chat(guid) => {
                 let selected = self.selected.as_deref() == Some(guid.as_str());
                 chat_row(&guid, selected, cx)
@@ -530,6 +542,25 @@ impl Render for Sidebar {
             if has_query { visible } else { visible.into_iter().filter(|chat| !chat.pinned).collect() };
 
         let mut rows: Vec<(Item, u64)> = Vec::with_capacity(rest.len() + 4);
+        if let Some(store) = &store
+            && !pinned.is_empty()
+        {
+            let state = store.state();
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for chat in &pinned {
+                row_version(
+                    chat,
+                    conversation_typing(&state, &chat.guid),
+                    conversation_unread(&state, &chat.guid),
+                    conversation_focus(&state, &chat.guid) == FocusStatus::Silenced,
+                    contacts,
+                    selected.as_deref() == Some(chat.guid.as_str()),
+                )
+                .hash(&mut hasher);
+            }
+            rows.push((Item::Pinned, hasher.finish()));
+        }
+        self.pinned = pinned;
         if let Some(store) = &store {
             let state = store.state();
             for chat in &rest {
@@ -584,7 +615,7 @@ impl Render for Sidebar {
         let show_tips = has_query
             && !has_filter(&parsed)
             && rest.is_empty()
-            && pinned.is_empty()
+            && self.pinned.is_empty()
             && self.results.is_empty()
             && query.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
         let tips = show_tips.then(|| {
@@ -599,12 +630,33 @@ impl Render for Sidebar {
                         .map(|tip| text(*tip).text_size(theme.type_scale.caption).text_color(theme.text.secondary)),
                 )
         });
+        // The list runs up under the toolbar and the search field, which float over its top as in
+        // Messages: rows scroll under them into the toolbar's blur.
         v_flex()
             .id("sidebar")
             .size_full()
+            .relative()
             .context_menu(|menu, _, _| menu.item("New Message", NewChat))
             .child(
-                div().px_2().pt(px(10.)).pb_2().flex_none().child(
+                list("chats", &self.list, cx.processor(Self::row))
+                    .inset()
+                    .estimated_row_height(px(ROW_HEIGHT))
+                    .selection(Selection::single())
+                    .on_select(cx.listener(|this, e: &SelectEvent<Item>, window, cx| match &e.key {
+                        Item::Chat(guid) => Self::open(guid, window, cx),
+                        // The pinned grid is no row to select: its cells open their chats.
+                        Item::Pinned => {
+                            let keep = this.selected.clone().map(Item::Chat).into_iter().collect();
+                            this.list.set_selected(keep, cx);
+                        }
+                        Item::Result(_) | Item::ResultsHeader | Item::Note => {}
+                    }))
+                    .flex_1()
+                    .min_h_0(),
+            )
+            .child(self.footer(cx))
+            .child(
+                div().absolute().top(px(SEARCH_TOP)).left_0().right_0().px_2().child(
                     text_field("sidebar-search")
                         .search()
                         .large()
@@ -623,21 +675,7 @@ impl Render for Sidebar {
                         })),
                 ),
             )
-            .children(tips)
-            .when(!pinned.is_empty(), |col| col.child(self.pinned_strip(&pinned, cx)))
-            .child(
-                list("chats", &self.list, cx.processor(Self::row))
-                    .inset()
-                    .estimated_row_height(px(ROW_HEIGHT))
-                    .selection(Selection::single())
-                    .on_select(cx.listener(|_, e: &SelectEvent<Item>, window, cx| match &e.key {
-                        Item::Chat(guid) => Self::open(guid, window, cx),
-                        Item::Result(_) | Item::ResultsHeader | Item::Note => {}
-                    }))
-                    .flex_1()
-                    .min_h_0(),
-            )
-            .child(self.footer(cx))
+            .children(tips.map(|tips| div().absolute().top(px(SIDEBAR_BAND)).left_0().right_0().child(tips)))
     }
 }
 

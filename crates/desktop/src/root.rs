@@ -728,6 +728,10 @@ impl Render for Root {
                 sidebar()
                     .width(px(if wide { SIDEBAR_WIDTH } else { SIDEBAR_WIDTH_COMPACT }))
                     .min_w(px(SIDEBAR_WIDTH_COMPACT))
+                    // The list scrolls under the toolbar and the search field (52 pt of toolbar,
+                    // then the band down to sidebar::SIDEBAR_BAND).
+                    .under_toolbar()
+                    .toolbar_extension(sidebar::SIDEBAR_BAND - 52.)
                     .child(self.sidebar.clone()),
             )
             .content(content)
