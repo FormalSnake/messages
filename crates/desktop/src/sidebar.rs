@@ -23,12 +23,16 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// row, the unread dot centred 19 pt in, the text 6 pt after the avatar.
 const AVATAR_ROW: f32 = 40.;
 const ROW_HEIGHT: f32 = 80.;
-const PINNED_AVATAR: f32 = 52.;
 /// Messages' search field: 62 pt from the window's top, 36 tall.
 const SEARCH_TOP: f32 = 62.;
 /// How far down the toolbar's band and blur reach over the sidebar: under the search field.
 pub const SIDEBAR_BAND: f32 = 106.;
-const PINNED_CELL: f32 = 92.;
+/// Messages' pinned grid: three a row, 10 pt in from the list's sides, 10 pt apart.
+const PINNED_COLUMNS: usize = 3;
+const PINNED_INSET: f32 = 10.;
+const PINNED_GAP: f32 = 10.;
+/// The sidebar's width before the list has laid out once.
+const SIDEBAR_DEFAULT: f32 = 320.;
 /// Long enough that two lines of a row clip it, short enough to keep a novel out of the label.
 const PREVIEW_CHARS: usize = 300;
 const SEARCH_FAILED: &str = "Search failed. Try again.";
@@ -299,7 +303,13 @@ impl Sidebar {
     fn pinned_strip(&self, pinned: &[Arc<Chat>], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let store = bridge::store(cx);
-        let cells = pinned.iter().map(|chat| {
+        // Messages keeps three pinned conversations a row and grows them with the sidebar: the
+        // tiles share the row 10 pt in from each side, the picture 0.56 of a tile plus 17 pt
+        // (73 pt at the 320 pt default, measured).
+        let width = self.list.handle().0.borrow().width().unwrap_or(f64::from(SIDEBAR_DEFAULT)) as f32;
+        let tile = ((width - 2. * PINNED_INSET) / PINNED_COLUMNS as f32).max(60.);
+        let picture = (tile * 0.56 + 17.).round();
+        let cell = |chat: &Arc<Chat>| {
             let unread = store.as_ref().is_some_and(|s| conversation_unread(&s.state(), &chat.guid));
             let selected = self.selected.as_deref() == Some(chat.guid.as_str());
             let title = chat_title(chat);
@@ -308,40 +318,38 @@ impl Sidebar {
             let menu_chat = chat.clone();
             v_flex()
                 .id(format!("pinned-{}", chat.guid))
-                .w(px(PINNED_CELL))
+                .flex_1()
+                .min_w_0()
                 .items_center()
                 .gap_1()
                 .py_2()
+                .px_1()
+                .rounded(px(12.))
+                .when(selected, |cell| cell.bg(theme.accent))
                 .on_tap(move |_, window, cx| Self::open(&guid, window, cx))
                 .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, true))
-                .child(
-                    div()
-                        .size(px(PINNED_AVATAR + 8.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .border_2()
-                        .border_color(if selected { theme.accent } else { theme.surface.sidebar })
-                        .child(ui::chat_avatar(chat, PINNED_AVATAR))
-                        .when(unread, |cell| {
-                            cell.child(
-                                ui::dot(theme.accent, 14.)
-                                    .absolute()
-                                    .top(px(2.))
-                                    .right(px(2.))
-                                    .border_2()
-                                    .border_color(theme.surface.sidebar),
-                            )
-                        }),
-                )
-                .child(text(name).text_size(theme.type_scale.caption).text_color(if selected {
-                    theme.text.primary
+                .child(div().relative().child(ui::chat_avatar(chat, picture)).when(unread, |cell| {
+                    cell.child(
+                        ui::dot(theme.accent, 14.)
+                            .absolute()
+                            .top(px(2.))
+                            .right(px(2.))
+                            .border_2()
+                            .border_color(theme.surface.sidebar),
+                    )
+                }))
+                .child(text(name).text_size(theme.type_scale.caption).truncate().text_color(if selected {
+                    theme.accent_container.fg
                 } else {
                     theme.text.secondary
                 }))
+                .into_any_element()
+        };
+        let rows = pinned.chunks(PINNED_COLUMNS).map(|chunk| {
+            let fillers = (chunk.len()..PINNED_COLUMNS).map(|_| div().flex_1().into_any_element());
+            h_flex().gap(px(PINNED_GAP)).children(chunk.iter().map(cell)).children(fillers)
         });
-        div().id("pinned").flex().flex_row().flex_wrap().px_2().pb_2().children(cells).into_any_element()
+        v_flex().id("pinned").px(px(PINNED_INSET)).pb_2().gap(px(PINNED_GAP)).children(rows).into_any_element()
     }
 
     fn footer(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -558,6 +566,8 @@ impl Render for Sidebar {
                 )
                 .hash(&mut hasher);
             }
+            // The grid's pictures follow the list's width.
+            (self.list.handle().0.borrow().width().unwrap_or(0.) as i64).hash(&mut hasher);
             rows.push((Item::Pinned, hasher.finish()));
         }
         self.pinned = pinned;
