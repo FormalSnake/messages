@@ -456,8 +456,11 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
                 .justify_center()
                 .gap_0p5()
                 .relative()
-                // The hairline under each row, from the text's edge, as Messages draws them.
-                .when(!selected, |col| col.child(separator().absolute().bottom_0().left_0().right_0()))
+                // The hairline under each row, from the text's edge, as Messages draws them. GNOME's
+                // navigation sidebar and WinUI's navigation view separate rows by space alone.
+                .when(!selected && cfg!(target_os = "macos"), |col| {
+                    col.child(separator().absolute().bottom_0().left_0().right_0())
+                })
                 .child(
                     h_flex()
                         .gap_1()

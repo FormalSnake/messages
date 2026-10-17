@@ -20,6 +20,8 @@ const TOAST_FOR: Duration = Duration::from_secs(6);
 const SIDEBAR_WIDTH: f32 = 320.;
 const SIDEBAR_WIDTH_COMPACT: f32 = 248.;
 pub const INFO_WIDTH: f32 = 280.;
+/// The narrowest the transcript gets beside the open details before the sidebar steps aside.
+const TRANSCRIPT_MIN_WIDTH: f32 = 420.;
 
 enum StoreStatus {
     Loading,
@@ -683,7 +685,11 @@ impl Render for Root {
                 .size_full()
                 .relative()
                 .child(self.header.clone())
-                .child(div().flex_1().min_h_0().child(self.thread.clone()))
+                .child(page_transition(
+                    div().flex_1().min_h_0().child(self.thread.clone()),
+                    selected.as_deref().unwrap_or_default(),
+                    cx,
+                ))
                 .child(self.composer.clone())
                 .children(stacked.map(|identity| {
                     h_flex().absolute().top(px(header::IDENTITY_TOP)).left_0().right_0().justify_center().child(identity)
@@ -722,6 +728,15 @@ impl Render for Root {
             .toolbar(bar)
             .sidebar(
                 sidebar()
+                    // With the details open in a narrow window the sidebar folds away, as
+                    // Messages and WinUI's navigation view give the conversation the room;
+                    // AppKit's split view does that itself.
+                    .collapsed(
+                        !cfg!(target_os = "macos")
+                            && info
+                            && width > 0.
+                            && width - SIDEBAR_WIDTH_COMPACT - INFO_WIDTH < TRANSCRIPT_MIN_WIDTH,
+                    )
                     .width(px(if wide { SIDEBAR_WIDTH } else { SIDEBAR_WIDTH_COMPACT }))
                     .min_w(px(SIDEBAR_WIDTH_COMPACT))
                     .child(self.sidebar.clone()),
@@ -744,4 +759,24 @@ impl Render for Root {
         let _ = demo;
         self.actions(root, cx)
     }
+}
+
+/// Switching conversations brings the transcript in the way the platform brings in a page:
+/// WinUI's page entrance (a short rise on "fast out, slow in" over 167 ms), the look's own
+/// ease-out elsewhere. Keyed by the conversation, so each switch enters afresh. AppKit's split
+/// view swaps content without motion, as Messages does.
+fn page_transition(page: Div, chat: &str, cx: &App) -> AnyElement {
+    if cfg!(target_os = "macos") {
+        return page.into_any_element();
+    }
+    let theme = cx.theme();
+    let curve = if theme.preset == nd::theme::Preset::Fluent {
+        nd::prelude::Curve::Bezier(0., 0., 0., 1.)
+    } else {
+        nd::prelude::Curve::EaseOut
+    };
+    page.id(format!("page-{chat}"))
+        .animate(nd::prelude::Animation::timed(theme.motion.normal, curve))
+        .enter_from(|pose| nd::prelude::Pose { opacity: Some(0.), offset: Some((0., 12.)), ..pose })
+        .into_any_element()
 }
