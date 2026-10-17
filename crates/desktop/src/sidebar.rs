@@ -451,13 +451,19 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
         .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
         .child(
             // The source list insets the row 16 pt; the dot's centre lands 19 pt from the edge
-            // and the avatar 28, as measured in Messages.
+            // and the avatar 28, as measured in Messages. The drawn sidebars on Linux and Windows
+            // have no such inset, so the dot gets a column of its own inside the selection.
             div()
-                .w(px(12.))
+                .w(px(if cfg!(target_os = "macos") { 12. } else { 22. }))
                 .flex()
                 .flex_none()
+                .when(!cfg!(target_os = "macos"), |col| col.justify_center())
                 .when(unread, |col| {
-                    col.child(ui::dot(theme.accent, 8.).ml(px(-1.)).id(format!("unread-{}", chat.identifier)))
+                    col.child(
+                        ui::dot(theme.accent, 8.)
+                            .when(cfg!(target_os = "macos"), |dot| dot.ml(px(-1.)))
+                            .id(format!("unread-{}", chat.identifier)),
+                    )
                 }),
         )
         .child(ui::chat_avatar(&chat, AVATAR_ROW))
@@ -470,8 +476,11 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
                 .justify_center()
                 .gap_0p5()
                 .relative()
-                // The hairline under each row, from the text's edge, as Messages draws them.
-                .when(!selected, |col| col.child(separator().absolute().bottom_0().left_0().right_0()))
+                // The hairline under each row, from the text's edge, as Messages draws them. GNOME's
+                // navigation sidebar and WinUI's navigation view separate rows by space alone.
+                .when(!selected && cfg!(target_os = "macos"), |col| {
+                    col.child(separator().absolute().bottom_0().left_0().right_0())
+                })
                 .child(
                     h_flex()
                         .gap_1()

@@ -27,32 +27,83 @@ fn real_every_demo_conversation_is_captured() {
         println!("skipped: opens a real window; run with ND_REAL=1");
         return;
     }
-    let wanted = std::env::var("SHOT_CHATS").ok();
+    let wanted = std::env::var("SHOT_CHATS").ok().filter(|w| !w.trim().is_empty());
     let chats: Vec<&str> = match wanted.as_deref() {
         Some(list) => list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect(),
         None => CHATS.to_vec(),
     };
-    let app = launch_app(
-        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
-            .env("MESSAGES_DEMO", "1")
-            .env("ND_AUTOMATION_CAPTURE", "region"),
-    )
+    #[cfg(target_os = "linux")]
+    let compositor = ndshell::hyprland::Hyprland::start(ndshell::hyprland::Options {
+        width: 1400,
+        height: 900,
+        ..Default::default()
+    })
     .unwrap();
-    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
-    for chat in chats {
-        let row = app.get_by_test_id(chat);
-        expect(&row).to_be_visible().unwrap();
-        let bounds = row.bounding_box().unwrap().expect("the row is laid out");
-        app.mouse().click(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.).unwrap();
-        expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
-        // Pictures decode off the main thread; give them a moment before the capture.
-        std::thread::sleep(Duration::from_millis(1500));
-        let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
-        // The whole window, toolbar and sidebar included, as the system draws it.
-        let main = windows_of(app.pid()).first().map(|w| w.0).expect("the app has a window");
-        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(&shot).status();
+    // `SHOT_VARIANTS`: `<preset>-<scheme>` pairs, comma separated (`fluent-dark`); `native` is
+    // the platform's own look, `system` its own scheme.
+    let variants = std::env::var("SHOT_VARIANTS").unwrap_or_default();
+    let variants: Vec<&str> = variants.split(',').map(str::trim).filter(|v| !v.is_empty()).collect();
+    for variant in if variants.is_empty() { vec!["native-system"] } else { variants } {
+        let (preset, scheme) = variant.split_once('-').unwrap_or((variant, "system"));
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("shots").join(variant);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut options = LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1");
+        if preset != "native" {
+            options = options.env("ND_PRESET", preset);
+        }
+        if scheme != "system" {
+            let toml = dir.join("theme.toml");
+            std::fs::write(&toml, format!("appearance = \"{scheme}\"\n")).unwrap();
+            options = options.env("ND_THEME_TOML", toml.display().to_string());
+        }
+        #[cfg(target_os = "linux")]
+        for (key, value) in compositor.client_env() {
+            options = options.env(key, value);
+        }
+        let app = launch_app(options).unwrap();
+        for chat in &chats {
+            let row = app.get_by_test_id(chat);
+            row.scroll_into_view().ok();
+            expect(&row).to_be_visible().unwrap();
+            let bounds = row.bounding_box().unwrap().expect("the row is laid out");
+            app.mouse().click(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.).unwrap();
+            expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
+            // Pictures decode off the main thread; give them a moment before the capture.
+            std::thread::sleep(Duration::from_millis(1500));
+            let shot = dir.join(format!("shot-{}.png", chat.trim_start_matches("chat-").replace(['+', '@', '.'], "_")));
+            #[cfg(target_os = "linux")]
+            grab(&compositor, app.pid(), &shot);
+            #[cfg(target_os = "macos")]
+            grab_macos(app.pid(), &shot);
+            println!("screenshot {}", shot.display());
+        }
+        // A draft in the field, for the send button inside it.
+        app.get_by_test_id("composer.field").fill("Running late, see you at 8").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let shot = dir.join("shot-draft.png");
+        #[cfg(target_os = "linux")]
+        grab(&compositor, app.pid(), &shot);
+        #[cfg(target_os = "macos")]
+        grab_macos(app.pid(), &shot);
         println!("screenshot {}", shot.display());
     }
+}
+
+/// The app's window from the headless output: GPUI on Linux reads no frame back from a real
+/// window, so the compositor's screencopy (grim) takes it.
+#[cfg(target_os = "linux")]
+fn grab(compositor: &ndshell::hyprland::Hyprland, pid: u32, out: &std::path::Path) {
+    let client = compositor.wait_for_client(pid, Duration::from_secs(10)).unwrap();
+    let geometry = format!("{},{} {}x{}", client.at.0, client.at.1, client.size.0, client.size.1);
+    let status = compositor.command("grim").arg("-g").arg(&geometry).arg(out).status().unwrap();
+    assert!(status.success(), "grim -g {geometry} failed");
+}
+
+/// The whole window, toolbar and sidebar included, as the system draws it.
+#[cfg(target_os = "macos")]
+fn grab_macos(pid: u32, out: &std::path::Path) {
+    let main = windows_of(pid).first().map(|w| w.0).expect("the app has a window");
+    let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(out).status();
 }
 
 /// The on-screen windows of `pid`, largest first: (id, width, height).
@@ -118,10 +169,101 @@ fn real_hover_and_lightbox_video_are_captured() {
     assert!(windows.len() >= 2, "Quick Look opened a panel beside the main window: {windows:?}");
     for (i, (id, _, _)) in windows.iter().enumerate() {
         let shot = dir.join(format!("shot-quicklook-{i}.png"));
-        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &id.to_string()]).arg(&shot).status();
+        let _ =
+            std::process::Command::new("screencapture").args(["-x", "-o", "-l", &id.to_string()]).arg(&shot).status();
         println!("screenshot {}", shot.display());
     }
     println!("{}", app.snapshot().unwrap());
+}
+
+/// Alex's video double-clicked: the viewer covers the window and plays it, a click on the
+/// picture pauses it where it is and another plays on. `ND_PRESET` picks the look.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn real_a_double_clicked_video_plays_in_the_viewer() {
+    if !real_allowed() {
+        println!("skipped: opens a real window; run with ND_REAL=1");
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    let compositor = ndshell::hyprland::Hyprland::start(ndshell::hyprland::Options {
+        width: 1400,
+        height: 900,
+        ..Default::default()
+    })
+    .unwrap();
+    let mut options = LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1");
+    if let Ok(preset) = std::env::var("ND_PRESET") {
+        options = options.env("ND_PRESET", preset);
+    }
+    #[cfg(target_os = "linux")]
+    for (key, value) in compositor.client_env() {
+        options = options.env(key, value);
+    }
+    let app = launch_app(options).unwrap();
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer");
+    std::fs::create_dir_all(&dir).unwrap();
+    let shoot = |name: &str| {
+        let shot = dir.join(name);
+        #[cfg(target_os = "linux")]
+        grab(&compositor, app.pid(), &shot);
+        #[cfg(windows)]
+        grab_windows(app.pid(), &shot);
+        println!("screenshot {}", shot.display());
+        shot
+    };
+    let row = app.get_by_test_id("chat-+14155550134");
+    expect(&row).to_be_visible().unwrap();
+    let at = row.bounding_box().unwrap().expect("the row is laid out");
+    app.mouse().click(at.x + at.width / 2., at.y + at.height / 2.).unwrap();
+    expect(&app.get_by_test_id("thread")).to_be_visible().unwrap();
+    let video = app.get_by_test_id("att-demo-video-1");
+    video.scroll_into_view().ok();
+    std::thread::sleep(Duration::from_millis(800));
+    let at = video.bounding_box().unwrap().expect("the video block is laid out");
+    let (x, y) = (at.x + at.width / 2., at.y + at.height / 2.);
+    app.mouse().click(x, y).unwrap();
+    std::thread::sleep(Duration::from_millis(120));
+    app.mouse().click(x, y).unwrap();
+    expect(&app.get_by_test_id("lightbox-video-demo-video-1")).to_be_visible().unwrap();
+    let position = |app: &nd_test::AppHandle| {
+        let snapshot = app.snapshot().unwrap();
+        assert!(!snapshot.contains("played here"), "the video failed to play:\n{snapshot}");
+        assert!(!snapshot.contains("[testid=lightbox-play] [hidden]"), "the transport is on screen:\n{snapshot}");
+        let line = snapshot.lines().find(|l| l.contains("[testid=lightbox-seek]")).unwrap_or_default();
+        line.split("[value=").nth(1).unwrap_or_default().to_owned()
+    };
+    std::thread::sleep(Duration::from_millis(900));
+    let first = shoot("viewer-1.png");
+    assert!(!position(&app).starts_with("\"0:00"), "the double click left it playing");
+
+    // A click on the picture pauses it, and the position holds; another plays on.
+    let picture = app.get_by_test_id("lightbox-picture").bounding_box().unwrap().expect("the picture is laid out");
+    let (px, py) = (picture.x + picture.width / 2., picture.y + picture.height / 2.);
+    app.mouse().click(px, py).unwrap();
+    std::thread::sleep(Duration::from_millis(600));
+    let paused = position(&app);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(position(&app), paused, "paused playback holds its position");
+    app.mouse().click(px, py).unwrap();
+    std::thread::sleep(Duration::from_millis(900));
+    let second = shoot("viewer-2.png");
+    assert_ne!(std::fs::read(&first).unwrap(), std::fs::read(&second).unwrap(), "the picture moves");
+}
+
+/// The app's main window from the screen: a release build has no GPUI capture, so the
+/// desktop is copied at the window's rectangle.
+#[cfg(windows)]
+fn grab_windows(pid: u32, out: &std::path::Path) {
+    let script = format!(
+        "Add-Type -AssemblyName System.Drawing; Add-Type -Namespace W -Name U -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r); [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); public struct RECT {{ public int L, T, R, B; }}'; \
+         [W.U]::SetProcessDPIAware() | Out-Null; $h = (Get-Process -Id {pid}).MainWindowHandle; $r = New-Object W.U+RECT; [W.U]::GetWindowRect($h, [ref]$r) | Out-Null; \
+         $b = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T); $g = [System.Drawing.Graphics]::FromImage($b); \
+         $g.CopyFromScreen($r.L, $r.T, 0, 0, $b.Size); $b.Save('{}')",
+        out.display()
+    );
+    let status = std::process::Command::new("powershell").args(["-NoProfile", "-Command", &script]).status().unwrap();
+    assert!(status.success(), "the window capture failed");
 }
 
 /// `GPUIX_BACKGROUND=1` opens the window without making it key.
@@ -173,7 +315,11 @@ fn real_composer_buttons_line_up_with_the_field() {
         println!("{what}: field {field:?}");
         for id in ["composer.attach", "composer.emoji", "composer.send"] {
             if let Some(b) = bounds_of(&app, id) {
-                println!("{what}: {id} {b:?} centre off {:.1} bottom off {:.1}", centre(b) - centre(field), (b.1 + b.3) - (field.1 + field.3));
+                println!(
+                    "{what}: {id} {b:?} centre off {:.1} bottom off {:.1}",
+                    centre(b) - centre(field),
+                    (b.1 + b.3) - (field.1 + field.3)
+                );
             }
         }
         let shot = dir.join(format!("shot-composer-{what}.png"));
@@ -218,7 +364,8 @@ fn real_launch_focuses_the_message_field() {
     expect(&app.get_by_test_id("composer.field")).to_be_visible().unwrap();
     std::thread::sleep(Duration::from_millis(800));
     let tree = app.tree(None).unwrap();
-    let focused: Vec<String> = tree.windows[0].root.iter().filter(|n| n.focused).filter_map(|n| n.test_id.clone()).collect();
+    let focused: Vec<String> =
+        tree.windows[0].root.iter().filter(|n| n.focused).filter_map(|n| n.test_id.clone()).collect();
     assert!(focused.iter().any(|id| id == "composer.field"), "the message field has focus, not {focused:?}");
 }
 
@@ -249,7 +396,8 @@ fn real_swipe_to_reply_and_back_is_captured() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     let shoot = |name: &str| {
         let shot = dir.join(format!("shot-swipe-{name}.png"));
-        let _ = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(&shot).status();
+        let _ =
+            std::process::Command::new("screencapture").args(["-x", "-o", "-l", &main.to_string()]).arg(&shot).status();
         println!("screenshot {}", shot.display());
     };
     let post = |dx: i32, phase: GesturePhase| {
