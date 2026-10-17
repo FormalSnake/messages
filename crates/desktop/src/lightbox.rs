@@ -2,8 +2,8 @@
 //! the picture as large as the window allows, the title and commands above it, previous and
 //! next at its sides. Previous and next wrap; Copy puts the file on the clipboard; Open hands it
 //! to the system's app for it. Videos play at once, with play, pause, seek and mute under the
-//! picture (Space and M, or a click on the picture); one the platform cannot decode says so
-//! and leaves Open.
+//! picture (Space and M, or a click on the picture); one the platform cannot decode opens in the
+//! system's player instead.
 
 use messages_core::conversations::conversation_messages;
 use messages_core::format::format_bytes;
@@ -52,7 +52,6 @@ struct Player {
     /// The last seek asked for, under its request number.
     seek: Option<(u64, f64)>,
     requests: u64,
-    failed: Option<String>,
 }
 
 impl Lightbox {
@@ -159,9 +158,6 @@ impl Lightbox {
                     None => look.notice("Loading\u{2026}").into_any_element(),
                 }
             }
-            Some(_) if self.player.failed.is_some() => {
-                look.notice("This video can\u{2019}t be played here. Open it in another app.").into_any_element()
-            }
             Some(entry) => match entry.attachment.local_path.as_ref() {
                 Some(path) => self.picture(entry, &path.to_string_lossy(), cx),
                 None => look.notice("Loading\u{2026}").into_any_element(),
@@ -235,7 +231,7 @@ impl Lightbox {
             ))
             .child(if many { step("lightbox-next", Icon::ChevronRight, "Next", 1, cx) } else { div().w(px(STEP)) });
         let bottom = match &entry {
-            Some(entry) if video_entry && entry.attachment.local_path.is_some() && self.player.failed.is_none() => {
+            Some(entry) if video_entry && entry.attachment.local_path.is_some() => {
                 h_flex().h(px(BAR + 40.)).pb_4().justify_center().items_center().child(self.transport(&look, cx))
             }
             _ => h_flex().h(px(BAR)),
@@ -285,11 +281,13 @@ impl Lightbox {
                 }
                 cx.notify();
             }))
+            // What the platform cannot play goes to the system's player instead, unannounced.
             .on_error(cx.listener(|this, failed: &VideoFailed, _, cx| {
-                if let Some(lightbox) = this.lightbox_mut() {
-                    lightbox.player.failed = Some(failed.error.clone());
+                tracing::warn!("video: {}", failed.error);
+                if let Some(reference) = this.lightbox_mut().and_then(|l| l.current()) {
+                    this.close_lightbox(cx);
+                    this.open_attachment(&reference, cx);
                 }
-                cx.notify();
             }));
         if let Some((request, seconds)) = player.seek {
             picture = picture.seek(request, seconds);

@@ -42,7 +42,20 @@
             libxrandr
             libglvnd
             alsa-lib
+            # The viewer's video() loads GStreamer with dlopen; libgstapp is in plugins-base.
+            gst_all_1.gstreamer
+            gst_all_1.gst-plugins-base
           ];
+          gstPlugins = pkgs.lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" (
+            with pkgs.gst_all_1;
+            [
+              gstreamer
+              gst-plugins-base
+              gst-plugins-good
+              gst-plugins-bad
+              gst-libav
+            ]
+          );
         in
         {
           default = pkgs.mkShell {
@@ -54,6 +67,7 @@
             # LD_LIBRARY_PATH for both linking and running.
             shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               export LD_LIBRARY_PATH=/run/opengl-driver/lib:${pkgs.lib.makeLibraryPath linuxLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+              export GST_PLUGIN_SYSTEM_PATH_1_0=${gstPlugins}
             '';
           };
         });

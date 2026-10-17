@@ -153,7 +153,8 @@ click on a video opens it over the dimmed window and it plays at once. The pictu
 `video()`, which decodes through Media Foundation on Windows and GStreamer on Linux (nd loads it
 with dlopen; the package wraps the binary with `GST_PLUGIN_SYSTEM_PATH_1_0` for base, good and
 libav, and the nd dev shell provides the same set). macOS opens Quick Look instead. A file the
-platform cannot decode shows a line saying so and leaves Open. `crates/core/src/video.rs`, the
+platform cannot decode opens in the system's player instead (`nd::system::open_path`), with no
+message. `crates/core/src/video.rs`, the
 ffmpeg player the GPUI client used, is not wired into the nd port.
 
 `crates/core/src/assistant.rs` (`CanaryLlmClient`) backs the summarize,
