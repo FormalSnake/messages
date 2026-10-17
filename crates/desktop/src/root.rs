@@ -717,7 +717,9 @@ impl Render for Root {
         }
         let mut root = scaffold();
         if under {
-            root = root.content_under_toolbar();
+            // Messages' band reaches to the name capsule's foot, 6 pt below it as the avatar sits
+            // 6 pt under the window's top.
+            root = root.content_under_toolbar().toolbar_extension(28.).content_edge_on_hover();
         }
         let root = root
             .key_context(CONTEXT)
