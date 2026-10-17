@@ -4481,7 +4481,7 @@ mod tests {
             store.start().await;
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert_eq!(store.state().status, ConnectionStatus::Online);
-            assert_eq!(store.state().selected_chat.as_deref(), Some("iMessage;-;+14155550134"));
+            assert_eq!(store.state().selected_chat.as_deref(), Some("iMessage;+;chat550193847261"), "the pinned chat leads the list");
             assert_eq!(conversation_chats(&store.state()).len(), 10);
             store.send("iMessage;-;+14155550134", "on my way", None);
             tokio::time::sleep(Duration::from_millis(4000)).await;
