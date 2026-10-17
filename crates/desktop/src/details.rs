@@ -480,19 +480,31 @@ impl Render for Details {
                     .px_3()
                     .gap_1()
                     .child(
-                        switch_row("details-pin", "Pinned")
-                            .checked(chat.pinned)
-                            .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, pin.clone())),
+                        toggle_row(
+                            switch("details-pin")
+                                .label("Pinned")
+                                .checked(chat.pinned)
+                                .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, pin.clone())),
+                            "Pinned",
+                        ),
                     )
                     .child(
-                        switch_row("details-mute", "Hide Alerts")
-                            .checked(chat.muted)
-                            .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, mute.clone())),
+                        toggle_row(
+                            switch("details-mute")
+                                .label("Hide Alerts")
+                                .checked(chat.muted)
+                                .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, mute.clone())),
+                            "Hide Alerts",
+                        ),
                     )
                     .child(
-                        switch_row("details-receipts", "Send Read Receipts")
-                            .checked(!receipts_off)
-                            .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, receipts.clone())),
+                        toggle_row(
+                            switch("details-receipts")
+                                .label("Send Read Receipts")
+                                .checked(!receipts_off)
+                                .on_toggle(move |_, window, cx| crate::ui::dispatch(window, cx, receipts.clone())),
+                            "Send Read Receipts",
+                        ),
                     )
                     .child(
                         button("details-unread", if chat.unread { "Mark as Read" } else { "Mark as Unread" }).on_click(
@@ -552,4 +564,10 @@ impl Render for Details {
             )
             .into_any_element()
     }
+}
+
+/// A title with its switch at the trailing edge. `switch_row` belongs inside a `form()`, where the
+/// platform's form lays its rows out; the details panel is no form.
+fn toggle_row(control: Switch, title: &'static str) -> impl IntoElement {
+    h_flex().items_center().justify_between().py_1().child(label(title)).child(control)
 }
