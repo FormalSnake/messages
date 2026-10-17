@@ -14,8 +14,8 @@ use messages_core::{
     Attachment, Capabilities, DeliveryState, Message, MessagePart, RichRun, Service, TextEffect, delivery_state,
     handle_name,
 };
-use nd::prelude::*;
 use nd::components::media::BUBBLE;
+use nd::prelude::*;
 use nd::theme::FillRole;
 
 use crate::actions::*;
@@ -533,9 +533,8 @@ fn attachment_block(
                 .filter(|p| !p.as_os_str().is_empty())
                 .and_then(|p| ui::image_source(&p.to_string_lossy()));
             let duration = attachment.duration_ms.map(format_duration).unwrap_or_default();
-            // A click plays it in the lightbox once it is here, and fetches it before that.
-            let local = attachment.local_path.is_some();
-            let (show, download) = (ShowAttachment(reference.clone()), Download(reference));
+            // A click opens the viewer and plays it there, fetching it first when it is not here.
+            let show = ShowAttachment(reference);
             // With a poster the tail is cut from it; without one the box takes a plain tail.
             let poster_tail = tail.filter(|_| poster.is_some());
             let box_w = w;
@@ -549,13 +548,7 @@ fn attachment_block(
                 .flex()
                 .items_center()
                 .justify_center()
-                .on_tap(move |_, window, cx| {
-                    if local {
-                        crate::ui::dispatch(window, cx, show.clone());
-                    } else {
-                        crate::ui::dispatch(window, cx, download.clone());
-                    }
-                })
+                .on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, show.clone()))
                 .context_menu(menu)
                 .when_some(poster, |el, poster| {
                     el.child(
@@ -587,20 +580,16 @@ fn attachment_block(
                                 .child(icon(Icon::Play, 22.).text_color(theme.text.primary).label("Play")),
                         )
                         .child(
-                            div()
-                                .px_2()
-                                .rounded_full()
-                                .bg(theme.surface.overlay)
-                                .child(
-                                    text(if attachment.local_path.is_none() && fetching {
-                                        "Loading\u{2026}".into()
-                                    } else {
-                                        duration
-                                    })
-                                    .tabular_nums()
-                                    .text_size(theme.type_scale.caption)
-                                    .text_color(theme.text.primary),
-                                ),
+                            div().px_2().rounded_full().bg(theme.surface.overlay).child(
+                                text(if attachment.local_path.is_none() && fetching {
+                                    "Loading\u{2026}".into()
+                                } else {
+                                    duration
+                                })
+                                .tabular_nums()
+                                .text_size(theme.type_scale.caption)
+                                .text_color(theme.text.primary),
+                            ),
                         ),
                 )
                 .into_any_element();
@@ -882,14 +871,9 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
                 // The grid's corner is a picture, not a fill, so a coloured lobe would not continue
                 // it; it stays without a tail.
                 Block::Photos(photos) => photo_grid(data, photos, media, theme),
-                Block::Attachment(attachment) => attachment_block(
-                    data,
-                    attachment,
-                    media,
-                    props.assistant,
-                    tail_here(index).then_some(side),
-                    theme,
-                ),
+                Block::Attachment(attachment) => {
+                    attachment_block(data, attachment, media, props.assistant, tail_here(index).then_some(side), theme)
+                }
                 Block::Link { href, host, matches } => {
                     let card = link_card(href, host, matches.then_some(()).and(message.url_preview.as_ref()), theme);
                     if tail_here(index) { with_tail(card, side, theme.surface.raised_hover) } else { card }

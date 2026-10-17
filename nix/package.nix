@@ -16,6 +16,7 @@
   libxi,
   libxrandr,
   ffmpeg,
+  gst_all_1,
   libnotify,
   xdg-utils,
 }:
@@ -81,9 +82,22 @@ rustPlatform.buildRustPackage (finalAttrs: {
         libxcursor
         libxi
         libxrandr
+        # The viewer plays videos through GStreamer, which nd dlopens.
+        gst_all_1.gstreamer
+        gst_all_1.gst-plugins-base
       ]
     }
-    wrapProgram $out/bin/messages --suffix PATH : ${
+    wrapProgram $out/bin/messages --prefix GST_PLUGIN_SYSTEM_PATH_1_0 : ${
+      lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" (
+        with gst_all_1;
+        [
+          gstreamer
+          gst-plugins-base
+          gst-plugins-good
+          gst-libav
+        ]
+      )
+    } --suffix PATH : ${
       lib.makeBinPath [
         ffmpeg
         fontconfig.bin

@@ -148,21 +148,13 @@ A change calls `refresh_windows`, which redraws cached views too.
 The composer's GIF picker talks to the Klipy GIF API through `KlipyClient` in
 `crates/core/src/gifs.rs`, shown only when `config.klipy` (an `apiKey`) is set.
 
-Videos play in the lightbox, not in an external player. `crates/core/src/video.rs`
-probes the file with ffprobe (size with the container rotation applied, frame
-rate, duration, whether there is sound) and runs two ffmpeg processes per
-`Playback`: one decodes the picture to raw BGRA frames at the size the lightbox
-shows them, piped through stdout; the other decodes the sound to f32 at the
-device's own rate for `audio.rs`, a cpal output stream on its own thread. The
-frame task paces itself on the sample frames the device has played (wall time
-when there is no track or no device), drops frames it is late for, and hands
-the rest to `crates/desktop/src/video.rs` through a bounded channel, where each
-becomes a `RenderImage` painted on a canvas and the previous texture is
-released. Pausing stops the clock and stops reading the pipes, so ffmpeg
-blocks on a full pipe; a seek is a new `Playback` at the position, and the
-first frame goes through even while paused so the picture lands. Dropping the
-`Playback` kills both processes. On Linux cpal links `alsa-lib`, which the
-dev shell provides; without a device the video still plays, silent.
+Videos play in the viewer (`lightbox.rs`), not in an external player: a click or a double
+click on a video opens it over the dimmed window and it plays at once. The picture is nd's
+`video()`, which decodes through Media Foundation on Windows and GStreamer on Linux (nd loads it
+with dlopen; the package wraps the binary with `GST_PLUGIN_SYSTEM_PATH_1_0` for base, good and
+libav, and the nd dev shell provides the same set). macOS opens Quick Look instead. A file the
+platform cannot decode shows a line saying so and leaves Open. `crates/core/src/video.rs`, the
+ffmpeg player the GPUI client used, is not wired into the nd port.
 
 `crates/core/src/assistant.rs` (`CanaryLlmClient`) backs the summarize,
 translate and transcribe buttons in the desktop UI; every call is triggered by
