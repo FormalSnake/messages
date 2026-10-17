@@ -39,7 +39,11 @@ const EFFECTS: [(&str, &str); 13] = [
     ("celebration", "Celebration"),
 ];
 
-actions!(composer, [EditLast, PasteAttachments]);
+actions!(composer, [EditLast, PasteAttachments, ChooseFiles, ShowGifs, ShowEffects, ShowSendLater, AttachByPath]);
+
+/// macOS opens the "+" as a native menu above the button, as Messages does; the drawn backends
+/// keep the popover, which their look already gives a menu's insets.
+const NATIVE_PLUS_MENU: bool = cfg!(target_os = "macos");
 
 pub const CONTEXT: &str = "Composer";
 
@@ -149,8 +153,12 @@ impl Composer {
         }
     }
 
-    fn event(&mut self, event: &ComposerEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
+            ComposerEvent::Attach if NATIVE_PLUS_MENU => {
+                self.plus_menu(window, cx);
+                return;
+            }
             ComposerEvent::Attach => {
                 self.popover = if self.popover == Popover::Apps { Popover::None } else { Popover::Apps };
                 cx.notify();
@@ -502,6 +510,66 @@ impl Composer {
         });
     }
 
+    /// What the "+" offers in the open conversation: GIFs, effects, send later.
+    fn plus_offers(&self, cx: &App) -> (bool, bool, bool) {
+        let Some(store) = bridge::store(cx) else { return (false, false, false) };
+        let state = store.state();
+        let sms = self.chat.as_deref().and_then(|c| state.chat(c)).is_some_and(|c| c.service != Service::IMessage);
+        let editing = self.chat.as_ref().is_some_and(|c| state.editing.contains_key(c));
+        (
+            self.klipy.is_some(),
+            state.capabilities.effects && !sms && !editing,
+            state.capabilities.scheduled_messages && !self.draft.text.trim().is_empty(),
+        )
+    }
+
+    /// Messages' "+" on macOS: a native menu over the button, one row per thing to add, each
+    /// opening its panel beside the field as the drawn menu's rows do.
+    fn plus_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (klipy, effects, can_schedule) = self.plus_offers(cx);
+        let mut menu = ContextMenu::default()
+            .above()
+            .entry(MenuItem::action("Photos and Files\u{2026}", ChooseFiles).icon(Icon::Image));
+        if klipy {
+            menu = menu.entry(MenuItem::action("GIFs", ShowGifs).icon(Icon::Smile));
+        }
+        if can_schedule {
+            menu = menu.entry(MenuItem::action("Send Later", ShowSendLater).icon(Icon::Clock));
+        }
+        if effects {
+            let label = if self.effect.is_some() { "Message Effects \u{2022}" } else { "Message Effects" };
+            menu = menu.entry(MenuItem::action(label, ShowEffects).icon(Icon::Star));
+        }
+        let menu =
+            menu.separator().entry(MenuItem::action("Attach by Path\u{2026}", AttachByPath).icon(Icon::FileText));
+        let window = window.id();
+        // The semantic tree is out of reach while this handler holds the window: the next turn.
+        nd::system::spawn(async {}, move |(), cx| {
+            let Some(tree) = cx.semantic_window(window) else { return };
+            let find = |id: &str| tree.root.iter().find(|n| n.test_id.as_deref() == Some(id)).map(|n| (n.id, n.bounds));
+            // The "+" is drawn inside the composer's own view, so the menu hangs off the
+            // composer at the button's offset in it.
+            let (Some((node, Some(composer))), Some((_, Some(plus)))) = (find("composer"), find("composer.attach"))
+            else {
+                return;
+            };
+            // The rows dispatch from the focused node, so the field takes focus first.
+            if let Some((field, _)) = find("composer.field") {
+                cx.focus(window, field);
+            }
+            let (x, y) = (plus.origin.x - composer.origin.x, plus.origin.y - composer.origin.y);
+            nd::components::services::show_context_menu(cx, window, node, x, y, menu);
+        });
+    }
+
+    fn open_panel(&mut self, to: Popover, cx: &mut Context<Self>) {
+        self.popover = to;
+        if to == Popover::Gif && self.gif.items.is_empty() {
+            self.search_gifs(cx);
+        }
+        cx.notify();
+    }
+
     /// The "+" menu: files, GIFs, effects, send later and attach by path, each opening its own
     /// panel in the same place.
     fn apps_popover(&self, klipy: bool, effects: bool, can_schedule: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -541,8 +609,12 @@ impl Composer {
                     .when(klipy, |col| col.child(item("gif", Icon::Smile, "GIFs").on_click(go(Popover::Gif))))
                     .when(effects, |col| {
                         col.child(
-                            item("effect", Icon::Star, if self.effect.is_some() { "Message Effect \u{2022}" } else { "Message Effect" })
-                                .on_click(go(Popover::Effects)),
+                            item(
+                                "effect",
+                                Icon::Star,
+                                if self.effect.is_some() { "Message Effect \u{2022}" } else { "Message Effect" },
+                            )
+                            .on_click(go(Popover::Effects)),
                         )
                     })
                     .when(can_schedule, |col| {
@@ -761,6 +833,11 @@ impl Render for Composer {
                 }
             }))
             .on_action(cx.listener(|this, _: &PasteAttachments, _, cx| this.paste_attachments(cx)))
+            .on_action(cx.listener(|this, _: &ChooseFiles, window, cx| this.choose_files(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowGifs, _, cx| this.open_panel(Popover::Gif, cx)))
+            .on_action(cx.listener(|this, _: &ShowEffects, _, cx| this.open_panel(Popover::Effects, cx)))
+            .on_action(cx.listener(|this, _: &ShowSendLater, _, cx| this.open_panel(Popover::Schedule, cx)))
+            .on_action(cx.listener(|this, _: &AttachByPath, _, cx| this.open_panel(Popover::Path, cx)))
             .on_action(cx.listener(|this, _: &Dismiss, _, cx| {
                 let (Some(store), Some(chat)) = (bridge::store(cx), this.chat.clone()) else {
                     cx.propagate();

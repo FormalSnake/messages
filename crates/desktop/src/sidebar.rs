@@ -11,7 +11,7 @@ use messages_core::conversations::{conversation_chats, conversation_focus, conve
 use messages_core::format::format_list_date;
 use messages_core::search::{SearchContext, parse_search_query, resolve_search_query};
 use messages_core::transport::{ConnectionStatus, TransportKind};
-use messages_core::{Chat, FocusStatus, GroupEvent, Message, chat_title, handle_name};
+use messages_core::{Chat, FocusStatus, GroupEvent, Message, chat_title, given_name, handle_name};
 use nd::prelude::*;
 
 use crate::actions::*;
@@ -67,10 +67,6 @@ pub struct Sidebar {
     selected: Option<String>,
 }
 
-fn first_name(name: &str) -> &str {
-    name.split_whitespace().next().unwrap_or(name)
-}
-
 /// The sidebar's line for a chat's last message.
 pub fn preview_text(message: Option<&Message>, chat: &Chat) -> String {
     let Some(message) = message else {
@@ -79,7 +75,7 @@ pub fn preview_text(message: Option<&Message>, chat: &Chat) -> String {
     let who = if message.from_me {
         "You".to_owned()
     } else if let Some(sender) = &message.sender {
-        first_name(handle_name(sender)).to_owned()
+        given_name(sender).to_owned()
     } else {
         String::new()
     };
@@ -312,8 +308,10 @@ impl Sidebar {
         let cell = |chat: &Arc<Chat>| {
             let unread = store.as_ref().is_some_and(|s| conversation_unread(&s.state(), &chat.guid));
             let selected = self.selected.as_deref() == Some(chat.guid.as_str());
-            let title = chat_title(chat);
-            let name = if chat.is_group { title } else { first_name(&title).to_owned() };
+            let name = match chat.participants.first() {
+                Some(person) if !chat.is_group && chat.display_name.is_none() => given_name(person).to_owned(),
+                _ => chat_title(chat),
+            };
             let guid = chat.guid.clone();
             let menu_chat = chat.clone();
             v_flex()
@@ -338,11 +336,14 @@ impl Sidebar {
                             .border_color(theme.surface.sidebar),
                     )
                 }))
-                .child(text(name).text_size(theme.type_scale.caption).truncate().text_color(if selected {
-                    theme.accent_container.fg
-                } else {
-                    theme.text.secondary
-                }))
+                // One line at the tile's width, cut at the tail, as Messages titles a pinned chat.
+                .child(
+                    label(name)
+                        .id(format!("pinned-{}.title", chat.guid))
+                        .text_size(theme.type_scale.caption)
+                        .max_w_full()
+                        .text_color(if selected { theme.accent_container.fg } else { theme.text.secondary }),
+                )
                 .into_any_element()
         };
         let rows = pinned.chunks(PINNED_COLUMNS).map(|chunk| {
@@ -486,19 +487,19 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
                         .gap_1()
                         // One line, cut with an ellipsis, as Messages' names are.
                         .child(label(chat_title(&chat)).font_weight(FontWeight::BOLD).flex_1().min_w_0())
-                        .when(silenced, |row| {
-                            row.child(icon(Icon::Moon, 11.).text_color(secondary).label("Focus on"))
-                        })
+                        .when(silenced, |row| row.child(icon(Icon::Moon, 11.).text_color(secondary).label("Focus on")))
                         .when(chat.muted, |row| {
                             row.child(icon(Icon::BellOff, 11.).text_color(secondary).label("Alerts hidden"))
                         })
                         .child(label(date).text_size(theme.type_scale.footnote).text_color(secondary).flex_none()),
                 )
-                .child(label(preview).lines(2).text_size(theme.type_scale.footnote).text_color(if typing && !selected {
-                    theme.accent
-                } else {
-                    secondary
-                })),
+                .child(
+                    label(preview).lines(2).text_size(theme.type_scale.footnote).text_color(if typing && !selected {
+                        theme.accent
+                    } else {
+                        secondary
+                    }),
+                ),
         )
         .into_any_element()
 }

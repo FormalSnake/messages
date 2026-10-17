@@ -32,6 +32,9 @@ const STICKER_WIDTH: f32 = 110.;
 const LINK_CARD_WIDTH: f32 = 280.;
 const GRID_SIDE: f32 = 128.;
 const GRID_MAX_TILES: usize = 4;
+/// Messages on macOS opens a picture in Quick Look on a double click and leaves a single click
+/// alone; Linux and Windows open the viewer on a click, as their photo viewers do.
+const DOUBLE_CLICK_OPENS_PICTURES: bool = cfg!(target_os = "macos");
 pub const AVATAR_COLUMN: f32 = 28.;
 /// The transcript's side inset to a bubble's edge: 20 pt in Messages, measured; the row's own
 /// layout adds the rest.
@@ -512,14 +515,20 @@ fn attachment_block(
             };
             let local = attachment.local_path.is_some();
             let (show, download) = (ShowAttachment(reference.clone()), Download(reference));
+            let double = show.clone();
             div()
                 .id(id)
                 .on_tap(move |_, window, cx| {
-                    if local {
-                        crate::ui::dispatch(window, cx, show.clone());
-                    } else {
+                    if !local {
                         crate::ui::dispatch(window, cx, download.clone());
+                    } else if !DOUBLE_CLICK_OPENS_PICTURES {
+                        crate::ui::dispatch(window, cx, show.clone());
                     }
+                })
+                .when(DOUBLE_CLICK_OPENS_PICTURES && local, |el| {
+                    el.on_double_tap(move |_: &DoubleTapEvent, window, cx| {
+                        crate::ui::dispatch(window, cx, double.clone())
+                    })
                 })
                 .context_menu(menu)
                 .child(picture)
@@ -710,7 +719,15 @@ fn photo_grid(data: &MessageRowData, photos: &[Attachment], media: &Media, theme
         div()
             .id(format!("tile-{}", photo.guid))
             .size(px(GRID_SIDE))
-            .on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, show.clone()))
+            .map(|tile| {
+                if DOUBLE_CLICK_OPENS_PICTURES {
+                    tile.on_double_tap(move |_: &DoubleTapEvent, window, cx| {
+                        crate::ui::dispatch(window, cx, show.clone())
+                    })
+                } else {
+                    tile.on_tap(move |_, window, cx| crate::ui::dispatch(window, cx, show.clone()))
+                }
+            })
             .child(picture)
             .when(i + 1 == shown && more > 0, |tile| {
                 tile.child(

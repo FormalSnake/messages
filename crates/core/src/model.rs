@@ -410,11 +410,24 @@ pub fn chat_title(chat: &Chat) -> String {
     if let Some(name) = chat.display_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         return name.to_owned();
     }
-    let names: Vec<&str> = chat.participants.iter().map(handle_name).collect();
-    match names.len() {
-        0 => chat.identifier.clone(),
-        1..=3 => names.join(", "),
-        n => format!("{} and {} more", names[..3].join(", "), n - 3),
+    if !chat.is_group {
+        return chat.participants.first().map_or_else(|| chat.identifier.clone(), |h| handle_name(h).to_owned());
+    }
+    // Messages names an unnamed group by its people's first names: "Ana & Ben", "Ana, Ben & Cleo".
+    let names: Vec<&str> = chat.participants.iter().map(given_name).collect();
+    match names.as_slice() {
+        [] => chat.identifier.clone(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] if names.len() <= 4 => format!("{} & {last}", rest.join(", ")),
+        _ => format!("{} & {} more", names[..3].join(", "), names.len() - 3),
+    }
+}
+
+/// A contact's first name, or the whole address when the handle has no name.
+pub fn given_name(handle: &Handle) -> &str {
+    match handle.name.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => name.split_whitespace().next().unwrap_or(name),
+        _ => &handle.address,
     }
 }
 
@@ -465,6 +478,20 @@ mod tests {
         assert!(off.scheduled_messages);
         let on = capabilities_for(Some(&info("15.1", true, true)));
         assert!(on.reactions && on.typing && on.read_receipts && on.edit && on.unsend && on.facetime && on.focus_status && on.mark_unread);
+    }
+
+    #[test]
+    fn an_unnamed_group_is_titled_by_first_names() {
+        let person = |name: Option<&str>, address: &str| Handle { address: address.into(), service: Service::default(), name: name.map(Into::into), avatar: None };
+        let group = |people: Vec<Handle>| Chat { is_group: true, participants: people, ..Chat::default() };
+        let (ana, ben) = (person(Some("Ana Ruiz"), "a@x"), person(Some("Ben Okafor"), "b@x"));
+        let (cleo, dan) = (person(Some("Cleo"), "c@x"), person(None, "+14155550100"));
+        assert_eq!(chat_title(&group(vec![ana.clone(), ben.clone()])), "Ana & Ben");
+        assert_eq!(chat_title(&group(vec![ana.clone(), ben.clone(), cleo.clone(), dan.clone()])), "Ana, Ben, Cleo & +14155550100");
+        assert_eq!(chat_title(&group(vec![ana.clone(), ben.clone(), cleo, dan, ana.clone()])), "Ana, Ben, Cleo & 2 more");
+        let named = Chat { display_name: Some("Family".into()), ..group(vec![ana.clone(), ben]) };
+        assert_eq!(chat_title(&named), "Family");
+        assert_eq!(chat_title(&Chat { participants: vec![ana], ..Chat::default() }), "Ana Ruiz");
     }
 
     #[test]

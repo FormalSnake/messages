@@ -16,8 +16,8 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 5 boxes are open: the Linux, Windows and Nix legs out of this run,
-and a swiped-open action that AppKit cuts off as it closes.
+Status: **not at parity.** 6 boxes are open: the Linux, Windows and Nix legs out of this run,
+a swiped-open action that AppKit cuts off as it closes, and a double click on a bubble's text.
 The GPUI build stays the default until they close.
 
 ## App shell and layout
@@ -42,7 +42,7 @@ The GPUI build stays the default until they close.
 
 ## Sidebar
 - [x] Search field, debounced 250 ms, operator search, tips, "No Results" note (code; search ran against the demo transport by hand only)
-- [x] Pinned strip with avatar, selection ring and unread dot (code; the demo pins nothing, so not seen)
+- [x] Pinned strip: the whole tile, picture included, opens its chat; the title is one line cut at the tile's width; an unnamed group is titled by first names, "Mom, Dad, Sam & Priya" (t3 `parity::real_a_pinned_tile_opens_from_its_picture_and_cuts_its_title`; the demo pins that group)
 - [x] Rows: unread dot, 44 pt avatar or clustered group avatar, bold title, date, two-line preview, "Typing…" in the accent (shot)
 - [x] Selection, keyboard Up/Down and Return: the native table (t3 opens a chat by clicking its row)
 - [x] Row menu: Pin, alerts, receipts, read/unread, details, export, delete with confirm (code: `sidebar::chat_menu`; menu not opened in a test)
@@ -80,7 +80,9 @@ The GPUI build stays the default until they close.
 - [x] Sent text reads at 4.5:1 (audit, after nd's `accent_fill`)
 - [x] Images sized from the attachment before they load, decoded at display size, GIFs animate (shot; t3 tail test)
 - [x] Photo grid with "+N" (code; demo grid seen as two tiles in a shot)
-- [x] Video poster with play mark and duration, click opens the system player (shot)
+- [x] Video poster with play mark and duration, a click or double click opens Quick Look (shot)
+- [x] On macOS a click on a picture leaves it and a double click opens Quick Look, as in Messages (t3 `parity::real_a_double_clicked_picture_opens_quick_look`); Linux and Windows open the viewer on a click
+- [ ] A double click on a bubble's text selects a word (the text is selectable); Messages on macOS 27 does nothing there, and the port's tapback picker on double click never opens on macOS
 - [x] Voice note pill with play/stop (core player, as before) (code)
 - [x] Stickers, file pills, link cards (code; link card in a shot of Ben's chat not taken)
 - [x] Over-25 MB pictures wait for a click (code)
@@ -101,6 +103,7 @@ The GPUI build stays the default until they close.
 - [x] Autofocus on chat, reply or edit change (code)
 - [x] Send button turns into a check while editing and green for SMS (nd composer `send_icon`/`send_fill`, tier 2)
 - [x] "Type a path…": "Attach by Path…" in the composer's plus menu stages the file (t3 `parity::real_attach_by_path_stages_the_file`)
+- [x] The "+" on macOS is a native menu above the button, its leading edge on the button's, as Messages' (t3 `parity::real_the_plus_opens_a_native_menu_above_itself`); Messages shows colour app icons beside its rows; the port's rows show no icon yet
 
 ## Header, details, FaceTime, Find My
 - [x] Title, 30 pt avatar, subtitle with service and "Sharing location", Focus moon (shot)

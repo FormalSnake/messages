@@ -504,8 +504,22 @@ fn seeds(p: &People, now: Millis) -> Vec<Seed> {
             rows: vec![row("Do you still have that Inter alternative you mentioned? The one with the tabular figures", 9 * DAY, chloe)
                 .with(|m| m.subject = Some("Typefaces".into()))],
         },
+        // Pinned, unnamed, and titled longer than a pinned tile: Messages cuts it to one line.
+        Seed {
+            guid: "iMessage;+;chat550193847261",
+            identifier: "chat550193847261",
+            service: Service::IMessage,
+            is_group: true,
+            display_name: None,
+            icon: None,
+            participants: vec![p.mom.clone(), p.dad.clone(), p.sam.clone(), p.priya.clone()],
+            rows: vec![row("Who is bringing the board games on Saturday?", 3 * DAY, sam)],
+        },
     ]
 }
+
+/// The demo's pinned conversations, as Messages.app's pins would arrive.
+const PINNED: [&str; 1] = ["iMessage;+;chat550193847261"];
 
 fn replies(chat_guid: &str) -> &'static [&'static str] {
     match chat_guid {
@@ -591,6 +605,7 @@ impl DemoTransport {
                     icon: seed.icon,
                     participants: seed.participants,
                     unread,
+                    pinned: PINNED.contains(&seed.guid),
                     last_activity: last.as_ref().map_or(0, |last| last.date),
                     last_message: last,
                     ..Chat::default()
@@ -1111,7 +1126,7 @@ mod tests {
     async fn serves_the_fixtures() {
         let demo = DemoTransport::new();
         let chats = demo.list_chats(ListChatsOptions::default()).await.unwrap().items;
-        assert_eq!(chats.len(), 9);
+        assert_eq!(chats.len(), 10);
         assert_eq!(chats[0].guid, "iMessage;-;+14155550134");
         let alex = demo.load_messages("iMessage;-;+14155550134", LoadMessagesOptions { limit: 50, before: None }).await.unwrap();
         assert_eq!(alex.items.len(), 14);

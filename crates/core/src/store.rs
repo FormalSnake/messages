@@ -2650,7 +2650,8 @@ impl Inner {
         let private = self.private.lock();
         let prefs = private.prefs.get(&chat.guid);
         Chat {
-            pinned: is_pinned(prefs),
+            // The transport's own pin (the demo's) stands until a pref says otherwise.
+            pinned: if prefs.is_some() { is_pinned(prefs) } else { chat.pinned },
             muted: prefs.and_then(|prefs| prefs.muted).unwrap_or(false),
             read_receipts: Some(prefs.and_then(|prefs| prefs.read_receipts).unwrap_or(true)),
             unread: (chat.unread && !read_here_covers(&private, chat)) || private.forced_unread.contains(&chat.guid),
@@ -4481,7 +4482,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert_eq!(store.state().status, ConnectionStatus::Online);
             assert_eq!(store.state().selected_chat.as_deref(), Some("iMessage;-;+14155550134"));
-            assert_eq!(conversation_chats(&store.state()).len(), 9);
+            assert_eq!(conversation_chats(&store.state()).len(), 10);
             store.send("iMessage;-;+14155550134", "on my way", None);
             tokio::time::sleep(Duration::from_millis(4000)).await;
             let rows = texts(&store, "iMessage;-;+14155550134");
