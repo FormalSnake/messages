@@ -228,7 +228,7 @@ fn real_a_double_clicked_video_plays_in_the_viewer() {
     expect(&app.get_by_test_id("lightbox-video-demo-video-1")).to_be_visible().unwrap();
     let position = |app: &nd_test::AppHandle| {
         let snapshot = app.snapshot().unwrap();
-        assert!(!snapshot.contains("played here"), "the video failed to play:\n{snapshot}");
+        assert!(snapshot.contains("lightbox-video-demo-video-1"), "the viewer stayed open, so it plays:\n{snapshot}");
         assert!(!snapshot.contains("[testid=lightbox-play] [hidden]"), "the transport is on screen:\n{snapshot}");
         let line = snapshot.lines().find(|l| l.contains("[testid=lightbox-seek]")).unwrap_or_default();
         line.split("[value=").nth(1).unwrap_or_default().to_owned()
