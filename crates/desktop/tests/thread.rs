@@ -7,7 +7,9 @@
 
 use std::time::{Duration, Instant};
 
-use nd_test::{LaunchOptions, SemanticNode, expect, launch_app};
+mod common;
+
+use nd_test::{LaunchOptions, SemanticNode, expect};
 
 const ALEX: &str = "chat-+14155550134";
 
@@ -57,15 +59,17 @@ fn opening_a_thread_scrolling_to_the_top_and_back_keeps_the_last_row_visible() {
     if !real_allowed() {
         return;
     }
-    let app = launch_app(
+    let app = common::launch(
         LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
             .env("MESSAGES_DEMO", "1")
             .env("ND_AUTOMATION_CAPTURE", "region"),
-    )
-    .unwrap();
+    );
     expect(&app.get_by_test_id(ALEX)).to_be_visible().unwrap();
     let shot = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("launch.png");
-    app.screenshot(&shot, None).unwrap();
+    // GPUI on Linux reads no frame back from a real window; the shots test captures there.
+    if let Err(e) = app.screenshot(&shot, None) {
+        println!("no screenshot: {e}");
+    }
     println!("screenshot {}\n{}", shot.display(), app.snapshot().unwrap());
     // A list row is not a button, so the semantic click does not take it: the pointer does.
     let row = app.get_by_test_id(ALEX).bounding_box().unwrap().expect("the row is laid out");
@@ -101,7 +105,9 @@ fn opening_a_thread_scrolling_to_the_top_and_back_keeps_the_last_row_visible() {
     assert_eq!(last, "row-demo-msg-0014", "the newest message is the one at the bottom");
     println!("opened {:?}", snapshot());
     let shot = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("thread-open.png");
-    app.screenshot(&shot, None).unwrap();
+    if let Err(e) = app.screenshot(&shot, None) {
+        println!("no screenshot: {e}");
+    }
     println!("screenshot {}", shot.display());
 
     // Up to the first message: the first row sits at or below the list's top edge.
@@ -133,13 +139,15 @@ fn opening_a_thread_scrolling_to_the_top_and_back_keeps_the_last_row_visible() {
         thread.scroll(0., 600.).unwrap();
     }
     let shot = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("thread-back.png");
-    app.screenshot(&shot, None).unwrap();
+    if let Err(e) = app.screenshot(&shot, None) {
+        println!("no screenshot: {e}");
+    }
     println!("screenshot {}", shot.display());
 }
 
 /// Opens Alex's conversation in a fresh demo launch.
-fn open_alex() -> nd_test::AppHandle {
-    let app = launch_app(LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1")).unwrap();
+fn open_alex() -> common::Running {
+    let app = common::launch(LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("MESSAGES_DEMO", "1"));
     expect(&app.get_by_test_id(ALEX)).to_be_visible().unwrap();
     let row = app.get_by_test_id(ALEX).bounding_box().unwrap().expect("the row is laid out");
     app.mouse().click(row.x + row.width / 2., row.y + row.height / 2.).unwrap();

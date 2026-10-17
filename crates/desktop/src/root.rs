@@ -670,8 +670,9 @@ impl Render for Root {
 
         let shown = selected.is_some() && self.new_chat.is_none();
         // The transcript runs up under the toolbar while nothing sits above it in the content;
-        // the conversation then stands over it, avatar over name, as in Messages.
-        let under = shown && self.header.read(cx).is_empty(cx);
+        // the conversation then stands over it, avatar over name, as in Messages. GNOME and
+        // WinUI keep the conversation in the header bar, so only macOS does this.
+        let under = cfg!(target_os = "macos") && shown && self.header.read(cx).is_empty(cx);
         let stacked = if under { header::identity(true, true, cx) } else { None };
         let content = if unconfigured || offline_empty {
             self.connect.clone().into_any_element()
