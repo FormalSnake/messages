@@ -21,18 +21,18 @@ opt-level = 2
 debug = "line-tables-only"
 
 # NativeDesktop is a path dependency of crates/desktop until it is published: the checkout of
-# its `msg-gaps` branch beside this repo (nd main plus the gaps this port found). Switch these
+# its `nd-emoji` branch beside this repo (nd main plus the gaps this port found). Switch these
 # and crates/desktop/Cargo.toml to `git = "https://github.com/FormalSnake/NativeDesktop"` (one
 # rev for all) once that branch is merged. nd carries its own patched GPUI, which only
 # reaches this workspace through the patch table below.
 [patch.crates-io]
-gpui-pre = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre" }
-gpui-fast = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast" }
-gpui-pre-linux = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-linux" }
-gpui-fast-linux = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-linux" }
-gpui-pre-wgpu = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-wgpu" }
-gpui-fast-wgpu = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-wgpu" }
-gpui-pre-windows = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-windows" }
-gpui-fast-windows = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-windows" }
-gpui-pre-apple = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-pre-apple" }
-gpui-fast-apple = { path = "../nativedesktop-wt-msg-gaps/crates/nd-gpui/vendor/gpui-fast-apple" }
+gpui-pre = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-pre" }
+gpui-fast = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-fast" }
+gpui-pre-linux = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-pre-linux" }
+gpui-fast-linux = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-fast-linux" }
+gpui-pre-wgpu = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-pre-wgpu" }
+gpui-fast-wgpu = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-fast-wgpu" }
+gpui-pre-windows = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-pre-windows" }
+gpui-fast-windows = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-fast-windows" }
+gpui-pre-apple = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-pre-apple" }
+gpui-fast-apple = { path = "../nativedesktop-wt-nd-emoji/crates/nd-gpui/vendor/gpui-fast-apple" }
