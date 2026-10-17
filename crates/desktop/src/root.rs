@@ -95,6 +95,8 @@ pub struct Root {
     composer: Entity<composer::Composer>,
     details: Entity<details::Details>,
     connect: Entity<connect::Connect>,
+    /// F12's frame overlay.
+    hud: Entity<nd::hud::FrameHud>,
 }
 
 impl Root {
@@ -129,6 +131,7 @@ impl Root {
             composer,
             details,
             connect,
+            hud: cx.new(nd::hud::FrameHud::new),
         };
         match config {
             Some(config) => this.apply_config(config, cx),
@@ -733,8 +736,9 @@ impl Render for Root {
                     .on_collapse_change(cx.listener(|this, e: &PaneCollapsed, _, cx| this.set_info(!e.collapsed, cx)))
                     .child(self.details.clone()),
             )
+            .on_action(nd::hud::frame_hud_toggle(&self.hud))
             .overlay(
-                div().size_full().child(switcher).child(
+                div().size_full().child(switcher).child(self.hud.clone()).child(
                     toast_overlay("toasts")
                         .toasts(toasts)
                         .on_dismiss(cx.listener(|this, _: &ToastDismissed, _, cx| this.clear_toast(cx))),

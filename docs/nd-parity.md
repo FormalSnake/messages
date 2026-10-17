@@ -14,8 +14,7 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 5 boxes are open: four Linux, Windows and Nix legs out of this
-run, and the F12 HUD nd has not shipped.
+Status: **not at parity.** 4 boxes are open: the Linux, Windows and Nix legs out of this run.
 The GPUI build stays the default until they close.
 
 ## App shell and layout
@@ -27,7 +26,7 @@ The GPUI build stays the default until they close.
 - [x] One store per connection; a settings edit that keeps the connection never reconnects (`root::connection_key`, unit via `settings::tests`)
 - [x] Notification click raises the window and opens the chat (nd-system `NotificationClicked` handler; not clicked on a real notification: see open items)
 - [x] Window opens unfocused with `GPUIX_BACKGROUND=1` (nd `WindowOptions::background`; t3 `shots::real_a_background_launch_does_not_take_focus`)
-- [ ] F12 frame overlay: nd has no in-app frame HUD yet (its docs list it as not shipped); `nd diagnose` has the frame timings
+- [x] F12 frame overlay: nd's frame HUD, hidden, minimal (fps) and full (frame time against the budget, slowest frame, dropped frames) (t3 `parity::real_f12_cycles_the_frame_overlay`, captured)
 - [x] Bottom inset follows IME insets: the GPUI build (d12b662) never had it, so nothing is lost
 
 ## Connect and settings

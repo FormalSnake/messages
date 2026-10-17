@@ -185,3 +185,34 @@ fn real_a_new_row_fades_in() {
         shot(&app, &format!("fade-{i}"));
     }
 }
+
+#[test]
+fn real_f12_cycles_the_frame_overlay() {
+    if !real_allowed() {
+        return;
+    }
+    let app = launch_app(isolated("hud").env("MESSAGES_DEMO", "1")).unwrap();
+    open_chat(&app, "Chloe Martin");
+    let field = app.get_by_test_id("composer.field");
+    // A click on the field first: keys reach only the key window.
+    let b = field.bounding_box().unwrap().expect("laid out");
+    app.mouse().click(b.x + 20., b.y + b.height / 2.).unwrap();
+    let lines = |app: &nd_test::AppHandle| -> Vec<String> {
+        let tree = app.tree(None).unwrap();
+        tree.windows[0].root.iter().map(|n| n.name.to_string()).filter(|n| n.ends_with(" fps") || n.ends_with(" dropped")).collect()
+    };
+    assert!(lines(&app).is_empty(), "the overlay starts hidden");
+    field.press("f12").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let minimal = lines(&app);
+    assert!(minimal.len() == 1 && minimal[0].ends_with(" fps"), "F12 shows the rate: {minimal:?}");
+    shot(&app, "hud-minimal");
+    field.press("f12").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let full = lines(&app);
+    assert!(full.iter().any(|l| l.ends_with(" dropped")), "F12 again adds frame time and drops: {full:?}");
+    shot(&app, "hud-full");
+    field.press("f12").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(lines(&app).is_empty(), "a third F12 hides it");
+}
