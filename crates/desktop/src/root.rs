@@ -20,6 +20,8 @@ const TOAST_FOR: Duration = Duration::from_secs(6);
 const SIDEBAR_WIDTH: f32 = 320.;
 const SIDEBAR_WIDTH_COMPACT: f32 = 248.;
 pub const INFO_WIDTH: f32 = 280.;
+/// The narrowest the transcript gets beside the open details before the sidebar steps aside.
+const TRANSCRIPT_MIN_WIDTH: f32 = 420.;
 
 enum StoreStatus {
     Loading,
@@ -722,6 +724,15 @@ impl Render for Root {
             .toolbar(bar)
             .sidebar(
                 sidebar()
+                    // With the details open in a narrow window the sidebar folds away, as
+                    // Messages and WinUI's navigation view give the conversation the room;
+                    // AppKit's split view does that itself.
+                    .collapsed(
+                        !cfg!(target_os = "macos")
+                            && info
+                            && width > 0.
+                            && width - SIDEBAR_WIDTH_COMPACT - INFO_WIDTH < TRANSCRIPT_MIN_WIDTH,
+                    )
                     .width(px(if wide { SIDEBAR_WIDTH } else { SIDEBAR_WIDTH_COMPACT }))
                     .min_w(px(SIDEBAR_WIDTH_COMPACT))
                     .child(self.sidebar.clone()),
