@@ -14,7 +14,8 @@ the feature was seen working, and the line says how:
 An unticked box is a loss or not yet seen working, with the reason. The core crate is
 unchanged, so the core half of `rust-parity.md` still holds.
 
-Status: **not at parity.** 4 boxes are open: the Linux, Windows and Nix legs out of this run.
+Status: **not at parity.** 5 boxes are open: the Linux, Windows and Nix legs out of this run,
+and a swiped-open action that AppKit cuts off as it closes.
 The GPUI build stays the default until they close.
 
 ## App shell and layout
@@ -69,7 +70,8 @@ The GPUI build stays the default until they close.
 - [x] Send (t3: sending shows the bubble and clears the field)
 - [x] Rows newer than open fade in (t3 `parity::real_a_new_row_fades_in`, frames); late tapbacks fade in (nd tier 2 `msg_gaps`)
 - [x] Timestamp column on hover (t3 `shots::real_hover_and_lightbox_video_are_captured`, shot)
-- [x] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions), a bare arrow that stays whole while the message slides back over it (t3 `shots::real_swipe_to_reply_and_back_is_captured`, a two-finger swipe posted at the HID tap, captured open and closing)
+- [x] Swipe right to reply: the thread's leading row action with a full swipe (NSTableView row actions), drawn as a bare arrow (t3 `shots::real_swipe_to_reply_and_back_is_captured`, a two-finger swipe posted at the HID tap, captured open and closing)
+- [ ] The action slides back whole: while the row closes, AppKit narrows the action button from its trailing edge, so the arrow and its label are cut off. A plain NSTableView does the same, frame by frame (recorded at 60 fps). Painting the row opaque, anchoring the button to the trailing edge and turning off the group view's clipping each left the cut in place. A whole slide-back needs nd to draw the swipe itself instead of NSTableViewRowAction
 
 ## Bubbles and attachments
 - [x] Run corners, tail on a run's last bubble, emoji-only large, reactions on the bubble (nd `chat_bubble`; shot)

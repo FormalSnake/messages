@@ -870,8 +870,7 @@ fn reply_rows(messages: &[Arc<Message>], root: &str, is_group: bool) -> Vec<Row>
 }
 
 /// Swiping a message right replies to it, as in Messages: the table's leading row action, run
-/// by a full swipe. A bare arrow with no fill, as Messages shows it, so the message slides back
-/// over it rather than cutting a button in half.
+/// by a full swipe, drawn as a bare arrow with no fill.
 fn reply_action(slots: &HashMap<String, Slot>, key: &str) -> RowActions {
     match slots.get(key) {
         Some(Slot::Message { data, props }) if props.capabilities.replies && !message::failed(&data.message) => {
