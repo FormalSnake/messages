@@ -98,9 +98,13 @@ This installs `~/.local/bin/messages` and a desktop entry.
 
 ### Windows
 
-Install [rustup](https://rustup.rs) and the Visual Studio C++ build tools, then
-`cargo run --release -p messages`. NativeDesktop's Windows backend has not run yet, so this
-build is untested there; the GPUI build before the port (`d12b662`) is the one known to work.
+Install [rustup](https://rustup.rs) and the Visual Studio C++ build tools, then build with the
+msvc toolchain and install it with a Start menu shortcut:
+
+```powershell
+cargo +1.95.0-x86_64-pc-windows-msvc build --release -p messages
+powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
+```
 
 ## Mac setup
 
