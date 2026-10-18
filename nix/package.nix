@@ -19,6 +19,9 @@
   gst_all_1,
   libnotify,
   xdg-utils,
+  # NativeDesktop's source tree. The nd crates are path dependencies on the sibling checkout
+  # `../nativedesktop-wt-msg-gaps`, so the build puts this tree at that path.
+  ndSrc,
 }:
 
 let
@@ -39,7 +42,16 @@ rustPlatform.buildRustPackage (finalAttrs: {
     ];
   };
 
-  cargoLock.lockFile = ../Cargo.lock;
+  postUnpack = ''
+    cp -r ${ndSrc} nativedesktop-wt-msg-gaps
+    chmod -R u+w nativedesktop-wt-msg-gaps
+  '';
+
+  cargoLock = {
+    lockFile = ../Cargo.lock;
+    # nd-terminal's, not built on Linux but still in the lock.
+    outputHashes."libghostty-vt-0.2.1" = "sha256-XepsHhhauHZnaz8ZpWNaas/7sI/22VoH7b3+0dP4NJk=";
+  };
   cargoBuildFlags = [ "--package=messages" ];
 
   nativeBuildInputs = [
