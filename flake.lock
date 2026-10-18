@@ -23,11 +23,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792280624,
-        "narHash": "sha256-x+QYnJ71J9+8gzvTuDAcZZfbuWRiDGOQaEp0HI/25hI=",
+        "lastModified": 1792312876,
+        "narHash": "sha256-hwMn1Jr8oD6h9MBNurbUlt7xhOqyLj4KnucHtRC5aeY=",
         "owner": "FormalSnake",
         "repo": "NativeDesktop",
-        "rev": "08fc1658ffe505f222958f1856a129fbaed10edd",
+        "rev": "19f923c21220dbc903fb9dcc911db78efd203882",
         "type": "github"
       },
       "original": {
