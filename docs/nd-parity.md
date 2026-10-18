@@ -132,8 +132,19 @@ The GPUI build stays the default until they close.
 - [x] Linux on g815: build, every demo conversation in headless Hyprland (linux shot), the audit's four GPUI variants pass; `thread.rs` there needs the compositor the shots start
 - [ ] Windows: nd's Windows backend has never run
 - [x] App id `dev.formalsnake.messages`, desktop entry and icon renamed, install script removes the old id's entry (code)
-- [ ] Nix package: needs NativeDesktop as a git dependency at a published rev; the home-manager module is generated but the package still builds the path dependency
+- [x] Nix package: builds the nd port with the `nativedesktop` flake input copied to the path dependency's place (`ndSrc` in `nix/package.nix`); g815 and e1504g run it from `~/.config/nix`
 - [x] Screenshots: `crates/desktop/tests/shots.rs` captures every demo conversation, whole windows (replaces `scripts/screenshot.sh`)
+
+## Open on Linux, reported 2026-10-18
+
+Seen by the user on g815 in the nix build of `nd-port` (a06d933). Not yet fixed.
+
+- [ ] A message's context menu: React opens an empty submenu, no tapbacks in it
+- [ ] Emoji picker: the emoji are blurry
+- [ ] Video preview: clicking out of the lightbox does not stop the video, its audio keeps playing, and each new preview adds another player until the app quits
+- [ ] Find My location: the map shows the right area but draws no pin
+- [ ] GIF picker: the favourites grid does not scroll, so favourites past the first screen cannot be reached
+- [ ] Details sidebar: opens without animating
 
 ## NativeDesktop gaps behind the open boxes
 Fixed on `port-messages-fixes` in the NativeDesktop repo (this port builds against it):
