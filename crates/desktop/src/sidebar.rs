@@ -650,13 +650,45 @@ impl Render for Sidebar {
                         .map(|tip| text(*tip).text_size(theme.type_scale.caption).text_color(theme.text.secondary)),
                 )
         });
-        // The list runs up under the toolbar and the search field, which float over its top as in
-        // Messages: rows scroll under them into the toolbar's blur.
+        let search = div().px_2().child(
+            text_field("sidebar-search")
+                .search()
+                .large()
+                .text(self.query.clone())
+                .placeholder("Search")
+                .label("Search")
+                .on_change(cx.listener(|this, e: &TextChanged, _, cx| this.set_query(e.text.clone(), cx)))
+                .on_submit(cx.listener(|this, _: &TextSubmitted, window, cx| {
+                    let first = this.list.items().into_iter().find_map(|item| match item {
+                        Item::Chat(guid) => Some(guid),
+                        _ => None,
+                    });
+                    if let Some(guid) = first {
+                        Self::open(&guid, window, cx);
+                    }
+                })),
+        );
+        // On macOS the list runs up under the toolbar and the search field, which float over its
+        // top as in Messages: rows scroll under them into the toolbar's blur. AppKit insets the
+        // list by the toolbar band for that; the GPUI backends start the sidebar below the
+        // toolbar and have no inset, so there the field sits above the list.
+        let (search_head, search_float, tips_head, tips_float) = if cfg!(target_os = "macos") {
+            (
+                None,
+                Some(search.absolute().top(px(SEARCH_TOP)).left_0().right_0()),
+                None,
+                tips.map(|tips| div().absolute().top(px(SIDEBAR_BAND)).left_0().right_0().child(tips)),
+            )
+        } else {
+            (Some(search.pt(px(10.)).pb_2().flex_none()), None, tips, None)
+        };
         v_flex()
             .id("sidebar")
             .size_full()
             .relative()
             .context_menu(|menu, _, _| menu.item("New Message", NewChat))
+            .children(search_head)
+            .children(tips_head)
             .child(
                 list("chats", &self.list, cx.processor(Self::row))
                     .inset()
@@ -675,27 +707,8 @@ impl Render for Sidebar {
                     .min_h_0(),
             )
             .child(self.footer(cx))
-            .child(
-                div().absolute().top(px(SEARCH_TOP)).left_0().right_0().px_2().child(
-                    text_field("sidebar-search")
-                        .search()
-                        .large()
-                        .text(self.query.clone())
-                        .placeholder("Search")
-                        .label("Search")
-                        .on_change(cx.listener(|this, e: &TextChanged, _, cx| this.set_query(e.text.clone(), cx)))
-                        .on_submit(cx.listener(|this, _: &TextSubmitted, window, cx| {
-                            let first = this.list.items().into_iter().find_map(|item| match item {
-                                Item::Chat(guid) => Some(guid),
-                                _ => None,
-                            });
-                            if let Some(guid) = first {
-                                Self::open(&guid, window, cx);
-                            }
-                        })),
-                ),
-            )
-            .children(tips.map(|tips| div().absolute().top(px(SIDEBAR_BAND)).left_0().right_0().child(tips)))
+            .children(search_float)
+            .children(tips_float)
     }
 }
 
