@@ -238,8 +238,15 @@ impl Lightbox {
         };
         cover("lightbox")
             .bg(look.scrim)
+            .modality(Modality::LightDismiss)
             .key_context("Lightbox")
-            .on_dismiss(cx.listener(|this, _: &Dismissed, _, cx| this.close_lightbox(cx)))
+            .on_dismiss(cx.listener(|this, e: &Dismissed, _, cx| {
+                // The second click of the double click that opened the viewer may land on the dim.
+                let early = this.lightbox_mut().is_some_and(|l| l.opened.elapsed() <= OPEN_GRACE);
+                if !(early && e.reason == DismissCause::OutsidePress) {
+                    this.close_lightbox(cx);
+                }
+            }))
             .child(
                 v_flex()
                     .size_full()

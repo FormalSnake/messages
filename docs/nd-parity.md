@@ -147,6 +147,15 @@ Seen by the user on g815 in the nix build of `nd-port` (a06d933). Not yet fixed.
 - [ ] GIF picker: the favourites grid does not scroll, so favourites past the first screen cannot be reached
 - [ ] Details sidebar: opens without animating
 
+## Open on Linux and Windows, reported 2026-10-20
+
+Seen by the user on the GPUI backend (Linux and Windows); macOS is fine. Not yet fixed.
+
+- [ ] Emoji picker: opens at the start of the composer field instead of at the emoji button
+- [ ] Composer: a click outside the input does not take its focus away
+- [ ] Lightbox: a click on the darkened area around the picture does not dismiss it
+- [ ] File attachments (a PDF from another sender): no way to open or save the file
+
 ## NativeDesktop gaps behind the open boxes
 Fixed on `port-messages-fixes` in the NativeDesktop repo (this port builds against it):
 a bottom-aligned list opened at its top (column setup and resizes were read as user scrolls);

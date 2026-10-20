@@ -20,7 +20,7 @@
   libnotify,
   xdg-utils,
   # NativeDesktop's source tree. The nd crates are path dependencies on the sibling checkout
-  # `../nativedesktop-wt-msg-gaps`, so the build puts this tree at that path.
+  # `../nativedesktop-wt-msg-linux`, so the build puts this tree at that path.
   ndSrc,
 }:
 
@@ -43,8 +43,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   };
 
   postUnpack = ''
-    cp -r ${ndSrc} nativedesktop-wt-msg-gaps
-    chmod -R u+w nativedesktop-wt-msg-gaps
+    cp -r ${ndSrc} nativedesktop-wt-msg-linux
+    chmod -R u+w nativedesktop-wt-msg-linux
   '';
 
   cargoLock = {

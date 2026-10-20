@@ -80,6 +80,8 @@ pub struct RowProps {
 pub struct Media {
     pub fetching: HashSet<String>,
     pub failed: HashSet<String>,
+    /// Why the last download, open or save of an attachment failed, by guid.
+    pub errors: HashMap<String, String>,
     /// Video posters made with ffmpeg, by attachment guid.
     pub posters: HashMap<String, PathBuf>,
     /// The voice note playing now.
@@ -474,6 +476,7 @@ fn attachment_block(
     let menu_ref = reference.clone();
     let menu = move |menu: ContextMenu, _: &mut Window, _: &mut App| {
         menu.item("Open", OpenAttachment(menu_ref.clone()))
+            .item("Save As\u{2026}", SaveAttachment(menu_ref.clone()))
             .item("Copy", CopyAttachment(menu_ref.clone()))
             .item("Copy File Name", CopyAttachmentName(menu_ref.clone()))
     };
@@ -658,8 +661,13 @@ fn attachment_block(
                 .into_any_element()
         }
         Kind::File => {
-            // Opens in Quick Look, as in Messages; the menu still has Open.
+            // Quick Look previews it, as in Messages; without Quick Look it opens in its app.
             let open = ShowAttachment(reference);
+            let status = if fetching {
+                Some(("Downloading\u{2026}".to_owned(), theme.text.secondary))
+            } else {
+                media.errors.get(&attachment.guid).map(|e| (e.clone(), theme.text.danger))
+            };
             let block = h_flex()
                 .id(id)
                 .gap_2()
@@ -672,11 +680,22 @@ fn attachment_block(
                 .context_menu(menu)
                 .child(icon(Icon::File, 20.).text_color(theme.text.secondary))
                 .child(
-                    v_flex().min_w_0().child(text(attachment.name.clone()).font_weight(FontWeight::SEMIBOLD)).child(
-                        text(format_bytes(attachment.bytes))
-                            .text_size(theme.type_scale.caption)
-                            .text_color(theme.text.secondary),
-                    ),
+                    v_flex()
+                        .min_w_0()
+                        .child(text(attachment.name.clone()).font_weight(FontWeight::SEMIBOLD))
+                        .child(
+                            text(format_bytes(attachment.bytes))
+                                .text_size(theme.type_scale.caption)
+                                .text_color(theme.text.secondary),
+                        )
+                        .when_some(status, |col, (line, color)| {
+                            col.child(
+                                text(line)
+                                    .id(format!("att-status-{}", attachment.guid))
+                                    .text_size(theme.type_scale.caption)
+                                    .text_color(color),
+                            )
+                        }),
                 )
                 .into_any_element();
             match tail {
