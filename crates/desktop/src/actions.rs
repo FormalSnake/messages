@@ -92,7 +92,15 @@ macro_rules! attachment_actions {
     )*};
 }
 
-attachment_actions!(OpenAttachment, CopyAttachment, CopyAttachmentName, ShowAttachment, Transcribe, Download);
+attachment_actions!(
+    OpenAttachment,
+    SaveAttachment,
+    CopyAttachment,
+    CopyAttachmentName,
+    ShowAttachment,
+    Transcribe,
+    Download
+);
 
 #[derive(Clone, PartialEq, Debug, Action)]
 #[action(namespace = messages, no_json)]

@@ -430,6 +430,10 @@ impl Root {
             let r = r.clone();
             this.thread.update(cx, |thread, cx| thread.open_attachment(&r, cx));
         }))
+        .on_action(cx.listener(|this, SaveAttachment(r): &SaveAttachment, window, cx| {
+            let r = r.clone();
+            this.thread.update(cx, |thread, cx| thread.save_attachment(&r, window, cx));
+        }))
         .on_action(cx.listener(|this, CopyAttachment(r): &CopyAttachment, _, cx| {
             let r = r.clone();
             this.thread.update(cx, |thread, cx| thread.copy_attachment(&r, cx));

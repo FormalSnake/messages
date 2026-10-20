@@ -424,7 +424,8 @@ impl Thread {
         );
     }
 
-    /// Runs `then` with the attachment's file, downloading it first when it is not on disk.
+    /// Runs `then` with the attachment's file, downloading it first when it is not on disk. The
+    /// bubble shows the download, and its error if it fails.
     fn with_local(
         &mut self,
         reference: &AttachmentRef,
@@ -446,17 +447,35 @@ impl Thread {
         let (chat, message) = (reference.at.chat.clone(), reference.at.message.clone());
         let mime = attachment.mime.clone();
         let fetch_mime = mime.clone();
+        let key = attachment.guid.clone();
+        self.media.failed.remove(&key);
+        self.media.errors.remove(&key);
+        self.media.fetching.insert(key.clone());
+        cx.notify();
         crate::rt::spawn_for(
             cx.weak_entity(),
             async move {
-                store.attachment_src(&chat, &message, &attachment.guid, &attachment.name, Some(&fetch_mime)).await.ok()
+                store.attachment_src(&chat, &message, &attachment.guid, &attachment.name, Some(&fetch_mime)).await
             },
             move |this, path, cx| {
-                if let Some(path) = path {
-                    then(this, path, mime, cx);
+                this.media.fetching.remove(&key);
+                match path {
+                    Ok(path) => then(this, path, mime, cx),
+                    Err(error) => {
+                        tracing::warn!("attachment {key}: {error}");
+                        this.media.failed.insert(key.clone());
+                        this.media.errors.insert(key, format!("Could not download: {error}"));
+                    }
                 }
+                cx.notify();
             },
         );
+    }
+
+    fn attachment_error(&mut self, guid: String, error: String, cx: &mut Context<Self>) {
+        tracing::warn!("attachment {guid}: {error}");
+        self.media.errors.insert(guid, error);
+        cx.notify();
     }
 
     pub fn open_attachment(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
@@ -469,8 +488,43 @@ impl Thread {
             self.toggle_audio(reference, cx);
             return;
         }
-        self.with_local(reference, cx, |_, path, _, _| {
-            let _ = nd::system::open_path(&path);
+        let guid = reference.attachment.clone();
+        self.with_local(reference, cx, move |this, path, _, cx| {
+            if let Err(error) = nd::system::open_path(&path) {
+                this.attachment_error(guid, format!("Could not open: {error}"), cx);
+            }
+        });
+    }
+
+    /// Copies the attachment where the user picks, downloading it first when it is not here.
+    pub fn save_attachment(&mut self, reference: &AttachmentRef, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = bridge::store(cx).and_then(|store| {
+            store
+                .state()
+                .find_message(&reference.at.chat, &reference.at.message)
+                .and_then(|m| m.attachments.iter().find(|a| a.guid == reference.attachment).map(|a| a.name.clone()))
+        }) else {
+            return;
+        };
+        let reference = reference.clone();
+        let weak = cx.weak_entity();
+        let dialog = SaveDialog::new().title("Save Attachment").file_name(name);
+        window.save_dialog(cx, dialog, move |to, cx| {
+            let Some(to) = to else { return };
+            weak.update(cx, |this, cx| {
+                let guid = reference.attachment.clone();
+                this.with_local(&reference, cx, move |_, from, _, cx| {
+                    crate::rt::spawn_for(
+                        cx.weak_entity(),
+                        async move { std::fs::copy(&from, &to).map(drop) },
+                        move |this, copied, cx| {
+                            if let Err(error) = copied {
+                                this.attachment_error(guid, format!("Could not save: {error}"), cx);
+                            }
+                        },
+                    );
+                });
+            });
         });
     }
 
@@ -516,14 +570,7 @@ impl Thread {
 
     /// Fetches an attachment the thread left for a click (over the size it downloads alone).
     pub fn download(&mut self, reference: &AttachmentRef, cx: &mut Context<Self>) {
-        self.media.failed.remove(&reference.attachment);
-        self.media.fetching.insert(reference.attachment.clone());
-        let key = reference.attachment.clone();
-        cx.notify();
-        self.with_local(reference, cx, move |this, _, _, cx| {
-            this.media.fetching.remove(&key);
-            cx.notify();
-        });
+        self.with_local(reference, cx, |_, _, _, _| {});
     }
 
     /// A voice note to text through CanaryLLM, shown under the note.
@@ -575,6 +622,15 @@ impl Thread {
             if nd::system::quick_look(window, items, index, cx) {
                 return;
             }
+        }
+        let media = store.state().find_message(&reference.at.chat, &reference.at.message).is_some_and(|m| {
+            m.attachments
+                .iter()
+                .any(|a| a.guid == reference.attachment && matches!(message::kind_of(m, a), Kind::Image | Kind::Video | Kind::Sticker))
+        });
+        if !media {
+            self.open_attachment(reference, cx);
+            return;
         }
         self.lightbox = crate::lightbox::Lightbox::open(&store, reference);
         self.fetch_lightbox(cx);
@@ -904,6 +960,7 @@ fn version(slot: &Slot, media: &Media) -> u64 {
                 (
                     media.fetching.contains(guid),
                     media.failed.contains(guid),
+                    media.errors.get(guid),
                     media.posters.get(guid),
                     media.playing.as_ref() == Some(guid),
                     media.transcripts.get(guid),

@@ -169,6 +169,35 @@ fn wave_gif() -> Option<PathBuf> {
     Some(path)
 }
 
+/// A one-page PDF written into the cache when the demo's file attachment is fetched.
+fn booking_pdf() -> Option<PathBuf> {
+    let path = crate::config::cache_dir().join("demo").join("Booking confirmation.pdf");
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let body = "BT /F1 24 Tf 72 720 Td (Booking confirmation) Tj ET";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+            .to_owned(),
+        format!("<< /Length {} >>\nstream\n{body}\nendstream", body.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+    ];
+    let mut pdf = String::from("%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+    }
+    let xref = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1));
+    for offset in offsets {
+        pdf.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objects.len() + 1));
+    std::fs::write(&path, pdf).ok()?;
+    Some(path)
+}
+
 fn wave(guid: &str) -> Attachment {
     Attachment {
         guid: guid.into(),
@@ -442,7 +471,22 @@ fn seeds(p: &People, now: Millis) -> Vec<Seed> {
                         ..attachment("demo-att-5", "IMG_0912.PNG", 0, 0)
                     }]
                 }),
-                row("That is the booking, keep it somewhere", 3 * DAY + 3 * HOUR + 39 * MIN, None),
+                row("That is the booking, keep it somewhere", 3 * DAY + 3 * HOUR + 39 * MIN, None).with(|m| {
+                    m.attachments = vec![Attachment {
+                        guid: "demo-file-1".into(),
+                        name: "Booking confirmation.pdf".into(),
+                        mime: "application/pdf".into(),
+                        bytes: 469_000,
+                        width: None,
+                        height: None,
+                        measured: false,
+                        is_sticker: false,
+                        // Not here yet: a click fetches it, as from the server.
+                        local_path: None,
+                        hidden: false,
+                        duration_ms: None,
+                    }]
+                }),
                 row("Drink water. Send tapas.", 3 * DAY + 3 * HOUR, None).with(|m| {
                     m.date_delivered = Some(now - 3 * DAY);
                     m.date_read = Some(now - 3 * DAY);
@@ -902,6 +946,10 @@ impl Transport for DemoTransport {
     }
 
     async fn attachment_path(&self, attachment_guid: &str, _options: AttachmentPathOptions) -> TransportResult<PathBuf> {
+        if attachment_guid == "demo-file-1" {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            return booking_pdf().ok_or_else(|| TransportError::Network("Could not write the demo PDF".into()));
+        }
         photo_src(attachment_guid)
             .map(PathBuf::from)
             .ok_or_else(|| TransportError::Network(format!("Attachment {attachment_guid} is not in the demo set")))
