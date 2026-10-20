@@ -1,6 +1,7 @@
 //! Tier 3 on the GPUI backend (Linux, Windows): the real app on the demo data, driven with
-//! pointer clicks. The composer's emoji button opens the picker at itself, a click beside the
-//! composer ends editing, and a click on the viewer's dim closes it.
+//! pointer clicks. The composer's emoji button opens nd's picker at itself (Linux), a click beside
+//! the composer ends editing, a click on the viewer's dim closes it, and a file attachment opens
+//! in the system's app and saves through Save As.
 //!
 //! It opens a real window, so it runs only under nextest or with `ND_REAL=1`.
 #![cfg(any(target_os = "linux", windows))]
@@ -89,9 +90,9 @@ fn real_a_click_on_the_viewer_dim_closes_it() {
 }
 
 /// Nadia's booking PDF is not here yet: a click fetches it, showing that on the bubble, then
-/// hands it to the system's opener (a stub `xdg-open` that records its argument); Save As from
-/// the bubble's menu copies it where the save dialog (scripted) says.
-#[cfg(target_os = "linux")]
+/// hands it to the system's opener (on Linux a stub `xdg-open` that records its argument, on
+/// Windows the PDF app or Open With, found among the processes); Save As from the bubble's menu
+/// copies it where the save dialog (scripted) says.
 #[test]
 fn real_a_file_attachment_opens_and_saves() {
     if !real_allowed() {
@@ -100,18 +101,21 @@ fn real_a_file_attachment_opens_and_saves() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("file-attachment");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (opened, saved) = (dir.join("opened.txt"), dir.join("saved.pdf"));
-    let stub = dir.join("xdg-open");
-    std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", opened.display())).unwrap();
-    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
-    let script = format!(r#"{{"dialog.saveFile": [{{"path": "{}"}}]}}"#, saved.display());
-    let app = common::launch(
-        LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
-            .env("MESSAGES_DEMO", "1")
-            .env("PATH", path)
-            .env("ND_AUTOMATION_DIALOG_SCRIPT", script),
-    );
+    let saved = dir.join("saved.pdf");
+    let script = serde_json::json!({ "dialog.saveFile": [{ "path": saved }] }).to_string();
+    let options = LaunchOptions::new(env!("CARGO_BIN_EXE_messages"))
+        .env("MESSAGES_DEMO", "1")
+        .env("ND_AUTOMATION_DIALOG_SCRIPT", script);
+    #[cfg(target_os = "linux")]
+    let (options, opened) = {
+        let opened = dir.join("opened.txt");
+        let stub = dir.join("xdg-open");
+        std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n", opened.display())).unwrap();
+        std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
+        (options.env("PATH", path), opened)
+    };
+    let app = common::launch(options);
     let row = app.get_by_test_id("chat-+34612345678");
     row.scroll_into_view().ok();
     expect(&row).to_be_visible().unwrap();
@@ -127,12 +131,31 @@ fn real_a_file_attachment_opens_and_saves() {
     let (x, y) = (b.x + b.width / 2., b.y + b.height / 2.);
     app.mouse().click(x, y).unwrap();
     expect(&app.get_by_test_id("att-status-demo-file-1")).to_contain_text("Downloading").unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !opened.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !opened.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let target = std::fs::read_to_string(&opened).expect("the opener was called");
+        assert!(target.ends_with("Booking confirmation.pdf"), "opened {target}");
     }
-    let target = std::fs::read_to_string(&opened).expect("the opener was called");
-    assert!(target.ends_with("Booking confirmation.pdf"), "opened {target}");
+    #[cfg(windows)]
+    {
+        // The default PDF app, or Explorer's Open With when there is none (as in the g815 VM,
+        // whose association points at a removed Edge).
+        let find = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'OpenWith.exe' -or ($_.Name -ne 'powershell.exe' -and $_.CommandLine -like '*Booking confirmation.pdf*') } | ForEach-Object { \"$($_.ProcessId) $($_.Name)\" }";
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut opener = String::new();
+        while opener.is_empty() && std::time::Instant::now() < deadline {
+            opener = powershell(find);
+        }
+        assert!(!opener.is_empty(), "no process opened the PDF");
+        println!("opened by {opener}");
+        for pid in opener.lines().filter_map(|l| l.split(' ').next()) {
+            powershell(&format!("Stop-Process -Id {pid} -ErrorAction SilentlyContinue"));
+        }
+    }
     expect(&app.get_by_test_id("att-status-demo-file-1")).not().to_be_attached().unwrap();
 
     // The menu opens at the press; Save As is its second row (rows are 8 px of padding around
@@ -150,4 +173,13 @@ fn real_a_file_attachment_opens_and_saves() {
     }
     let bytes = std::fs::read(&saved).expect("Save As wrote the file");
     assert!(bytes.starts_with(b"%PDF"), "a PDF was saved");
+}
+
+#[cfg(windows)]
+fn powershell(script: &str) -> String {
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }

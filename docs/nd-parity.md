@@ -151,8 +151,14 @@ Seen by the user on g815 in the nix build of `nd-port` (a06d933). Not yet fixed.
 ## Open on Linux and Windows, reported 2026-10-20
 
 Seen by the user on the GPUI backend (Linux and Windows); macOS is fine. Fixed on `msg-linux`
-in NativeDesktop and checked by real clicks in headless Hyprland (`tests/gpui_input.rs`). The
-Windows run did not complete (the guest restarted mid-build), so Windows is not yet checked.
+in NativeDesktop and checked by real clicks in headless Hyprland (`tests/gpui_input.rs`).
+Windows, 2026-10-20 in the g815 VM (console as `ndvm`, tests started as a scheduled task over
+ssh as `ndvm`): `gpui_input` passes 3 of 3 (composer, lightbox dim, file attachment). The file
+check needed NativeDesktop `windows-3` (a71820db): the VM's PDF association points at a
+removed Edge, `ShellExecuteW` failed with 5 and the bubble showed the error; open now falls
+back to Open With, as Explorer does. The emoji panel was checked by a screen capture after a
+real click on the button: it opens above the button, not at the field's start (the panel's
+host window covers the screen, so no test reads its position).
 
 - [x] Emoji picker: opens at the start of the composer field instead of at the emoji button
 - [x] Composer: a click outside the input does not take its focus away
