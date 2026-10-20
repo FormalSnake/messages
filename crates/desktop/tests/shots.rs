@@ -371,7 +371,7 @@ fn real_launch_focuses_the_message_field() {
 
 /// A real two-finger swipe right over a received bubble (posted at the HID tap) opens Reply; a
 /// click elsewhere closes it, with frames across the close so the arrow can be checked for
-/// clipping.
+/// clipping. A long swipe then runs Reply.
 #[cfg(target_os = "macos")]
 #[test]
 fn real_swipe_to_reply_and_back_is_captured() {
@@ -386,11 +386,11 @@ fn real_swipe_to_reply_and_back_is_captured() {
             .env("ND_AUTOMATION_CAPTURE", "region"),
     )
     .unwrap();
-    expect(&app.get_by_test_id("row-demo-msg-0012")).to_be_visible().unwrap();
+    expect(&app.get_by_test_id("row-demo-msg-0049")).to_be_visible().unwrap();
     std::thread::sleep(Duration::from_millis(800));
     let tree = app.tree(None).unwrap();
     let frame = tree.windows[0].frame.expect("the window's frame");
-    let row = app.get_by_test_id("row-demo-msg-0012").bounding_box().unwrap().expect("laid out");
+    let row = app.get_by_test_id("row-demo-msg-0049").bounding_box().unwrap().expect("laid out");
     let at = (f64::from(frame.origin.x + row.x + row.width / 3.), f64::from(frame.origin.y + row.y + row.height / 2.));
     let main = windows_of(app.pid()).first().map(|w| w.0).expect("a window");
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
@@ -406,26 +406,48 @@ fn real_swipe_to_reply_and_back_is_captured() {
     };
     ndshell::input::move_to(at);
     std::thread::sleep(Duration::from_millis(200));
-    // AppKit offers no row actions on the first gesture after launch: a still one goes first.
-    post(0, GesturePhase::Began);
-    post(0, GesturePhase::Ended);
+    // A click on the bubble leaves its row unhighlighted: the transcript has no selection.
+    ndshell::input::click(at);
     std::thread::sleep(Duration::from_millis(300));
+    shoot("clicked");
     // Fingers to the right: the row slides right and shows Reply, which stays open once the
     // fingers lift.
     post(0, GesturePhase::Began);
     for _ in 0..15 {
         post(20, GesturePhase::Changed);
     }
+    // The fingers rest before they lift, so the release carries no fling into a full swipe.
+    std::thread::sleep(Duration::from_millis(200));
+    post(0, GesturePhase::Changed);
     post(0, GesturePhase::Ended);
     std::thread::sleep(Duration::from_millis(700));
     shoot("open");
-    // A click elsewhere closes it: the row slides back over the arrow, shot as it goes.
+    // A click elsewhere closes it: the row slides back with the arrow whole, recorded as it goes
+    // (a screenshot takes longer than the slide).
+    let video = dir.join("shot-swipe-back.mov");
+    let _ = std::fs::remove_file(&video);
+    let rect = format!(
+        "-R{},{},{},{}",
+        frame.origin.x + row.x,
+        frame.origin.y + row.y - 20.,
+        row.width,
+        row.height + 40.
+    );
+    let mut recording =
+        std::process::Command::new("screencapture").args(["-x", "-v", "-V2", &rect]).arg(&video).spawn().unwrap();
+    std::thread::sleep(Duration::from_millis(500));
     ndshell::input::click((at.0 + 400., at.1));
-    for i in 0..6 {
-        shoot(&format!("back-{i}"));
+    let _ = recording.wait();
+    println!("recording {}", video.display());
+    shoot("closed");
+    // A long swipe runs Reply and the row slides back on its own.
+    std::thread::sleep(Duration::from_millis(300));
+    post(0, GesturePhase::Began);
+    for _ in 0..40 {
+        post(20, GesturePhase::Changed);
     }
-    for i in 0..4 {
-        std::thread::sleep(Duration::from_millis(60));
-        shoot(&format!("settle-{i}"));
-    }
+    shoot("full");
+    post(0, GesturePhase::Ended);
+    std::thread::sleep(Duration::from_millis(700));
+    shoot("full-after");
 }
