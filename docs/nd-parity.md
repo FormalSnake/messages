@@ -82,7 +82,7 @@ The GPUI build stays the default until they close.
 - [x] Photo grid with "+N" (code; demo grid seen as two tiles in a shot)
 - [x] Video poster with play mark and duration, a click or double click opens Quick Look (shot)
 - [x] On macOS a click on a picture leaves it and a double click opens Quick Look, as in Messages (t3 `parity::real_a_double_clicked_picture_opens_quick_look`); Linux and Windows open the viewer on a click
-- [ ] A double click on a bubble's text selects a word (the text is selectable); Messages on macOS 27 does nothing there, and the port's tapback picker on double click never opens on macOS
+- [x] A double click on a bubble's text opens the tapback picker and selects no word; the text stays selectable by drag and triple click (nd tier 2 `msg_gaps`; t3 `parity::real_a_double_clicked_bubble_opens_the_tapbacks`, captured)
 - [x] Voice note pill with play/stop (core player, as before) (code)
 - [x] Stickers, file pills, link cards (code; link card in a shot of Ben's chat not taken)
 - [x] Over-25 MB pictures wait for a click (code)
@@ -103,7 +103,7 @@ The GPUI build stays the default until they close.
 - [x] Autofocus on chat, reply or edit change (code)
 - [x] Send button turns into a check while editing and green for SMS (nd composer `send_icon`/`send_fill`, tier 2)
 - [x] "Type a path…": "Attach by Path…" in the composer's plus menu stages the file (t3 `parity::real_attach_by_path_stages_the_file`)
-- [x] The "+" on macOS is a native menu above the button, its leading edge on the button's, as Messages' (t3 `parity::real_the_plus_opens_a_native_menu_above_itself`); Messages shows colour app icons beside its rows; the port's rows show no icon yet
+- [x] The "+" on macOS is a native menu above the button, its leading edge on the button's, as Messages' (t3 `parity::real_the_plus_opens_a_native_menu_above_itself`); its rows show their symbols, which macOS 27 hides in menus unless asked (nd `ContextMenu::show_icons`; captured)
 
 ## Header, details, FaceTime, Find My
 - [x] Title, 30 pt avatar, subtitle with service and "Sharing location", Focus moon (shot)
@@ -113,6 +113,7 @@ The GPUI build stays the default until they close.
 - [x] Gallery of photos and files, three downloads at a time, Load Older (t3 sees "Photos and Files")
 - [x] Find My map snapshot from the Mac agent per person (code; needs the agent)
 - [x] Details scroll on their own (inspector pane)
+- [x] Header hover fade: nd fades the private `NSScrollPocket`; the public API (`NSScrollEdgeEffectStyle`, macOS 26.1) only picks soft or hard and cannot hide or fade the effect, so it stays
 
 ## Lightbox
 - [x] Every picture and video of the thread, previous and next (buttons, Left/Right, j/k), Copy, Open, Close (code; not driven)

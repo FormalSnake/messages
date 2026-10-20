@@ -529,6 +529,7 @@ impl Composer {
         let (klipy, effects, can_schedule) = self.plus_offers(cx);
         let mut menu = ContextMenu::default()
             .above()
+            .show_icons()
             .entry(MenuItem::action("Photos and Files\u{2026}", ChooseFiles).icon(Icon::Image));
         if klipy {
             menu = menu.entry(MenuItem::action("GIFs", ShowGifs).icon(Icon::Smile));

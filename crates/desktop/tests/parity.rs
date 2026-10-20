@@ -325,3 +325,34 @@ fn real_a_double_clicked_picture_opens_quick_look() {
         app.stderr_tail(40).join("\n")
     );
 }
+
+/// A double click on a bubble's text opens its tapback picker and selects no word.
+#[test]
+fn real_a_double_clicked_bubble_opens_the_tapbacks() {
+    if !real_allowed() {
+        return;
+    }
+    let app = launch_app(isolated("tapbacks").env("MESSAGES_DEMO", "1")).unwrap();
+    open_chat(&app, "Chloe Martin");
+    let ids = |app: &nd_test::AppHandle, prefix: &str| -> Vec<String> {
+        let tree = app.tree(None).unwrap();
+        tree.windows
+            .iter()
+            .flat_map(|w| w.root.iter())
+            .filter_map(|n| n.test_id.clone())
+            .filter(|id| id.starts_with(prefix))
+            .collect()
+    };
+    let bubble = ids(&app, "bubble-").pop().expect("a text bubble in Chloe's chat");
+    let b = app.get_by_test_id(&bubble).bounding_box().unwrap().expect("the bubble is laid out");
+    activate(app.pid());
+    app.mouse().double_click(b.x + b.width / 2., b.y + b.height / 2.).unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    let main = windows_of(app.pid())[0];
+    let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("parity-tapbacks-screen.png");
+    let r = format!("{},{},{},{}", main.1, main.2, main.3, main.4);
+    let _ = std::process::Command::new("screencapture").args(["-x", "-R", &r]).arg(&path).status();
+    println!("screenshot {}", path.display());
+    let picker = ids(&app, "tapback-");
+    assert!(!picker.is_empty(), "the double click opened the tapback picker over {bubble}\n{}", app.stderr_tail(30).join("\n"));
+}
