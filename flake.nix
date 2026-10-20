@@ -10,11 +10,11 @@
   outputs = { self, nixpkgs, nativedesktop }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
-      linuxSystems = [ "x86_64-linux" "aarch64-linux" ];
+      packageSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = nixpkgs.lib.genAttrs linuxSystems (system: rec {
+      packages = nixpkgs.lib.genAttrs packageSystems (system: rec {
         messages = nixpkgs.legacyPackages.${system}.callPackage ./nix/package.nix { ndSrc = nativedesktop; };
         default = messages;
       });

@@ -19,6 +19,8 @@
   gst_all_1,
   libnotify,
   xdg-utils,
+  stdenv,
+  libicns,
   # NativeDesktop's source tree. The nd crates are path dependencies on the sibling checkout
   # `../nativedesktop-wt-msg-linux`, so the build puts this tree at that path.
   ndSrc,
@@ -27,6 +29,22 @@
 let
   cargoToml = lib.importTOML ../crates/desktop/Cargo.toml;
   appId = "dev.formalsnake.messages";
+  inherit (stdenv.hostPlatform) isDarwin isLinux;
+  infoPlist = builtins.toFile "Info.plist" (lib.generators.toPlist { escape = true; } {
+    CFBundleDevelopmentRegion = "en";
+    CFBundleExecutable = "messages";
+    CFBundleIdentifier = appId;
+    CFBundleInfoDictionaryVersion = "6.0";
+    CFBundleName = "Messages";
+    CFBundleDisplayName = "Messages";
+    CFBundlePackageType = "APPL";
+    CFBundleShortVersionString = cargoToml.package.version;
+    CFBundleVersion = cargoToml.package.version;
+    CFBundleIconFile = "AppIcon";
+    LSMinimumSystemVersion = "14.0";
+    NSPrincipalClass = "NSApplication";
+    NSHighResolutionCapable = true;
+  });
 in
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "messages";
@@ -52,14 +70,21 @@ rustPlatform.buildRustPackage (finalAttrs: {
     # nd-terminal's, not built on Linux but still in the lock.
     outputHashes."libghostty-vt-0.2.1" = "sha256-XepsHhhauHZnaz8ZpWNaas/7sI/22VoH7b3+0dP4NJk=";
   };
-  cargoBuildFlags = [ "--package=messages" ];
+  cargoBuildFlags = [
+    "--package=messages"
+  ]
+  # nd's AppKit backend links Swift from Xcode, so the link and rustc's strip use the system
+  # tools: Nix's cc wrapper brings its own SDK and Nix's strip corrupts proc-macro dylibs. The
+  # hooks set the linker in the environment, which only `--config` outranks. This needs the Nix
+  # sandbox off, the default on macOS.
+  ++ lib.optional isDarwin ''--config=target.aarch64-apple-darwin.linker="/usr/bin/clang"'';
 
   nativeBuildInputs = [
     pkg-config
     makeBinaryWrapper
-  ];
+  ] ++ lib.optional isDarwin libicns;
 
-  buildInputs = [
+  buildInputs = lib.optionals isLinux [
     alsa-lib
     fontconfig
     freetype
@@ -73,16 +98,36 @@ rustPlatform.buildRustPackage (finalAttrs: {
     MESSAGES_ICON_PATH = "${placeholder "out"}/share/icons/hicolor/512x512/apps/${appId}.png";
   };
 
+  preBuild = lib.optionalString isDarwin ''
+    unset SDKROOT DEVELOPER_DIR
+    mkdir -p "$TMPDIR/apple-bin"
+    ln -s /usr/bin/strip /usr/bin/xcrun "$TMPDIR/apple-bin/"
+    export PATH="$TMPDIR/apple-bin:$PATH"
+  '';
+
   # The GPUI tests need a window server and the core tests shell out to ffmpeg.
   doCheck = false;
 
   postInstall = ''
     install -Dm644 packaging/linux/${appId}.png -t $out/share/icons/hicolor/512x512/apps
+  '' + lib.optionalString isLinux ''
     install -Dm644 packaging/linux/${appId}.desktop -t $out/share/applications
+  '' + lib.optionalString isDarwin ''
+    app=$out/Applications/Messages.app/Contents
+    install -Dm644 ${infoPlist} $app/Info.plist
+    echo -n 'APPL????' > $app/PkgInfo
+    mkdir -p $app/MacOS $app/Resources
+    png2icns $app/Resources/AppIcon.icns packaging/linux/${appId}.png
+    mv $out/bin/messages $app/MacOS/messages
+    ln -s $app/MacOS/messages $out/bin/messages
   '';
 
-  # GPUI dlopens the windowing and GPU libraries at runtime.
-  postFixup = ''
+  dontStrip = isDarwin;
+
+  # GPUI dlopens the windowing and GPU libraries at runtime on Linux.
+  postFixup = lib.optionalString isDarwin ''
+    wrapProgram $out/Applications/Messages.app/Contents/MacOS/messages --suffix PATH : ${lib.makeBinPath [ ffmpeg ]}
+  '' + lib.optionalString isLinux ''
     patchelf $out/bin/messages --add-rpath ${
       lib.makeLibraryPath [
         vulkan-loader
@@ -125,6 +170,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
     homepage = "https://github.com/FormalSnake/messages";
     license = lib.licenses.mit;
     mainProgram = "messages";
-    platforms = lib.platforms.linux;
+    platforms = lib.platforms.linux ++ [ "aarch64-darwin" ];
   };
 })
