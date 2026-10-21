@@ -139,20 +139,16 @@ Platform code sits behind `cfg` in core, with a Linux path for each:
 | Open URL or file | `open` crate (xdg-open) | `open` crate | `open` crate |
 | Clipboard text | GPUI clipboard | GPUI clipboard | GPUI clipboard |
 | Clipboard files and images | wl-copy / wl-paste, xclip on X11 (`clipboard.rs`) | osascript | PowerShell |
-| Notifications | notify-send with `--action=open=Open` | osascript | PowerShell toast |
+| Notifications | nd-system (freedesktop notifications, with an Open action) | nd-system | nd-system (toast under the app id) |
 | File picker | GPUI `prompt_for_paths` (xdg portal via ashpd) | GPUI | GPUI |
 | Audio playback | mpv, ffplay, paplay | afplay | not supported in TS either |
 
-The window uses gpui-kit `TitleBar::window_options()`, app id
-`es.canarycoders.messages`, and ships `packaging/linux/es.canarycoders.messages.desktop`
-plus `packaging/linux/es.canarycoders.messages.png`. On Windows and
-client-decorated Linux, `chrome.rs` draws the caption buttons (gpui-kit's
-`TitleBar`, pinned top-right in the root view) and one drag strip across the
-title rows. The strip lives in the root view because gpui-pre 0.3.6 drops a
-cached view's window control areas when it reuses that view's frame
-(`reuse_prepaint` copies hitboxes but not `window_control_hitboxes`), and
-anything clickable in a title row `occlude()`s it, since the Windows caption
-hit test sees every hitbox under the cursor.
+The NativeDesktop port ships app id `dev.formalsnake.messages`, with
+`packaging/linux/dev.formalsnake.messages.desktop` (its `StartupWMClass` is the same id) and
+`packaging/linux/dev.formalsnake.messages.png`; the Windows installer registers the same id as
+the shortcut's AppUserModelID. On Linux nd draws client-side decorations: the toolbar row moves
+the window, a double click on it maximizes, and the window controls the window manager offers
+sit at the row's trailing end (`window_controls` in nd's GPUI backend).
 
 ### Linux build
 

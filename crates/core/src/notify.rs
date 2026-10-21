@@ -1,26 +1,7 @@
-//! Linux: notify-send with an "open" action
-//! (`--app-name=Messages --category=im.received --action=open=Open`).
-//! macOS: osascript. Windows: a PowerShell toast. Failures are logged, never returned.
-
-use std::path::PathBuf;
-use std::process::Stdio;
-
-use tokio::process::Command;
+//! What a notification says about an incoming message. nd-system shows it, under the app id
+//! the package ships (`dev.formalsnake.messages`).
 
 use crate::model::{chat_title, handle_name, tapback_glyph, Chat, Message};
-
-#[derive(Clone, Debug, Default)]
-pub struct NotifyOptions {
-    /// The message a tapback landed on, when it is loaded.
-    pub target: Option<Message>,
-    /// Icon for the Linux notification daemon.
-    pub icon: Option<PathBuf>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotifyAction {
-    Open,
-}
 
 fn summary(message: &Message) -> String {
     if message.date_retracted.is_some() {
@@ -73,72 +54,6 @@ pub fn notification_body(chat: &Chat, message: &Message, target: Option<&Message
     }
     let text = summary(message);
     Some(if chat.is_group && message.sender.is_some() { format!("{sender}: {text}") } else { text })
-}
-
-/// A toast needs an AppUserModelID Windows knows about, or it is dropped
-/// without an error. The registry key is enough (no Start Menu shortcut
-/// needed), so the script writes it before every toast.
-#[cfg(windows)]
-const WINDOWS_TOAST: &str = r#"$key = 'HKCU:\Software\Classes\AppUserModelId\es.canarycoders.messages'
-if (-not (Test-Path $key)) { New-Item $key -Force | Out-Null; Set-ItemProperty $key DisplayName 'Messages' }
-[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
-[void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
-$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
-$lines = $xml.GetElementsByTagName('text')
-[void]$lines.Item(0).AppendChild($xml.CreateTextNode($env:MESSAGES_TITLE))
-[void]$lines.Item(1).AppendChild($xml.CreateTextNode($env:MESSAGES_TEXT))
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('es.canarycoders.messages').Show([Windows.UI.Notifications.ToastNotification]::new($xml))"#;
-
-/// Desktop notification: notify-send on Linux (with an Open action when the
-/// daemon supports it), osascript on macOS, a toast on Windows. Resolves to
-/// Some(Open) when the person clicked the action.
-pub async fn notify_incoming(chat: &Chat, message: &Message, options: NotifyOptions) -> Option<NotifyAction> {
-    let title = chat_title(chat);
-    let text = notification_body(chat, message, options.target.as_ref())?;
-
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!("display notification {} with title {}", applescript_json(&text), applescript_json(&title));
-        if let Err(error) = Command::new("osascript").arg("-e").arg(&script).stdout(Stdio::null()).stderr(Stdio::null()).status().await {
-            tracing::error!("notify: {error}");
-        }
-        None
-    }
-
-    #[cfg(windows)]
-    {
-        let env: std::collections::HashMap<&str, String> = [("MESSAGES_TITLE", title), ("MESSAGES_TEXT", text)].into_iter().collect();
-        if crate::windows::powershell(WINDOWS_TOAST, &env).await.is_none() {
-            tracing::error!("notify: toast failed");
-        }
-        None
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let mut cmd = Command::new("notify-send");
-        cmd.arg("--app-name=Messages").arg("--category=im.received").arg("--action=open=Open");
-        if let Some(icon) = &options.icon {
-            cmd.arg(format!("--icon={}", icon.display()));
-        }
-        cmd.arg(&title).arg(&text).stdout(Stdio::piped()).stderr(Stdio::null());
-        match cmd.output().await {
-            Ok(output) => {
-                let clicked = String::from_utf8_lossy(&output.stdout).trim() == "open";
-                if clicked { Some(NotifyAction::Open) } else { None }
-            }
-            Err(error) => {
-                tracing::error!("notify: {error}");
-                None
-            }
-        }
-    }
-}
-
-/// A JSON string literal doubles as a valid AppleScript string literal for anything this app sends it.
-#[cfg(target_os = "macos")]
-fn applescript_json(text: &str) -> String {
-    serde_json::to_string(text).unwrap_or_default()
 }
 
 #[cfg(test)]
