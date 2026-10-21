@@ -193,7 +193,7 @@ for core items and `apps/desktop/src/ui/` for UI items at that commit
 - [x] SSE parser: messages end at a blank line, `:` lines are keepalives, `data:` lines joined (agent.ts:448-476)
 - [x] A snapshot with no change about anyone is ignored (store.ts:478-485)
 - [x] Locations keyed by normalized address (last 9 digits, emails lowercased) (findmy.ts:522-527; store.ts:480)
-- [x] Map tiles: OSM z15 256 px, cached a day in `<cache>/tiles`, User-Agent `messages-linux/0.1 (github.com/FormalSnake/messages)` (findmy.ts:545-574)
+- [x] Map tiles: OSM z15 256 px, cached a day in `<cache>/tiles`, User-Agent `messages-linux/0.1 (github.com/FormalStudio/messages)` (findmy.ts:545-574)
 - [x] Agent requests time out at 10 s, bearer token auth (agent.ts:404-427)
 
 ### GIF favorites and Klipy (core)

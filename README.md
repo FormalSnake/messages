@@ -3,7 +3,7 @@
 # Messages
 
 iMessage on Linux and macOS. A native Rust client on
-[NativeDesktop](https://github.com/FormalSnake/NativeDesktop) (AppKit on macOS, GPUI on
+[NativeDesktop](https://github.com/FormalStudio/NativeDesktop) (AppKit on macOS, GPUI on
 Linux) that talks to a
 [BlueBubbles server](https://github.com/BlueBubblesApp/bluebubbles-server)
 running on your Mac.
@@ -54,7 +54,7 @@ helper is fixed).
 ### Nix
 
 ```
-nix run github:FormalSnake/messages
+nix run github:FormalStudio/messages
 ```
 
 Home Manager:
@@ -62,7 +62,7 @@ Home Manager:
 ```nix
 {
   inputs.messages = {
-    url = "github:FormalSnake/messages";
+    url = "github:FormalStudio/messages";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
@@ -89,7 +89,7 @@ Needs Rust 1.89+, Vulkan, and `libxkbcommon`, `wayland`, `vulkan-loader`,
 playback).
 
 ```
-git clone https://github.com/FormalSnake/messages
+git clone https://github.com/FormalStudio/messages
 cd messages
 ./scripts/install-linux.sh
 ```

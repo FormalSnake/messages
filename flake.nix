@@ -3,7 +3,7 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   inputs.nativedesktop = {
-    url = "github:FormalSnake/NativeDesktop";
+    url = "github:FormalStudio/NativeDesktop";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
