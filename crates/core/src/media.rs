@@ -13,13 +13,6 @@ use std::time::Duration;
 use image::AnimationDecoder;
 use tokio::sync::{OnceCell, Semaphore};
 
-/// Long edge above which a still gets a downscaled preview before it is painted.
-pub const PREVIEW_MAX_EDGE: u32 = 840;
-/// Side of a photo grid tile.
-pub const TILE_SIDE: u32 = 512;
-/// The bubble tail lobe, in logical px. Cuts are rendered at 2x.
-pub const TAIL_WIDTH: u32 = 14;
-pub const TAIL_HEIGHT: u32 = 16;
 /// Frame delays under this are shown at SLOW_FRAME, as browsers do.
 pub const GIF_MIN_DELAY: Duration = Duration::from_millis(20);
 pub const GIF_SLOW_FRAME: Duration = Duration::from_millis(100);
@@ -43,40 +36,6 @@ impl GifAnimation {
     pub fn byte_size(&self) -> usize {
         self.frames.iter().map(|frame| frame.bgra.len()).sum()
     }
-}
-
-fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    dir.join(format!("{name}{suffix}"))
-}
-
-/// ffmpeg reads a still the way it is stored, so the EXIF turn goes in by hand ahead of the cut.
-fn upright_filter(orientation: Option<u8>) -> &'static str {
-    match orientation {
-        Some(2) => "hflip,",
-        Some(3) => "hflip,vflip,",
-        Some(4) => "vflip,",
-        Some(5) => "transpose=0,",
-        Some(6) => "transpose=1,",
-        Some(7) => "transpose=3,",
-        Some(8) => "transpose=2,",
-        _ => "",
-    }
-}
-
-async fn read_head(path: &Path, max: usize) -> Option<Vec<u8>> {
-    use tokio::io::AsyncReadExt;
-    let mut file = tokio::fs::File::open(path).await.ok()?;
-    let mut buf = vec![0u8; max];
-    let n = file.read(&mut buf).await.ok()?;
-    buf.truncate(n);
-    Some(buf)
-}
-
-async fn read_exif_orientation(path: &Path) -> Option<u8> {
-    let bytes = read_head(path, 256 * 1024).await?;
-    crate::image::exif_orientation(&bytes)
 }
 
 /// Serialises ffmpeg (two at a time app-wide) and runs each output file's job once however many callers ask.
@@ -111,75 +70,6 @@ impl MediaWorker {
         } else {
             None
         }
-    }
-
-    async fn run_ffmpeg_still(&self, source: &Path, filter: &str, quality: u8, target: &Path) -> Option<PathBuf> {
-        let mut command = crate::process::async_command("ffmpeg");
-        command.args(["-y", "-noautorotate", "-i"]).arg(source).args(["-vf", filter, "-frames:v", "1", "-q:v", &quality.to_string()]).arg(target);
-        self.run_ffmpeg(command, target).await
-    }
-
-    /// A still whose long edge exceeds PREVIEW_MAX_EDGE, EXIF-uprighted and scaled down; None when it needs none.
-    pub async fn preview(&self, image: &Path) -> Option<PathBuf> {
-        let target = sibling(image, ".preview.jpg");
-        if tokio::fs::try_exists(&target).await.unwrap_or(false) {
-            return Some(target);
-        }
-        if !self.ffmpeg_available {
-            return None;
-        }
-        let image = image.to_path_buf();
-        let target_job = target.clone();
-        self.once(&target, async move {
-            let orientation = read_exif_orientation(&image).await;
-            let fit = format!("scale=w='min(iw,{PREVIEW_MAX_EDGE})':h='min(ih,{PREVIEW_MAX_EDGE})':force_original_aspect_ratio=decrease:flags=area");
-            let filter = format!("{}{fit}", upright_filter(orientation));
-            self.run_ffmpeg_still(&image, &filter, 4, &target_job).await
-        })
-        .await
-    }
-
-    /// Centre crop to `aspect` (width / height) scaled to `side`, cached per aspect.
-    pub async fn tile(&self, image: &Path, aspect: f32, side: u32) -> Option<PathBuf> {
-        let target = sibling(image, &format!(".tile-{aspect}x1-{side}.jpg"));
-        if tokio::fs::try_exists(&target).await.unwrap_or(false) {
-            return Some(target);
-        }
-        if !self.ffmpeg_available {
-            return None;
-        }
-        let image = image.to_path_buf();
-        let target_job = target.clone();
-        self.once(&target, async move {
-            let orientation = read_exif_orientation(&image).await;
-            let width = (side as f32 * aspect).round() as u32;
-            let cut = format!("crop=w='min(iw,ih*{aspect})':h='min(ih,iw/{aspect})',scale={width}:{side}");
-            let filter = format!("{}{cut}", upright_filter(orientation));
-            self.run_ffmpeg_still(&image, &filter, 3, &target_job).await
-        })
-        .await
-    }
-
-    /// The photo's bottom outer corner (12% by 14%, right when `from_me`) at 2x the tail size, uprighted.
-    pub async fn tail_cut(&self, image: &Path, from_me: bool) -> Option<PathBuf> {
-        if !self.ffmpeg_available {
-            return None;
-        }
-        let side = if from_me { "right" } else { "left" };
-        let target = sibling(image, &format!(".tail-{side}.jpg"));
-        if tokio::fs::try_exists(&target).await.unwrap_or(false) {
-            return Some(target);
-        }
-        let image = image.to_path_buf();
-        let target_job = target.clone();
-        self.once(&target, async move {
-            let orientation = read_exif_orientation(&image).await;
-            let x = if from_me { "iw-out_w" } else { "0" };
-            let cut = format!("crop=w='iw*0.12':h='ih*0.14':x='{x}':y='ih-out_h',scale={}:{}", 2 * TAIL_WIDTH, 2 * TAIL_HEIGHT);
-            let filter = format!("{}{cut}", upright_filter(orientation));
-            self.run_ffmpeg_still(&image, &filter, 3, &target_job).await
-        })
-        .await
     }
 
     /// Frame at 0.5 s, 640 px wide, `<attachments>/<guid>.poster.jpg`. Needs ffmpeg.
@@ -254,20 +144,6 @@ mod tests {
             let image = RgbaImage::from_pixel(2, 2, Rgba(*color));
             encoder.encode_frame(Frame::new(image)).unwrap();
         }
-    }
-
-    #[test]
-    fn sibling_names_the_derived_file_after_the_source() {
-        let path = sibling(Path::new("/cache/attachments/abc123.jpg"), ".preview.jpg");
-        assert_eq!(path, PathBuf::from("/cache/attachments/abc123.jpg.preview.jpg"));
-    }
-
-    #[test]
-    fn upright_filter_maps_every_exif_orientation() {
-        assert_eq!(upright_filter(None), "");
-        assert_eq!(upright_filter(Some(1)), "");
-        assert_eq!(upright_filter(Some(6)), "transpose=1,");
-        assert_eq!(upright_filter(Some(8)), "transpose=2,");
     }
 
     #[tokio::test]
