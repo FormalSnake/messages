@@ -21,9 +21,6 @@
   xdg-utils,
   stdenv,
   libicns,
-  # NativeDesktop's source tree. The nd crates are path dependencies on the sibling checkout
-  # `../nativedesktop-wt-msg-linux-2`, so the build puts this tree at that path.
-  ndSrc,
 }:
 
 let
@@ -60,13 +57,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     ];
   };
 
-  postUnpack = ''
-    cp -r ${ndSrc} nativedesktop-wt-msg-linux-2
-    chmod -R u+w nativedesktop-wt-msg-linux-2
-  '';
-
   cargoLock = {
     lockFile = ../Cargo.lock;
+    # NativeDesktop's crates come from git at the rev Cargo.lock pins.
+    allowBuiltinFetchGit = true;
     # nd-terminal's, not built on Linux but still in the lock.
     outputHashes."libghostty-vt-0.2.1" = "sha256-XepsHhhauHZnaz8ZpWNaas/7sI/22VoH7b3+0dP4NJk=";
   };

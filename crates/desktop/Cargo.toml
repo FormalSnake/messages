@@ -16,20 +16,20 @@ tracing.workspace = true
 schemars = "1.2.3"
 toml_edit = "0.25"
 base64 = "0.22"
-nd = { path = "../../../nativedesktop-wt-msg-linux-2/crates/nd", features = ["settings-ui"] }
-nd-settings = { path = "../../../nativedesktop-wt-msg-linux-2/crates/nd-settings" }
-nd-ipc = { path = "../../../nativedesktop-wt-msg-linux-2/crates/nd-ipc" }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["settings-ui"] }
+nd-settings = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+nd-ipc = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [dev-dependencies]
-nd = { path = "../../../nativedesktop-wt-msg-linux-2/crates/nd", features = ["test", "audit"] }
-nd-test = { path = "../../../nativedesktop-wt-msg-linux-2/crates/nd-test" }
-ndshell = { path = "../../../nativedesktop-wt-msg-linux-2/crates/ndshell" }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["test", "audit"] }
+nd-test = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-ndshell = { path = "../../../nativedesktop-wt-msg-linux-2/crates/ndshell" }
+ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [build-dependencies]
-nd = { path = "../../../nativedesktop-wt-msg-linux-2/crates/nd", default-features = false, features = ["build"] }
+nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", default-features = false, features = ["build"] }
 
 # The appearance audit owns the main thread (AppKit), so libtest's harness is off.
 [[test]]

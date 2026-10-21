@@ -15,11 +15,11 @@
     in
     {
       packages = nixpkgs.lib.genAttrs packageSystems (system: rec {
-        messages = nixpkgs.legacyPackages.${system}.callPackage ./nix/package.nix { ndSrc = nativedesktop; };
+        messages = nixpkgs.legacyPackages.${system}.callPackage ./nix/package.nix { };
         default = messages;
       });
 
-      overlays.default = final: _: { messages = final.callPackage ./nix/package.nix { ndSrc = nativedesktop; }; };
+      overlays.default = final: _: { messages = final.callPackage ./nix/package.nix { }; };
 
       homeModules.default = import ./nix/hm-module.nix { inherit self nativedesktop; };
       homeManagerModules.default = self.homeModules.default;
