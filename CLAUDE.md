@@ -187,9 +187,9 @@ secrets and per-chat prefs in `$XDG_CONFIG_HOME/messages/config.json`, the attac
 `$XDG_CACHE_HOME/messages/attachments`.
 
 `nix/package.nix` is the flake's package and `nix/hm-module.nix` its Home
-Manager module (`programs.messages`). The package bakes `MESSAGES_ICON_PATH`
-in at compile time so notifications find the installed icon, and never owns
-`config.json`, which the app writes itself. A second launch hands over to the first
+Manager module (`programs.messages`). It installs the icon under `share/icons/hicolor` by
+the app id, which notifications reach through the desktop entry. It never owns `config.json`,
+which the app writes itself. A second launch hands over to the first
 (`nd-ipc`'s instance lock, `rt::claim_instance`) and exits; demo runs skip it.
 
 On NixOS, build and run inside the dev shell (`nix develop -c cargo run ...`):

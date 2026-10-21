@@ -95,7 +95,6 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   env = {
     CARGO_PROFILE_RELEASE_DEBUG = "false";
-    MESSAGES_ICON_PATH = "${placeholder "out"}/share/icons/hicolor/512x512/apps/${appId}.png";
   };
 
   preBuild = lib.optionalString isDarwin ''
