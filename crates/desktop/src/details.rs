@@ -25,6 +25,8 @@ const GALLERY_SLOTS: usize = 3;
 const MAP_SIZE: (u32, u32) = (248, 150);
 /// Metres across the map's width.
 const MAP_SPAN: u32 = 1500;
+/// The person's picture pinned at the map's centre, ring included.
+const MAP_PIN: f32 = 34.;
 
 #[derive(Default)]
 struct Thumb {
@@ -206,6 +208,52 @@ impl Details {
         );
     }
 
+    /// The snapshot with the person's picture pinned at its centre, where the agent framed the
+    /// location, and the accuracy circle around it when that fits the map.
+    fn map(&self, handle: &Handle, location: &FriendLocation, map: Option<PathBuf>, name: &str, theme: &Theme) -> impl IntoElement {
+        let (width, height) = (MAP_SIZE.0 as f32, MAP_SIZE.1 as f32);
+        let radius = location
+            .accuracy
+            .map(|metres| (metres * f64::from(MAP_SIZE.0) / f64::from(MAP_SPAN)) as f32)
+            .filter(|r| *r > MAP_PIN / 2. + 4. && *r < width / 2.);
+        div()
+            .relative()
+            .w(px(width))
+            .h(px(height))
+            .rounded_lg()
+            .overflow_hidden()
+            .bg(theme.surface.raised)
+            .when_some(map.and_then(|p| ui::image_source(&p.to_string_lossy())), |el, source| {
+                el.child(image(source).alt(format!("Map around {name}")).w(px(width)).h(px(height)))
+            })
+            .when_some(radius, |el, r| {
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(width / 2. - r))
+                        .top(px(height / 2. - r))
+                        .size(px(r * 2.))
+                        .rounded_full()
+                        .bg(theme.accent.opacity(0.18))
+                        .border_1()
+                        .border_color(theme.accent.opacity(0.45)),
+                )
+            })
+            .child(
+                div()
+                    .id(format!("map-pin-{}", handle.address))
+                    .absolute()
+                    .left(px((width - MAP_PIN) / 2.))
+                    .top(px((height - MAP_PIN) / 2.))
+                    .size(px(MAP_PIN))
+                    .rounded_full()
+                    .border_2()
+                    .border_color(gpui::white())
+                    .shadow_md()
+                    .child(ui::avatar_of(handle, MAP_PIN - 4.)),
+            )
+    }
+
     fn location_card(&self, handle: &Handle, location: &FriendLocation, theme: &Theme) -> AnyElement {
         let name = location.name.clone().or_else(|| handle.name.clone()).unwrap_or_else(|| handle.address.clone());
         let place =
@@ -221,20 +269,7 @@ impl Details {
             .gap_1()
             .px_2()
             .child(label("Location").text_style(TextStyle::Caption1).secondary())
-            .child(match map.and_then(|p| ui::image_source(&p.to_string_lossy())) {
-                Some(source) => image(source)
-                    .alt(format!("Map around {name}"))
-                    .w(px(MAP_SIZE.0 as f32))
-                    .h(px(MAP_SIZE.1 as f32))
-                    .rounded_lg()
-                    .into_any_element(),
-                None => div()
-                    .w(px(MAP_SIZE.0 as f32))
-                    .h(px(MAP_SIZE.1 as f32))
-                    .rounded_lg()
-                    .bg(theme.surface.raised)
-                    .into_any_element(),
-            })
+            .child(self.map(handle, location, map, &name, theme))
             .child(text(place).font_weight(FontWeight::SEMIBOLD))
             .child(text(detail).text_size(theme.type_scale.caption).text_color(theme.text.secondary))
             .child(link(format!("maps-{}", handle.address), "Open in Maps").url(url))
