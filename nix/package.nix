@@ -22,7 +22,7 @@
   stdenv,
   libicns,
   # NativeDesktop's source tree. The nd crates are path dependencies on the sibling checkout
-  # `../nativedesktop-wt-msg-linux`, so the build puts this tree at that path.
+  # `../nativedesktop-wt-msg-linux-2`, so the build puts this tree at that path.
   ndSrc,
 }:
 
@@ -61,8 +61,8 @@ rustPlatform.buildRustPackage (finalAttrs: {
   };
 
   postUnpack = ''
-    cp -r ${ndSrc} nativedesktop-wt-msg-linux
-    chmod -R u+w nativedesktop-wt-msg-linux
+    cp -r ${ndSrc} nativedesktop-wt-msg-linux-2
+    chmod -R u+w nativedesktop-wt-msg-linux-2
   '';
 
   cargoLock = {
