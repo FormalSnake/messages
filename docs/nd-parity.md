@@ -151,6 +151,7 @@ the same GPUI code.
 - [x] Find My location: the map shows the right area but draws no pin (a pin over the map at the location, `map-pin-*`, seen in the capture)
 - [x] GIF picker: the favourites grid does not scroll, so favourites past the first screen cannot be reached (wheels never reached a scroll view inside a popover or under buttons; the test scrolls the grid by the wheel)
 - [x] Details sidebar: opens without animating (a collapsed inspector was left out of the tree off macOS, so it could only appear; it now slides, and the test captures it part way open)
+- [x] Tray: the item showed a missing-icon placeholder (Messages names its tray icon after SF Symbols, which no Linux icon theme has, and the panel cannot see a nix package's `share/icons`; nd now falls back to the app id's icon and sends it as a pixmap with its theme path, checked against a real waybar in `tests/gpui_reported.rs`)
 
 ## Open on Linux and Windows, reported 2026-10-20
 
