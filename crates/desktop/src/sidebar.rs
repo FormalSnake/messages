@@ -525,6 +525,9 @@ impl Render for Sidebar {
             }
             None => (Vec::new(), ConnectionStatus::Connecting, true, None, 0),
         };
+        if !people.is_empty() {
+            crate::trace::once(&crate::trace::FIRST_ROWS, "conversation rows render");
+        }
         for chat in &people {
             {
                 let weak = cx.weak_entity();

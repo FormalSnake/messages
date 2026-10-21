@@ -20,6 +20,7 @@ pub mod settings;
 pub mod sidebar;
 pub mod switcher;
 pub mod thread;
+pub mod trace;
 pub mod ui;
 
 use nd::prelude::*;
@@ -73,6 +74,7 @@ pub fn open_demo(cx: &mut App) -> WindowHandle<root::Root> {
 }
 
 pub fn run() -> nd::Result<()> {
+    trace::init();
     migrate::run();
     // A second launch hands over to the first and exits; demo and test runs skip the lock.
     let instance = if settings::demo_requested() { None } else { rt::claim_instance() };

@@ -656,6 +656,7 @@ fn empty_state(status: ConnectionStatus, reason: Option<String>) -> AnyElement {
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::trace::once(&crate::trace::FIRST_RENDER, "first render");
         self.sync_toast(cx);
         crate::notify::sync_tray(cx);
         let (status, reason, has_chats, demo) = match self.store() {
