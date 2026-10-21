@@ -139,14 +139,18 @@ The GPUI build stays the default until they close.
 
 ## Open on Linux, reported 2026-10-18
 
-Seen by the user on g815 in the nix build of `nd-port` (a06d933). Not yet fixed.
+Seen by the user on g815 in the nix build of `nd-port` (a06d933). Fixed on `msg-linux-2` in
+NativeDesktop (the pin in this repo) and checked on g815 in headless Hyprland by
+`tests/gpui_reported.rs`, which drives a `MESSAGES_DEMO=1` instance with real input and
+captures each case with grim. macOS draws these with AppKit and was not affected; Windows runs
+the same GPUI code.
 
-- [ ] A message's context menu: React opens an empty submenu, no tapbacks in it
-- [ ] Emoji picker: the emoji are blurry
-- [ ] Video preview: clicking out of the lightbox does not stop the video, its audio keeps playing, and each new preview adds another player until the app quits
-- [ ] Find My location: the map shows the right area but draws no pin
-- [ ] GIF picker: the favourites grid does not scroll, so favourites past the first screen cannot be reached
-- [ ] Details sidebar: opens without animating
+- [x] A message's context menu: React opens an empty submenu, no tapbacks in it (the drawn menu had no submenus; the test opens React and finds the tapbacks beside the row)
+- [x] Emoji picker: the emoji are blurry (cosmic-text's fallback reached DejaVu and Noto Sans Symbols before Noto Color Emoji, so most emoji drew as grey outlines; emoji presentation text now goes to the colour font, seen in the picker capture)
+- [x] Video preview: clicking out of the lightbox does not stop the video, its audio keeps playing, and each new preview adds another player until the app quits (the closing lightbox's exit animation opened a fresh player, and a released video never stopped its own; the test opens and closes the viewer three times and counts `nd-video` threads back to zero)
+- [x] Find My location: the map shows the right area but draws no pin (a pin over the map at the location, `map-pin-*`, seen in the capture)
+- [x] GIF picker: the favourites grid does not scroll, so favourites past the first screen cannot be reached (wheels never reached a scroll view inside a popover or under buttons; the test scrolls the grid by the wheel)
+- [x] Details sidebar: opens without animating (a collapsed inspector was left out of the tree off macOS, so it could only appear; it now slides, and the test captures it part way open)
 
 ## Open on Linux and Windows, reported 2026-10-20
 

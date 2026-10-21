@@ -587,13 +587,13 @@ for core items and `apps/desktop/src/ui/` for UI items at that commit
 
 ## Better than TS
 
-- [ ] Linux client-side decorations with drag, double-click maximize and window controls via gpui-kit `TitleBar::window_options()`
-- [ ] App id `es.canarycoders.messages`, shipped `es.canarycoders.messages.desktop` and icon, so Hyprland rules and GNOME's dock group and show it
+- [x] Linux client-side decorations: nd draws the toolbar row as the title bar (drag, double click to maximize) with the window controls the compositor offers, none under Hyprland (`docs/rust-architecture.md`)
+- [x] App id `dev.formalsnake.messages`, shipped `dev.formalsnake.messages.desktop` (`StartupWMClass` the same) and icon, so Hyprland rules and GNOME's dock group and show it (`tests/cold_start.rs` reads the window's class in Hyprland; the old `es.canarycoders` id is only migrated from)
 - [x] Per-view invalidation: a `StoreEvent` notifies only the entities watching it (sidebar row, bubble, header, composer) instead of re-rendering the whole tree; the sidebar, header and thread are cached views and settled bubbles are cached at their measured height, so a GIF frame re-renders one bubble
 - [x] GIFs decoded once per shared file and stepped by a clock that notifies only the bubbles showing it, with no React rebuild per frame and no ffmpeg frame dump
-- [ ] Stills (previews, tiles, tail cuts, avatars) derived in process with the `image` crate; ffmpeg only for video posters and HEIF
-- [ ] Drag files onto the window to attach them (TS has no drop target)
-- [ ] No system TLS: rustls everywhere, so the Linux build needs no OpenSSL
+- [x] Stills (previews, tiles, tail cuts, avatars) derived in process with the `image` crate; ffmpeg only for video posters and HEIF (the old ffmpeg still paths had no callers and are gone)
+- [x] Drag files onto the window to attach them (TS has no drop target): nd's window drop arrives as `SystemEvent::FileDrop` and attaches to the open chat (code and nd-system's drop test; not driven by a real drag)
+- [x] No system TLS: rustls everywhere, so the Linux build needs no OpenSSL (`cargo tree --target all -i openssl-sys`, `openssl` and `native-tls` find nothing)
 - [ ] Performance budget from `docs/rust-architecture.md` met and measured: cold start under 150 ms, chat switch and keystroke under one frame, idle CPU about 0% (measured with `MESSAGES_TRACE=1`: switch and keystroke under 1 ms, idle 0%; first paint 150 to 178 ms on macOS and thread rows at 187 to 241 ms, so cold start is still over)
 - [x] Stills decoded at the size they are shown, off the UI thread and cached per path and size (`stills.rs`): no aliased thumbnails, and a 320 px photo holds about 1.2 MB instead of a full-size texture
-- [ ] Colour emoji on Linux everywhere (bubbles, tapbacks, sidebar previews), not only where cosmic-text's fallback happens to reach the colour font (`emoji_font.rs`; needs a Linux run)
+- [x] Colour emoji on Linux everywhere (bubbles, tapbacks, sidebar previews): nd's text system sends emoji presentation text to the colour emoji font itself, so cosmic-text's fallback order no longer matters (nd-gpui patch 0013, checked in the emoji picker capture on g815)
