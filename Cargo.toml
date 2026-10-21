@@ -22,7 +22,7 @@ debug = "line-tables-only"
 
 # NativeDesktop is a path dependency of crates/desktop until it is published: the checkout of
 # its `msg-gaps` branch beside this repo (nd main plus the gaps this port found). Switch these
-# and crates/desktop/Cargo.toml to `git = "https://github.com/FormalSnake/NativeDesktop"` (one
+# and crates/desktop/Cargo.toml to `git = "https://github.com/FormalStudio/NativeDesktop"` (one
 # rev for all) once that branch is merged. nd carries its own patched GPUI, which only
 # reaches this workspace through the patch table below.
 [patch.crates-io]

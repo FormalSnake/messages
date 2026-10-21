@@ -167,7 +167,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   meta = {
     description = "iMessage client for Linux, backed by a BlueBubbles server on a Mac";
-    homepage = "https://github.com/FormalSnake/messages";
+    homepage = "https://github.com/FormalStudio/messages";
     license = lib.licenses.mit;
     mainProgram = "messages";
     platforms = lib.platforms.linux ++ [ "aarch64-darwin" ];
