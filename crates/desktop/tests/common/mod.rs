@@ -24,6 +24,15 @@ impl Running {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+impl Running {
+    /// A command that runs as a client of the app's compositor.
+    pub fn client(&self, program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+        self.compositor.command(program)
+    }
+}
+
 impl std::ops::Deref for Running {
     type Target = AppHandle;
     fn deref(&self) -> &AppHandle {

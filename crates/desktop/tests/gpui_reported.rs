@@ -117,7 +117,11 @@ fn real_closing_the_viewer_stops_its_video() {
     if !real_allowed() {
         return;
     }
-    let app = alex();
+    // A silent audio sink: the headless session has no sound server, and autoaudiosink probing
+    // ALSA there holds playbin's locks for seconds, so a teardown in that window waits it out.
+    let app = open_alex(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("GST_PLUGIN_FEATURE_RANK", "fakeaudiosink:MAX"),
+    );
     let clip = app.get_by_test_id("att-demo-video-1");
     for round in 0..3 {
         clip.scroll_into_view().ok();
@@ -239,3 +243,63 @@ fn real_the_details_slide_open() {
     assert!(between >= 2, "the thread narrowed over frames, not at once: {widths:?}");
 }
 
+/// The tray item in a real StatusNotifierItem host (waybar, from `WAYBAR`) shows the app's icon,
+/// not a missing-icon placeholder: Messages names its tray icon after SF Symbols, which no Linux
+/// icon theme has. Run under `dbus-run-session`, so the item and the host share a private bus.
+#[cfg(target_os = "linux")]
+#[test]
+fn real_the_tray_shows_the_app_icon() {
+    if !real_allowed() {
+        return;
+    }
+    let Ok(waybar) = std::env::var("WAYBAR") else {
+        println!("skipped: set WAYBAR to a waybar binary");
+        return;
+    };
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("waybar");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.json");
+    std::fs::write(
+        &config,
+        r#"{"layer":"top","position":"top","height":40,"modules-right":["tray"],"tray":{"icon-size":32}}"#,
+    )
+    .unwrap();
+    let style = dir.join("style.css");
+    std::fs::write(&style, "* { background: #303030; }").unwrap();
+    // The icon where the package installs it, under a data directory of the app's own.
+    let data = dir.join("data");
+    let icon = data.join("icons/hicolor/512x512/apps/dev.formalsnake.messages.png");
+    std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+    std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/linux/dev.formalsnake.messages.png"), &icon).unwrap();
+    let app = open_alex(
+        LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("XDG_DATA_HOME", data.display().to_string()),
+    );
+    let mut bar = app.client(&waybar).arg("-c").arg(&config).arg("-s").arg(&style).spawn().unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+    let names = std::process::Command::new("busctl").args(["--user", "list", "--no-legend"]).output().unwrap();
+    let names = String::from_utf8_lossy(&names.stdout).into_owned();
+    let item = names
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .find(|n| n.starts_with("org.kde.StatusNotifierItem-"))
+        .expect("an item on the bus")
+        .to_owned();
+    let get = |property: &str| {
+        let out = std::process::Command::new("busctl")
+            .args(["--user", "get-property", &item, "/StatusNotifierItem", "org.kde.StatusNotifierItem", property])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().chars().take(120).collect::<String>()
+    };
+    let (name, theme, pixmap) = (get("IconName"), get("IconThemePath"), get("IconPixmap"));
+    println!("IconName {name}\nIconThemePath {theme}\nIconPixmap {pixmap}");
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("reported/tray.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    let status = app.client("grim").arg("-g").arg("0,0 1400x40").arg(&out).status().unwrap();
+    assert!(status.success());
+    println!("screenshot {}", out.display());
+    bar.kill().ok();
+    bar.wait().ok();
+    assert_eq!(name, "s \"dev.formalsnake.messages\"");
+    assert!(!pixmap.starts_with("a(iiay) 0"), "the app icon goes out as a pixmap too: {pixmap}");
+}
