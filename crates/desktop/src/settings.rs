@@ -170,4 +170,18 @@ mod tests {
         let on_disk = std::fs::read_to_string(root.join("settings-options.nix")).unwrap_or_default();
         assert_eq!(on_disk, module, "nix/settings-options.nix is stale: MESSAGES_WRITE_SCHEMA=1 cargo test");
     }
+
+    /// `fspec.star` at the repo root, the fspec module, comes from the same schema. Run with
+    /// `MESSAGES_WRITE_SCHEMA=1` to rewrite it.
+    #[test]
+    fn fspec_module_is_generated_from_the_settings() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fspec.star");
+        let app = nd_settings::fspec::App::new("messages", "https://github.com/FormalStudio/messages").display_name("Messages");
+        let module = nd_settings::fspec::star_module(&app, &nd_settings::schema_json::<MessagesSettings>());
+        if std::env::var_os("MESSAGES_WRITE_SCHEMA").is_some() {
+            std::fs::write(&path, &module).expect("write fspec.star");
+        }
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(on_disk, module, "fspec.star is stale: MESSAGES_WRITE_SCHEMA=1 cargo test");
+    }
 }
